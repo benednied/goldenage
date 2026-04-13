@@ -1,0 +1,139 @@
+<div class="panel-heading">
+  <div>
+    <p class="eyebrow">New Intake</p>
+    <h2>Drop zone</h2>
+  </div>
+</div>
+
+{% if intake_state.message %}
+  <div class="message">{{ intake_state.message }}</div>
+{% endif %}
+
+<form
+  class="intake-dropzone"
+  method="post"
+  enctype="multipart/form-data"
+  action="/artifacts/upload"
+  hx-post="/artifacts/upload"
+  hx-encoding="multipart/form-data"
+  hx-target="#intake-panel"
+  hx-swap="innerHTML"
+>
+  <div class="wave wave-a"></div>
+  <div class="wave wave-b"></div>
+  <div class="dropzone-copy">
+    <h3>Bring in the next document</h3>
+    <p>Drop an Outlook <code>.msg</code> mail here and GoldenAge will suggest exactly one likely case before exposing broader search.</p>
+    <label class="file-picker">
+      <span>Select Outlook mail</span>
+      <input type="file" name="file" accept=".msg" required />
+    </label>
+    <small class="muted">Only Outlook <code>.msg</code> exports are supported in this MVP.</small>
+  </div>
+</form>
+
+{% if intake_state.artifact %}
+  <section class="detail-section intake-state">
+    <div class="artifact-header">
+      <div>
+        <h3>{{ intake_state.artifact.file_name }}</h3>
+        <p class="muted">{{ intake_state.artifact.media_type }} · {{ intake_state.artifact.size_bytes }} bytes</p>
+      </div>
+      {% if intake_state.suggestion %}
+        <span class="pill">{{ "%.0f"|format(intake_state.suggestion.confidence * 100) }}% match</span>
+      {% endif %}
+    </div>
+
+    {% if intake_state.suggestion and intake_state.suggestion.suggested_case_id %}
+      <div class="suggestion-card">
+        <p class="suggestion-title">Vermutlich gehoert dieses Dokument zu einem bestehenden Vorgang.</p>
+        <p class="muted">{{ intake_state.suggestion.summary_reason }}</p>
+        <form
+          method="post"
+          action="/artifacts/{{ intake_state.artifact.id }}/assign"
+          hx-post="/artifacts/{{ intake_state.artifact.id }}/assign"
+          hx-target="#workspace"
+          hx-swap="innerHTML"
+          class="workflow-form"
+        >
+          <input type="hidden" name="case_id" value="{{ intake_state.suggestion.suggested_case_id }}" />
+          <label>
+            What should happen next?
+            <input type="text" name="next_step" placeholder="Review the newly received draft and reply" required />
+          </label>
+          <label>
+            Wiedervorlage
+            <input type="datetime-local" name="next_due_at" required />
+          </label>
+          <div class="button-row">
+            <button type="submit">Confirm suggestion</button>
+            <button
+              type="submit"
+              formaction="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
+              formmethod="post"
+              hx-post="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
+              hx-target="#intake-panel"
+              hx-swap="innerHTML"
+              class="button-secondary"
+            >
+              Reject suggestion
+            </button>
+          </div>
+        </form>
+      </div>
+    {% endif %}
+
+    {% if intake_state.search_mode %}
+      <div class="search-panel">
+        <form
+          method="post"
+          action="/cases/search"
+          hx-post="/cases/search"
+          hx-target="#intake-panel"
+          hx-swap="innerHTML"
+          class="workflow-form"
+        >
+          <input type="hidden" name="artifact_id" value="{{ intake_state.artifact.id }}" />
+          <label>
+            Search description
+            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Mail from Acme to Max Mustermann about renewal" required />
+          </label>
+          <button type="submit">Search cases</button>
+        </form>
+
+        {% if intake_state.search_results %}
+          <ul class="search-results">
+            {% for result in intake_state.search_results %}
+              <li>
+                <form
+                  method="post"
+                  action="/artifacts/{{ intake_state.artifact.id }}/assign"
+                  hx-post="/artifacts/{{ intake_state.artifact.id }}/assign"
+                  hx-target="#workspace"
+                  hx-swap="innerHTML"
+                  class="result-card"
+                >
+                  <input type="hidden" name="case_id" value="{{ result.case_id }}" />
+                  <div class="result-copy">
+                    <h4>{{ result.title }}</h4>
+                    <p>{{ result.company or "No company" }}</p>
+                    <small>{{ result.reason }}</small>
+                  </div>
+                  <label>
+                    Next step
+                    <input type="text" name="next_step" placeholder="Create next follow-up activity" required />
+                  </label>
+                  <label>
+                    Wiedervorlage
+                    <input type="datetime-local" name="next_due_at" required />
+                  </label>
+                  <button type="submit">Assign to this case</button>
+                </form>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    {% endif %}
+  </section>
+{% endif %}

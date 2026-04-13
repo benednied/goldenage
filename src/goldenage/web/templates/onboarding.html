@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <main class="onboarding-page">
+    <div class="wave wave-a onboarding-wave"></div>
+    <div class="wave wave-b onboarding-wave onboarding-wave-b"></div>
+
+    <section class="onboarding-card">
+      <p class="eyebrow">Local-First Setup</p>
+      <h1>welcome to the golden age</h1>
+      <p class="subhead">Create the first local account for this SQLite workspace before the case queue becomes available.</p>
+
+      {% if message %}
+        <div class="message message-error">{{ message }}</div>
+      {% endif %}
+
+      <form class="workflow-form onboarding-form" method="post" action="/onboarding" enctype="multipart/form-data">
+        <label>
+          Display name
+          <input type="text" name="display_name" placeholder="Your name" required />
+        </label>
+        <label>
+          Email
+          <input type="text" name="email" placeholder="name@example.com" required />
+        </label>
+        <label>
+          Password
+          <input type="password" name="password" placeholder="Create a local password" required />
+        </label>
+        <label>
+          Profile picture
+          <input type="file" name="profile_picture" accept="image/*" />
+        </label>
+        <button type="submit">Create local workspace user</button>
+      </form>
+    </section>
+  </main>
+{% endblock %}

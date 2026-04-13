@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Operational Case Work</p>
+      <h1>{{ hero_title }}</h1>
+      <p class="subhead">Today-first worklist, guided Wiedervorlage, and focused intake assignment.</p>
+    </div>
+    <div class="user-chip">
+      {% if profile_image_url %}
+        <img class="user-avatar" src="{{ profile_image_url }}" alt="{{ user.display_name }}" />
+      {% else %}
+        <span class="avatar-placeholder">{{ user.display_name[:1]|upper }}</span>
+      {% endif %}
+      <div class="user-copy">
+        <span>{{ user.display_name }}</span>
+        <small>{{ user.email }}</small>
+      </div>
+    </div>
+  </header>
+  <main id="workspace" class="workspace">
+    {% include "workspace.html" %}
+  </main>
+{% endblock %}

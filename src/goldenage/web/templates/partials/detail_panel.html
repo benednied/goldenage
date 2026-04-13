@@ -1,0 +1,93 @@
+<div class="panel-heading">
+  <div>
+    <p class="eyebrow">Case Detail</p>
+    <h2>{% if detail %}{{ detail.case_file.title }}{% else %}Select a case{% endif %}</h2>
+  </div>
+</div>
+
+{% if detail_error %}
+  <div class="message message-error">{{ detail_error }}</div>
+{% endif %}
+
+{% if detail %}
+  <div class="detail-meta">
+    <span>{{ detail.case_file.company or "No company" }}</span>
+    <span>{{ detail.case_file.primary_contact or "No contact" }}</span>
+    <span class="pill">{{ detail.case_file.status }}</span>
+  </div>
+
+  {% if detail.active_activity %}
+    <section class="detail-section">
+      <h3>Current activity</h3>
+      <p class="activity-copy">{{ detail.active_activity.description }}</p>
+      <p class="muted">
+        Due {{ format_datetime(detail.active_activity.due_at, local_timezone) }}
+      </p>
+
+      <form
+        method="post"
+        action="/activities/{{ detail.active_activity.id }}/resolve"
+        hx-post="/activities/{{ detail.active_activity.id }}/resolve"
+        hx-target="#workspace"
+        hx-swap="innerHTML"
+        class="workflow-form"
+      >
+        <label>
+          What happens next?
+          <input type="text" name="next_step" placeholder="Call back with revised clause wording" />
+        </label>
+        <label>
+          Wiedervorlage
+          <input type="datetime-local" name="next_due_at" />
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="close_case" />
+          <span>Close the case instead of scheduling follow-up.</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="skip_follow_up" />
+          <span>Record that no Wiedervorlage is needed.</span>
+        </label>
+        <button type="submit">Resolve with a clear next state</button>
+      </form>
+    </section>
+  {% endif %}
+
+  <section class="detail-section">
+    <h3>Open activities</h3>
+    {% if detail.open_activities %}
+      <ul class="mini-list">
+        {% for activity in detail.open_activities %}
+          <li>
+            <strong>{{ activity.kind }}</strong>
+            <span>{{ activity.description }}</span>
+            <small>{{ format_datetime(activity.due_at, local_timezone) }}</small>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No open activities.</p>
+    {% endif %}
+  </section>
+
+  <section class="detail-section">
+    <h3>Recent artifacts</h3>
+    {% if detail.recent_artifacts %}
+      <ul class="mini-list">
+        {% for artifact in detail.recent_artifacts %}
+          <li>
+            <strong>{{ artifact.file_name }}</strong>
+            <small>{{ format_datetime(artifact.uploaded_at, local_timezone) }}</small>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No artifacts assigned yet.</p>
+    {% endif %}
+  </section>
+{% else %}
+  <div class="empty-state empty-tight">
+    <h3>Pick an item from the worklist.</h3>
+    <p>The active case appears here so the next step can be recorded without leaving the queue.</p>
+  </div>
+{% endif %}

@@ -1,0 +1,47 @@
+<div class="panel-heading">
+  <div>
+    <p class="eyebrow">Today's Queue</p>
+    <h2>Due activities</h2>
+  </div>
+  <span class="count-badge">{{ worklist|length }}</span>
+</div>
+
+{% if worklist %}
+  <div class="worklist">
+    {% for item in worklist %}
+      <a
+        class="work-item due-{{ item.due_status }}"
+        href="/worklist?case_id={{ item.case_file.id }}"
+        hx-get="/cases/{{ item.case_file.id }}/panel"
+        hx-target="#detail-panel"
+        hx-swap="innerHTML"
+      >
+        <div class="work-meta">
+          <span class="status-dot status-{{ item.due_status }}"></span>
+          <span class="status-text">{{ item.due_status|upper }}</span>
+        </div>
+        <h3>{{ item.case_file.title }}</h3>
+        <p>{{ item.activity.description }}</p>
+        <dl>
+          <div>
+            <dt>Due</dt>
+            <dd>{{ format_datetime(item.activity.due_at, local_timezone) }}</dd>
+          </div>
+          <div>
+            <dt>Contact</dt>
+            <dd>{{ item.case_file.primary_contact or "n/a" }}</dd>
+          </div>
+          <div>
+            <dt>Company</dt>
+            <dd>{{ item.case_file.company or "n/a" }}</dd>
+          </div>
+        </dl>
+      </a>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="empty-state">
+    <h3>No activities due today.</h3>
+    <p>The queue is clear. New intake can still create fresh work.</p>
+  </div>
+{% endif %}

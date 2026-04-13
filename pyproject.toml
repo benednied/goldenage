@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goldenage"
+version = "0.1.0"
+description = "Operational case management and Wiedervorlage system with HTMX-driven workflows."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "jinja2>=3.1.6,<4.0.0",
+  "psycopg[binary]>=3.2.9,<4.0.0",
+  "python-oxmsg>=0.0.2,<1.0.0",
+  "python-multipart>=0.0.20,<1.0.0",
+  "uvicorn>=0.34.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.1,<1.0.0",
+  "pytest>=8.3.5,<9.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
