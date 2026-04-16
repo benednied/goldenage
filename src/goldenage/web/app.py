@@ -26,6 +26,7 @@ from goldenage.adapters.demo import (
     OutlookMsgExtractor,
     build_demo_state,
 )
+from goldenage.adapters.outlook_mailbox import OutlookMailboxWorker, WindowsOutlookMailboxSource
 from goldenage.adapters.postgres import (
     PostgresActivityRepository,
     PostgresArtifactRepository,
@@ -63,6 +64,7 @@ class AppContext:
     service: GoldenAgeService
     default_user: UserContext | None
     local_user_repository: SQLiteLocalUserRepository | None = None
+    outlook_worker: OutlookMailboxWorker | None = None
 
 
 def create_app() -> FastAPI:
@@ -76,6 +78,16 @@ def create_app() -> FastAPI:
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
+
+    @app.on_event("startup")
+    async def startup_event() -> None:
+        if context.outlook_worker is not None:
+            context.outlook_worker.start()
+
+    @app.on_event("shutdown")
+    async def shutdown_event() -> None:
+        if context.outlook_worker is not None:
+            context.outlook_worker.stop()
 
     @app.get("/", response_class=HTMLResponse)
     async def home() -> RedirectResponse:
@@ -309,6 +321,21 @@ def create_app() -> FastAPI:
             context=_page_context(request, context, detail=None, intake_state=intake_state, user=user),
         )
 
+    @app.get("/intake/conversations/{conversation_id}", response_class=HTMLResponse)
+    async def intake_conversation_panel(request: Request, conversation_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+            return redirect
+        user = _require_current_user(context)
+        intake_state = context.service.get_intake_state_for_conversation(
+            conversation_id=_uuid(conversation_id),
+            user=user,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/intake_panel.html",
+            context=_page_context(request, context, detail=None, intake_state=intake_state, user=user),
+        )
+
     @app.post("/cases/search", response_class=HTMLResponse)
     async def search_cases(
         request: Request,
@@ -502,11 +529,19 @@ def _build_context(settings: Settings) -> AppContext:
         gisela_client=HeuristicGiselaClient(),
         elizabethan_client=HeuristicElizabethanSearchClient(),
     )
+    outlook_worker = None
+    if settings.outlook_sync_enabled and settings.outlook_account_name:
+        source = WindowsOutlookMailboxSource(
+            settings,
+            on_message=lambda message: None,
+        )
+        outlook_worker = OutlookMailboxWorker(source)
     return AppContext(
         settings=settings,
         service=service,
         default_user=default_user,
         local_user_repository=local_user_repository,
+        outlook_worker=outlook_worker,
     )
 
 
@@ -539,6 +574,7 @@ def _page_context(
     intake_state: IntakeState,
     user: UserContext,
 ) -> dict[str, object]:
+    hydrated_intake = _hydrate_intake_state(context, intake_state=intake_state, user=user)
     return {
         "request": request,
         "page_title": "GoldenAge",
@@ -553,7 +589,7 @@ def _page_context(
         ),
         "detail": detail,
         "detail_error": None,
-        "intake_state": intake_state,
+        "intake_state": hydrated_intake,
         "format_datetime": _format_datetime,
         "due_label": due_label,
         "local_timezone": context.settings.local_timezone,
@@ -586,6 +622,29 @@ def _load_case_detail(
         return context.service.get_case_detail(case_id=_uuid(case_id), user=user, now=now)
     except NotFoundError:
         return None
+
+
+def _hydrate_intake_state(
+    context: AppContext,
+    *,
+    intake_state: IntakeState,
+    user: UserContext,
+) -> IntakeState:
+    if intake_state.recent_conversations:
+        return intake_state
+    fallback = context.service.get_recent_intake(user=user)
+    return IntakeState(
+        artifact=intake_state.artifact,
+        suggestion=intake_state.suggestion,
+        search_mode=intake_state.search_mode,
+        search_query=intake_state.search_query,
+        search_results=intake_state.search_results,
+        message=intake_state.message,
+        conversation=intake_state.conversation,
+        conversation_artifacts=intake_state.conversation_artifacts,
+        recent_conversations=fallback.recent_conversations,
+        ingest_status=intake_state.ingest_status,
+    )
 
 
 def _onboarding_context(request: Request, message: str | None) -> dict[str, object]:

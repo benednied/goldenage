@@ -73,9 +73,81 @@ def test_upload_subject_match_proposes_case(tmp_path) -> None:
     assert intake.suggestion is not None
     assert intake.search_mode is False
     assert intake.suggestion.suggested_case_id is not None
+    assert intake.conversation is not None
+    assert intake.conversation.message_count == 1
     mail_metadata = state.artifact_mail_metadata[intake.artifact.id]
     assert mail_metadata.subject == "RE: Acme contract renewal draft"
     assert mail_metadata.sender_domain == "acme.example"
+
+
+def test_duplicate_ingest_reuses_existing_conversation(tmp_path) -> None:
+    service, user, _ = build_service(
+        tmp_path,
+        extracted=_sample_extracted_data(
+            subject="RE: Acme contract renewal draft",
+            source_message_id="message-1",
+            conversation_id="conv-1",
+            internet_message_id="<msg-1@example.com>",
+        ),
+    )
+
+    first = service.upload_artifact(
+        file_name="renewal.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"fake msg bytes",
+        user=user,
+        now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+    )
+    second = service.upload_artifact(
+        file_name="renewal.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"fake msg bytes",
+        user=user,
+        now=datetime(2026, 4, 12, 10, 1, tzinfo=UTC),
+    )
+
+    assert first.artifact is not None
+    assert second.artifact is not None
+    assert first.artifact.id == second.artifact.id
+    assert second.ingest_status == "duplicate"
+
+
+def test_messages_with_same_conversation_are_threaded_together(tmp_path) -> None:
+    service, user, _ = build_service(
+        tmp_path,
+        extracted=_sample_extracted_data(
+            subject="RE: Acme contract renewal draft",
+            source_message_id="message-1",
+            conversation_id="conv-1",
+            internet_message_id="<msg-1@example.com>",
+        ),
+    )
+
+    first = service.upload_artifact(
+        file_name="renewal.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"fake msg bytes",
+        user=user,
+        now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+    )
+    service._content_extractor._extracted = _sample_extracted_data(
+        subject="RE: Acme contract renewal draft",
+        source_message_id="message-2",
+        conversation_id="conv-1",
+        internet_message_id="<msg-2@example.com>",
+    )
+    second = service.upload_artifact(
+        file_name="renewal-2.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"fake msg bytes 2",
+        user=user,
+        now=datetime(2026, 4, 12, 10, 5, tzinfo=UTC),
+    )
+
+    assert first.conversation is not None
+    assert second.conversation is not None
+    assert first.conversation.id == second.conversation.id
+    assert second.conversation.message_count == 2
 
 
 def test_upload_without_safe_subject_match_enters_search_mode(tmp_path) -> None:
@@ -128,7 +200,13 @@ def test_create_case_for_artifact_creates_new_case_and_activity(tmp_path) -> Non
     assert state.artifacts[intake.artifact.id].assigned_case_id == detail.case_file.id
 
 
-def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
+def _sample_extracted_data(
+    subject: str,
+    *,
+    source_message_id: str | None = None,
+    conversation_id: str | None = None,
+    internet_message_id: str | None = None,
+) -> ExtractedArtifactData:
     return ExtractedArtifactData(
         source_kind="outlook_msg",
         parse_status="parsed",
@@ -137,4 +215,11 @@ def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
         sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
         recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
         sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
+        received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
+        direction="inbound",
+        source_account_id="account-1",
+        source_folder_id="inbox",
+        source_message_id=source_message_id,
+        conversation_id=conversation_id,
+        internet_message_id=internet_message_id,
     )

@@ -45,6 +45,7 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
     )
     assert upload_response.status_code == 200
     assert "Confirm suggestion" in upload_response.text
+    assert "Recent conversations" in upload_response.text
 
     import re
 
@@ -106,9 +107,44 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
     detail_response = client.get(f"/cases/{case_id}/artifacts/{artifact_id}/panel")
     assert detail_response.status_code == 200
     assert "Message content" in detail_response.text
+    assert "Conversation:" in detail_response.text
     assert "Acme contract renewal" in detail_response.text
     assert "Max Mustermann" in detail_response.text
     assert "body text" in detail_response.text
+
+
+def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        OutlookMsgExtractor,
+        "extract",
+        lambda self, file_name, media_type, content: _sample_extracted_data(
+            subject="Acme contract renewal"
+        ),
+    )
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
+    monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    client = TestClient(create_app())
+
+    upload_response = client.post(
+        "/artifacts/upload",
+        files={"file": ("acme.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+    )
+    assert upload_response.status_code == 200
+
+    import re
+
+    conversation_id = re.search(
+        r"/intake/conversations/([0-9a-f-]+)",
+        upload_response.text,
+    ).group(1)
+
+    response = client.get(f"/intake/conversations/{conversation_id}")
+    assert response.status_code == 200
+    assert "Thread with 1 mail" in response.text
 
 
 def test_non_msg_upload_shows_not_supported_and_logs_to_console(
@@ -244,4 +280,11 @@ def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
         sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
         recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
         sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
+        received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
+        direction="inbound",
+        source_account_id="account-1",
+        source_folder_id="inbox",
+        source_message_id="message-1",
+        conversation_id="conv-1",
+        internet_message_id="<msg-1@example.com>",
     )

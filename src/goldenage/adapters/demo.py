@@ -29,6 +29,10 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     ExtractedArtifactData,
+    MailConversation,
+    MailMessage,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     MailParticipant,
     SearchResult,
     UserContext,
@@ -46,6 +50,10 @@ class DemoState:
     activities: dict[UUID, Activity]
     artifacts: dict[UUID, Artifact]
     artifact_mail_metadata: dict[UUID, ArtifactMailMetadata]
+    mail_conversations: dict[UUID, MailConversation]
+    mail_messages: dict[UUID, MailMessage]
+    mailbox_account_configs: dict[UUID, MailboxAccountConfig]
+    mailbox_sync_checkpoints: dict[tuple[UUID, str], MailboxSyncCheckpoint]
     suggestions: dict[UUID, AssignmentSuggestion]
     audit_events: list[AuditEvent]
 
@@ -155,6 +163,114 @@ class InMemoryArtifactRepository(ArtifactRepository):
             return None
         return self._state.artifact_mail_metadata.get(artifact_id)
 
+    def save_mail_conversation(self, conversation: MailConversation) -> None:
+        self._state.mail_conversations[conversation.id] = conversation
+
+    def get_mail_conversation(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> MailConversation | None:
+        conversation = self._state.mail_conversations.get(conversation_id)
+        if conversation is None:
+            return None
+        return conversation if self.get_artifact(conversation.latest_artifact_id, user) else None
+
+    def list_recent_mail_conversations(
+        self,
+        user: UserContext,
+        *,
+        limit: int = 10,
+    ) -> Sequence[MailConversation]:
+        items = [
+            conversation
+            for conversation in self._state.mail_conversations.values()
+            if self.get_artifact(conversation.latest_artifact_id, user) is not None
+        ]
+        items.sort(key=lambda item: item.latest_message_at, reverse=True)
+        return tuple(items[:limit])
+
+    def save_mail_message(self, message: MailMessage) -> None:
+        self._state.mail_messages[message.artifact_id] = message
+
+    def get_mail_message(self, artifact_id: UUID, user: UserContext) -> MailMessage | None:
+        if self.get_artifact(artifact_id, user) is None:
+            return None
+        return self._state.mail_messages.get(artifact_id)
+
+    def find_mail_message_by_source(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_message_id: str | None,
+        internet_message_id: str | None,
+        dedupe_fingerprint: str,
+        user: UserContext,
+    ) -> MailMessage | None:
+        for message in self._state.mail_messages.values():
+            if message.source_kind != source_kind:
+                continue
+            source_match = (
+                source_account_id is not None
+                and source_folder_id is not None
+                and source_message_id is not None
+                and message.source_account_id == source_account_id
+                and message.source_folder_id == source_folder_id
+                and message.source_message_id == source_message_id
+            )
+            if source_match or (
+                internet_message_id is not None and message.internet_message_id == internet_message_id
+            ) or message.dedupe_fingerprint == dedupe_fingerprint:
+                if self.get_artifact(message.artifact_id, user) is not None:
+                    return message
+        return None
+
+    def list_conversation_artifacts(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[Artifact]:
+        artifacts = [
+            artifact
+            for artifact_id, artifact in self._state.artifacts.items()
+            if (
+                self._state.mail_messages.get(artifact_id) is not None
+                and self._state.mail_messages[artifact_id].conversation_id == conversation_id
+                and self.get_artifact(artifact_id, user) is not None
+            )
+        ]
+        artifacts.sort(key=lambda artifact: artifact.uploaded_at, reverse=True)
+        return tuple(artifacts)
+
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        self._state.mailbox_account_configs[config.id] = config
+
+    def get_active_mailbox_account_config(
+        self,
+        user: UserContext,
+    ) -> MailboxAccountConfig | None:
+        for config in self._state.mailbox_account_configs.values():
+            if config.active and (config.user_id is None or config.user_id == user.id):
+                return config
+        return None
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        self._state.mailbox_sync_checkpoints[
+            (checkpoint.account_config_id, checkpoint.folder_key)
+        ] = checkpoint
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> Sequence[MailboxSyncCheckpoint]:
+        return tuple(
+            checkpoint
+            for (candidate_id, _), checkpoint in self._state.mailbox_sync_checkpoints.items()
+            if candidate_id == account_config_id
+        )
+
 
 class InMemoryAuditRepository(AuditRepository):
     """In-memory audit repository."""
@@ -209,6 +325,8 @@ class OutlookMsgExtractor(ArtifactContentExtractor):
             sender=sender,
             recipients=recipients,
             sent_at=message.sent_date() if callable(message.sent_date) else message.sent_date,
+            received_at=message.sent_date() if callable(message.sent_date) else message.sent_date,
+            direction="inbound",
         )
 
 
@@ -344,6 +462,10 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
         activities={activity.id: activity for activity in activities},
         artifacts={},
         artifact_mail_metadata={},
+        mail_conversations={},
+        mail_messages={},
+        mailbox_account_configs={},
+        mailbox_sync_checkpoints={},
         suggestions={},
         audit_events=[],
     )

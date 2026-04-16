@@ -101,6 +101,9 @@
         <span>{{ detail.selected_artifact.media_type }}</span>
         <span>{{ format_datetime(detail.selected_artifact.uploaded_at, local_timezone) }}</span>
       </div>
+      {% if detail.selected_conversation %}
+        <p><strong>Conversation:</strong> {{ detail.selected_conversation.latest_subject or "No subject" }} ({{ detail.selected_conversation.message_count }} mails)</p>
+      {% endif %}
       {% if detail.selected_mail_metadata %}
         <p><strong>Subject:</strong> {{ detail.selected_mail_metadata.subject or "No subject" }}</p>
         <p><strong>From:</strong> {{ detail.selected_mail_metadata.sender_name or detail.selected_mail_metadata.sender_email or "Unknown sender" }}</p>
@@ -114,6 +117,17 @@
             No recipients
           {% endif %}
         </p>
+      {% endif %}
+      {% if detail.selected_conversation_artifacts %}
+        <p><strong>Thread messages:</strong></p>
+        <ul class="mini-list">
+          {% for artifact in detail.selected_conversation_artifacts %}
+            <li>
+              <strong>{{ artifact.file_name }}</strong>
+              <small>{{ format_datetime(artifact.uploaded_at, local_timezone) }}</small>
+            </li>
+          {% endfor %}
+        </ul>
       {% endif %}
       <pre class="activity-copy">{{ detail.selected_artifact.content_text or "No message body was extracted." }}</pre>
     </section>

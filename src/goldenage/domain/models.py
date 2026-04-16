@@ -10,8 +10,9 @@ from uuid import UUID
 CaseStatus = Literal["open", "closed"]
 ActivityKind = Literal["intake", "follow_up", "question", "escalation"]
 DueLabel = Literal["overdue", "today", "upcoming"]
-ArtifactSourceKind = Literal["outlook_msg"]
+ArtifactSourceKind = Literal["outlook_msg", "outlook_mailbox_message"]
 ParseStatus = Literal["parsed"]
+MailDirection = Literal["inbound", "outbound"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +115,70 @@ class ArtifactMailMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class MailConversation:
+    """Thread-aware view over one or more mail messages."""
+
+    id: UUID
+    source_kind: ArtifactSourceKind
+    external_conversation_id: str | None
+    normalized_subject: str | None
+    latest_subject: str | None
+    latest_message_at: datetime
+    participants: tuple[MailParticipant, ...]
+    message_count: int
+    latest_artifact_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    assigned_case_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MailMessage:
+    """One ingested mail item linked to an artifact and conversation."""
+
+    artifact_id: UUID
+    conversation_id: UUID
+    source_kind: ArtifactSourceKind
+    source_account_id: str | None
+    source_folder_id: str | None
+    source_message_id: str | None
+    source_conversation_id: str | None
+    internet_message_id: str | None
+    dedupe_fingerprint: str
+    direction: MailDirection | None
+    received_at: datetime | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxAccountConfig:
+    """Configured mailbox source for local Outlook ingestion."""
+
+    id: UUID
+    user_id: UUID | None
+    source_kind: ArtifactSourceKind
+    account_key: str
+    outlook_store_name: str
+    inbox_folder_key: str | None
+    sent_folder_key: str | None
+    polling_interval_seconds: int
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxSyncCheckpoint:
+    """Incremental sync checkpoint for one watched folder."""
+
+    account_config_id: UUID
+    folder_key: str
+    last_message_key: str | None
+    last_message_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ExtractedArtifactData:
     """Normalized output from an artifact extractor."""
 
@@ -124,6 +189,13 @@ class ExtractedArtifactData:
     sender: MailParticipant | None
     recipients: tuple[MailParticipant, ...]
     sent_at: datetime | None
+    received_at: datetime | None = None
+    direction: MailDirection | None = None
+    source_account_id: str | None = None
+    source_folder_id: str | None = None
+    source_message_id: str | None = None
+    conversation_id: str | None = None
+    internet_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

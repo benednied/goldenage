@@ -5,6 +5,27 @@
   </div>
 </div>
 
+{% if intake_state.recent_conversations %}
+  <section class="detail-section intake-state">
+    <h3>Recent conversations</h3>
+    <ul class="mini-list">
+      {% for conversation in intake_state.recent_conversations %}
+        <li>
+          <a
+            href="/intake/conversations/{{ conversation.id }}"
+            hx-get="/intake/conversations/{{ conversation.id }}"
+            hx-target="#intake-panel"
+            hx-swap="innerHTML"
+          >
+            <strong>{{ conversation.latest_subject or "No subject" }}</strong>
+          </a>
+          <small>{{ format_datetime(conversation.latest_message_at, local_timezone) }} · {{ conversation.message_count }} mails</small>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
 {% if intake_state.message %}
   <div class="message">{{ intake_state.message }}</div>
 {% endif %}
@@ -36,13 +57,35 @@
   <section class="detail-section intake-state">
     <div class="artifact-header">
       <div>
-        <h3>{{ intake_state.artifact.file_name }}</h3>
-        <p class="muted">{{ intake_state.artifact.media_type }} · {{ intake_state.artifact.size_bytes }} bytes</p>
+        <h3>{{ intake_state.conversation.latest_subject if intake_state.conversation else intake_state.artifact.file_name }}</h3>
+        <p class="muted">{{ intake_state.artifact.file_name }} · {{ intake_state.artifact.media_type }} · {{ intake_state.artifact.size_bytes }} bytes</p>
       </div>
       {% if intake_state.suggestion %}
         <span class="pill">{{ "%.0f"|format(intake_state.suggestion.confidence * 100) }}% match</span>
       {% endif %}
     </div>
+
+    {% if intake_state.conversation %}
+      <p class="muted">
+        Thread with {{ intake_state.conversation.message_count }} mail{% if intake_state.conversation.message_count != 1 %}s{% endif %}
+        {% if intake_state.conversation.participants %}
+          ·
+          {% for participant in intake_state.conversation.participants %}
+            {{ participant.name or participant.email or "Unknown" }}{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        {% endif %}
+      </p>
+      {% if intake_state.conversation_artifacts %}
+        <ul class="mini-list">
+          {% for artifact in intake_state.conversation_artifacts %}
+            <li>
+              <strong>{{ artifact.file_name }}</strong>
+              <small>{{ format_datetime(artifact.uploaded_at, local_timezone) }}</small>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endif %}
 
     {% if intake_state.suggestion and intake_state.suggestion.suggested_case_id %}
       <div class="suggestion-card">

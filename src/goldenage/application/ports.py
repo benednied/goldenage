@@ -15,6 +15,10 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     ExtractedArtifactData,
+    MailConversation,
+    MailMessage,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     SearchResult,
     UserContext,
 )
@@ -81,6 +85,72 @@ class ArtifactRepository(Protocol):
     ) -> ArtifactMailMetadata | None:
         """Return parsed mail metadata for an artifact."""
 
+    def save_mail_conversation(self, conversation: MailConversation) -> None:
+        """Persist a mail conversation."""
+
+    def get_mail_conversation(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> MailConversation | None:
+        """Return one visible mail conversation."""
+
+    def list_recent_mail_conversations(
+        self,
+        user: UserContext,
+        *,
+        limit: int = 10,
+    ) -> Sequence[MailConversation]:
+        """Return recent visible conversations for the intake panel."""
+
+    def save_mail_message(self, message: MailMessage) -> None:
+        """Persist one mail message row."""
+
+    def get_mail_message(
+        self,
+        artifact_id: UUID,
+        user: UserContext,
+    ) -> MailMessage | None:
+        """Return a visible mail message."""
+
+    def find_mail_message_by_source(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_message_id: str | None,
+        internet_message_id: str | None,
+        dedupe_fingerprint: str,
+        user: UserContext,
+    ) -> MailMessage | None:
+        """Find an existing ingested message by source identity."""
+
+    def list_conversation_artifacts(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[Artifact]:
+        """Return the artifacts linked to a visible conversation."""
+
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        """Persist local mailbox account configuration."""
+
+    def get_active_mailbox_account_config(
+        self,
+        user: UserContext,
+    ) -> MailboxAccountConfig | None:
+        """Return the active mailbox account for the user if configured."""
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        """Persist one folder sync checkpoint."""
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> Sequence[MailboxSyncCheckpoint]:
+        """Return saved checkpoints for one configured mailbox."""
+
 
 class AuditRepository(Protocol):
     """Persistence port for audit events."""
@@ -101,6 +171,13 @@ class ArtifactContentExtractor(Protocol):
 
     def extract(self, file_name: str, media_type: str, content: bytes) -> ExtractedArtifactData:
         """Extract analyzable content and envelope metadata from an artifact."""
+
+
+class MailboxSource(Protocol):
+    """Live local mailbox integration."""
+
+    def watch_forever(self) -> None:
+        """Start the mailbox event loop."""
 
 
 class GiselaClient(Protocol):

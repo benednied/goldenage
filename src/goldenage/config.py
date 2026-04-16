@@ -17,6 +17,9 @@ class Settings:
     artifact_dir: Path
     profile_dir: Path
     local_timezone: str
+    outlook_sync_enabled: bool
+    outlook_account_name: str | None
+    outlook_poll_seconds: int
 
     @property
     def use_local_first_sqlite(self) -> bool:
@@ -41,6 +44,9 @@ def load_settings() -> Settings:
         artifact_dir=artifact_dir,
         profile_dir=artifact_dir / "profiles",
         local_timezone=os.environ.get("GOLDENAGE_LOCAL_TIMEZONE", "Europe/Berlin"),
+        outlook_sync_enabled=os.environ.get("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "0") == "1",
+        outlook_account_name=os.environ.get("GOLDENAGE_OUTLOOK_ACCOUNT"),
+        outlook_poll_seconds=int(os.environ.get("GOLDENAGE_OUTLOOK_POLL_SECONDS", "15")),
     )
 
 
