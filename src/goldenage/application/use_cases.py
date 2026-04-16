@@ -52,6 +52,8 @@ class CaseDetail:
     active_activity: Activity | None
     open_activities: tuple[Activity, ...]
     recent_artifacts: tuple[Artifact, ...]
+    selected_artifact: Artifact | None = None
+    selected_mail_metadata: ArtifactMailMetadata | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +112,14 @@ class GoldenAgeService:
             )
         return tuple(sorted(items, key=lambda item: (item.activity.due_at, item.case_file.title)))
 
-    def get_case_detail(self, *, case_id: UUID, user: UserContext, now: datetime) -> CaseDetail:
+    def get_case_detail(
+        self,
+        *,
+        case_id: UUID,
+        user: UserContext,
+        now: datetime,
+        selected_artifact_id: UUID | None = None,
+    ) -> CaseDetail:
         """Build detail state for one case."""
         del now
         case_file = self._case_repository.get_case(case_id, user)
@@ -132,11 +141,23 @@ class GoldenAgeService:
                 reverse=True,
             )[:5]
         )
+        selected_artifact = None
+        selected_mail_metadata = None
+        if selected_artifact_id is not None:
+            selected_artifact = self._artifact_repository.get_artifact(selected_artifact_id, user)
+            if selected_artifact is None or selected_artifact.assigned_case_id != case_id:
+                raise NotFoundError("Artifact not found.")
+            selected_mail_metadata = self._artifact_repository.get_mail_metadata(
+                selected_artifact_id,
+                user,
+            )
         return CaseDetail(
             case_file=case_file,
             active_activity=active_activity,
             open_activities=open_activities,
             recent_artifacts=recent_artifacts,
+            selected_artifact=selected_artifact,
+            selected_mail_metadata=selected_mail_metadata,
         )
 
     def get_case_detail_for_activity(
@@ -349,6 +370,64 @@ class GoldenAgeService:
         self._record_audit(
             actor_user_id=user.id,
             event_type="artifact_assigned",
+            subject_id=artifact_id,
+            payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
+            now=now,
+        )
+        return self.get_case_detail(case_id=case_id, user=user, now=now)
+
+    def create_case_for_artifact(
+        self,
+        *,
+        artifact_id: UUID,
+        title: str,
+        company: str | None,
+        primary_contact: str | None,
+        next_step: str,
+        next_due_at: datetime,
+        user: UserContext,
+        now: datetime,
+    ) -> CaseDetail:
+        """Create a new case from intake, assign the artifact, and schedule the first activity."""
+        artifact = self._artifact_repository.get_artifact(artifact_id, user)
+        if artifact is None:
+            raise NotFoundError("Artifact not found.")
+
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ResolutionError("A case title is required.")
+
+        normalized_step = next_step.strip()
+        if not normalized_step:
+            raise ResolutionError("A next step description is required.")
+
+        case_id = uuid4()
+        case_file = CaseFile(
+            id=case_id,
+            title=normalized_title,
+            company=company.strip() or None if company is not None else None,
+            primary_contact=primary_contact.strip() or None
+            if primary_contact is not None
+            else None,
+            status="open",
+            last_activity_at=now,
+        )
+        self._case_repository.save_case(case_file)
+        self._artifact_repository.save_artifact(replace(artifact, assigned_case_id=case_id))
+        self._activity_repository.save_activity(
+            Activity(
+                id=uuid4(),
+                case_id=case_id,
+                description=normalized_step,
+                kind="intake",
+                due_at=next_due_at,
+                created_at=now,
+                created_by=user.id,
+            )
+        )
+        self._record_audit(
+            actor_user_id=user.id,
+            event_type="artifact_assigned_to_new_case",
             subject_id=artifact_id,
             payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
             now=now,

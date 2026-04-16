@@ -172,6 +172,26 @@ def create_app() -> FastAPI:
             context=_panel_context(request, context, detail=detail, detail_error=None, user=user),
         )
 
+    @app.get("/cases/{case_id}/artifacts/{artifact_id}/panel", response_class=HTMLResponse)
+    async def artifact_panel(request: Request, case_id: str, artifact_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+            return redirect
+        user = _require_current_user(context)
+        try:
+            detail = context.service.get_case_detail(
+                case_id=_uuid(case_id),
+                user=user,
+                now=_now(context),
+                selected_artifact_id=_uuid(artifact_id),
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/detail_panel.html",
+            context=_panel_context(request, context, detail=detail, detail_error=None, user=user),
+        )
+
     @app.post("/activities/{activity_id}/resolve", response_class=HTMLResponse)
     async def resolve_activity(
         request: Request,
@@ -367,6 +387,73 @@ def create_app() -> FastAPI:
                 context,
                 detail=detail,
                 intake_state=IntakeState(message="Artifact assigned and next step scheduled."),
+                user=user,
+            ),
+        )
+
+    @app.post("/artifacts/{artifact_id}/create-case", response_class=HTMLResponse)
+    async def create_case_from_artifact(
+        request: Request,
+        artifact_id: str,
+        title: str = Form(...),
+        company: str = Form(default=""),
+        primary_contact: str = Form(default=""),
+        next_step: str = Form(...),
+        next_due_at: str = Form(...),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+            return redirect
+        user = _require_current_user(context)
+        try:
+            detail = context.service.create_case_for_artifact(
+                artifact_id=_uuid(artifact_id),
+                title=title,
+                company=company,
+                primary_contact=primary_contact,
+                next_step=next_step,
+                next_due_at=_require_form_datetime(next_due_at, context.settings.local_timezone),
+                user=user,
+                now=_now(context),
+            )
+        except ResolutionError as error:
+            intake_state = context.service.get_intake_state(
+                artifact_id=_uuid(artifact_id),
+                user=user,
+            )
+            intake_state = IntakeState(
+                artifact=intake_state.artifact,
+                suggestion=intake_state.suggestion,
+                search_mode=True,
+                search_query=intake_state.search_query,
+                search_results=intake_state.search_results,
+                message=str(error),
+            )
+            response = templates.TemplateResponse(
+                request=request,
+                name="partials/intake_panel.html",
+                context=_page_context(
+                    request,
+                    context,
+                    detail=None,
+                    intake_state=intake_state,
+                    user=user,
+                ),
+                status_code=400,
+            )
+            response.headers["HX-Retarget"] = "#intake-panel"
+            response.headers["HX-Reswap"] = "innerHTML"
+            return response
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        return templates.TemplateResponse(
+            request=request,
+            name="workspace.html",
+            context=_page_context(
+                request,
+                context,
+                detail=detail,
+                intake_state=IntakeState(message="New case created from intake."),
                 user=user,
             ),
         )

@@ -76,7 +76,14 @@
       <ul class="mini-list">
         {% for artifact in detail.recent_artifacts %}
           <li>
-            <strong>{{ artifact.file_name }}</strong>
+            <a
+              href="/cases/{{ detail.case_file.id }}/artifacts/{{ artifact.id }}/panel"
+              hx-get="/cases/{{ detail.case_file.id }}/artifacts/{{ artifact.id }}/panel"
+              hx-target="#detail-panel"
+              hx-swap="innerHTML"
+            >
+              <strong>{{ artifact.file_name }}</strong>
+            </a>
             <small>{{ format_datetime(artifact.uploaded_at, local_timezone) }}</small>
           </li>
         {% endfor %}
@@ -85,6 +92,32 @@
       <p class="muted">No artifacts assigned yet.</p>
     {% endif %}
   </section>
+
+  {% if detail.selected_artifact %}
+    <section class="detail-section">
+      <h3>Message content</h3>
+      <div class="detail-meta">
+        <span>{{ detail.selected_artifact.file_name }}</span>
+        <span>{{ detail.selected_artifact.media_type }}</span>
+        <span>{{ format_datetime(detail.selected_artifact.uploaded_at, local_timezone) }}</span>
+      </div>
+      {% if detail.selected_mail_metadata %}
+        <p><strong>Subject:</strong> {{ detail.selected_mail_metadata.subject or "No subject" }}</p>
+        <p><strong>From:</strong> {{ detail.selected_mail_metadata.sender_name or detail.selected_mail_metadata.sender_email or "Unknown sender" }}</p>
+        <p>
+          <strong>To:</strong>
+          {% if detail.selected_mail_metadata.recipients %}
+            {% for recipient in detail.selected_mail_metadata.recipients %}
+              {{ recipient.name or recipient.email or "Unknown recipient" }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+          {% else %}
+            No recipients
+          {% endif %}
+        </p>
+      {% endif %}
+      <pre class="activity-copy">{{ detail.selected_artifact.content_text or "No message body was extracted." }}</pre>
+    </section>
+  {% endif %}
 {% else %}
   <div class="empty-state empty-tight">
     <h3>Pick an item from the worklist.</h3>

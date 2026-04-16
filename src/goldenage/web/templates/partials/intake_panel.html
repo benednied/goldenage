@@ -132,7 +132,44 @@
               </li>
             {% endfor %}
           </ul>
+        {% else %}
+          <p class="muted">No existing Vorgaenge matched yet. Create a new one from this intake.</p>
         {% endif %}
+
+        <div class="suggestion-card">
+          <p class="suggestion-title">Neuen Vorgang anlegen</p>
+          <p class="muted">Use this when the document starts fresh work instead of belonging to an existing case.</p>
+          <form
+            method="post"
+            action="/artifacts/{{ intake_state.artifact.id }}/create-case"
+            hx-post="/artifacts/{{ intake_state.artifact.id }}/create-case"
+            hx-target="#workspace"
+            hx-swap="innerHTML"
+            class="workflow-form"
+          >
+            <label>
+              Vorgang title
+              <input type="text" name="title" placeholder="Acme contract renewal" required />
+            </label>
+            <label>
+              Company
+              <input type="text" name="company" placeholder="Acme GmbH" />
+            </label>
+            <label>
+              Primary contact
+              <input type="text" name="primary_contact" placeholder="Max Mustermann" />
+            </label>
+            <label>
+              Next step
+              <input type="text" name="next_step" placeholder="Review the new mail and prepare a response" required />
+            </label>
+            <label>
+              Wiedervorlage
+              <input type="datetime-local" name="next_due_at" required />
+            </label>
+            <button type="submit">Create new case</button>
+          </form>
+        </div>
       </div>
     {% endif %}
   </section>
