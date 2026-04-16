@@ -355,6 +355,64 @@ class GoldenAgeService:
         )
         return self.get_case_detail(case_id=case_id, user=user, now=now)
 
+    def create_case_for_artifact(
+        self,
+        *,
+        artifact_id: UUID,
+        title: str,
+        company: str | None,
+        primary_contact: str | None,
+        next_step: str,
+        next_due_at: datetime,
+        user: UserContext,
+        now: datetime,
+    ) -> CaseDetail:
+        """Create a new case from intake, assign the artifact, and schedule the first activity."""
+        artifact = self._artifact_repository.get_artifact(artifact_id, user)
+        if artifact is None:
+            raise NotFoundError("Artifact not found.")
+
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ResolutionError("A case title is required.")
+
+        normalized_step = next_step.strip()
+        if not normalized_step:
+            raise ResolutionError("A next step description is required.")
+
+        case_id = uuid4()
+        case_file = CaseFile(
+            id=case_id,
+            title=normalized_title,
+            company=company.strip() or None if company is not None else None,
+            primary_contact=primary_contact.strip() or None
+            if primary_contact is not None
+            else None,
+            status="open",
+            last_activity_at=now,
+        )
+        self._case_repository.save_case(case_file)
+        self._artifact_repository.save_artifact(replace(artifact, assigned_case_id=case_id))
+        self._activity_repository.save_activity(
+            Activity(
+                id=uuid4(),
+                case_id=case_id,
+                description=normalized_step,
+                kind="intake",
+                due_at=next_due_at,
+                created_at=now,
+                created_by=user.id,
+            )
+        )
+        self._record_audit(
+            actor_user_id=user.id,
+            event_type="artifact_assigned_to_new_case",
+            subject_id=artifact_id,
+            payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
+            now=now,
+        )
+        return self.get_case_detail(case_id=case_id, user=user, now=now)
+
     def _record_audit(
         self,
         *,

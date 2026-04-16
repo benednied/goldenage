@@ -96,6 +96,38 @@ def test_upload_without_safe_subject_match_enters_search_mode(tmp_path) -> None:
     assert state.search_mode is True
 
 
+def test_create_case_for_artifact_creates_new_case_and_activity(tmp_path) -> None:
+    service, user, state = build_service(
+        tmp_path,
+        extracted=_sample_extracted_data(subject="totally unrelated phrase cluster"),
+    )
+    intake = service.upload_artifact(
+        file_name="unknown.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"fake msg bytes",
+        user=user,
+        now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+    )
+
+    detail = service.create_case_for_artifact(
+        artifact_id=intake.artifact.id,
+        title="Fresh intake matter",
+        company="Acme GmbH",
+        primary_contact="Max Mustermann",
+        next_step="Review the new matter and respond",
+        next_due_at=datetime(2026, 4, 13, 9, 0, tzinfo=UTC),
+        user=user,
+        now=datetime(2026, 4, 12, 10, 5, tzinfo=UTC),
+    )
+
+    assert detail.case_file.title == "Fresh intake matter"
+    assert detail.case_file.company == "Acme GmbH"
+    assert detail.case_file.primary_contact == "Max Mustermann"
+    assert len(detail.open_activities) == 1
+    assert detail.recent_artifacts[0].id == intake.artifact.id
+    assert state.artifacts[intake.artifact.id].assigned_case_id == detail.case_file.id
+
+
 def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
     return ExtractedArtifactData(
         source_kind="outlook_msg",
