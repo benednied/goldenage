@@ -41,6 +41,41 @@ GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3
 
 When that mode is active, app startup bootstraps the SQLite schema automatically, serves profile images from the local artifact directory, replaces the fixed `Alex Example` user with a first-user onboarding flow, and renders the worklist header as `welcome to the golden age`.
 
+## Windows Standalone Setup
+
+If you only have `uv` installed on Windows, use the built-in SQLite mode instead of PostgreSQL.
+
+1. Install the project dependencies:
+
+```powershell
+uv sync --extra dev
+```
+
+2. Create a local `.env` file in the repository root with the standalone settings:
+
+```dotenv
+GOLDENAGE_LOCAL_FIRST_MODE=sqlite3
+GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3
+GOLDENAGE_ARTIFACT_DIR=var/artifacts
+GOLDENAGE_LOCAL_TIMEZONE=Europe/Berlin
+```
+
+3. Create the SQLite database file and apply the schema:
+
+```powershell
+uv run python -m goldenage.bootstrap_sqlite
+```
+
+This creates `var\goldenage.sqlite3` for you. You do not need a separate `sqlite3.exe` installation because the bootstrap command uses Python's built-in `sqlite3` module.
+
+4. Start the app:
+
+```powershell
+uv run uvicorn goldenage.web.app:create_app --factory --reload
+```
+
+Then open `http://127.0.0.1:8000/`. On first launch in standalone mode, GoldenAge redirects to onboarding so the first local user can create an account.
+
 ## PostgreSQL Bootstrap
 
 ```bash
