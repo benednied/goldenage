@@ -159,7 +159,10 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
             row = cursor.fetchone()
             if row is None:
                 return None
-            if row["visible_group_id"] is not None and row["visible_group_id"] not in user.visible_group_ids:
+            if (
+                row["visible_group_id"] is not None
+                and row["visible_group_id"] not in user.visible_group_ids
+            ):
                 return None
             return _row_to_activity(row)
 
@@ -242,6 +245,25 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             cursor.execute(sql, {"case_id": case_id})
             return tuple(_row_to_artifact(row) for row in cursor.fetchall())
 
+    def list_unassigned_artifacts(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        sql = """
+            SELECT id, file_name, media_type, size_bytes, content_text, storage_key,
+                   uploaded_at, uploaded_by, assigned_case_id
+            FROM artifact
+            WHERE assigned_case_id IS NULL
+              AND (uploaded_by IS NULL OR uploaded_by = %(user_id)s)
+            ORDER BY uploaded_at DESC
+            LIMIT %(limit)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"user_id": user.id, "limit": limit})
+            return tuple(_row_to_artifact(row) for row in cursor.fetchall())
+
     def save_suggestion(self, suggestion: AssignmentSuggestion) -> None:
         sql = """
             INSERT INTO assignment_suggestion (
@@ -275,15 +297,23 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
     def save_mail_metadata(self, metadata: ArtifactMailMetadata) -> None:
         sql = """
             INSERT INTO artifact_mail_metadata (
-                artifact_id, source_kind, parse_status, subject, sender_name, sender_email,
-                sender_domain, recipients_json, sent_at, created_at
+                artifact_id, source_system, message_format, parse_status, external_message_id,
+                rfc_message_id, source_account, source_mailbox, subject, sender_name,
+                sender_email, sender_domain, recipients_json, sent_at, created_at
             ) VALUES (
-                %(artifact_id)s, %(source_kind)s, %(parse_status)s, %(subject)s, %(sender_name)s,
-                %(sender_email)s, %(sender_domain)s, %(recipients_json)s, %(sent_at)s, %(created_at)s
+                %(artifact_id)s, %(source_system)s, %(message_format)s, %(parse_status)s,
+                %(external_message_id)s, %(rfc_message_id)s, %(source_account)s, %(source_mailbox)s,
+                %(subject)s, %(sender_name)s, %(sender_email)s, %(sender_domain)s,
+                %(recipients_json)s, %(sent_at)s, %(created_at)s
             )
             ON CONFLICT (artifact_id) DO UPDATE SET
-                source_kind = EXCLUDED.source_kind,
+                source_system = EXCLUDED.source_system,
+                message_format = EXCLUDED.message_format,
                 parse_status = EXCLUDED.parse_status,
+                external_message_id = EXCLUDED.external_message_id,
+                rfc_message_id = EXCLUDED.rfc_message_id,
+                source_account = EXCLUDED.source_account,
+                source_mailbox = EXCLUDED.source_mailbox,
                 subject = EXCLUDED.subject,
                 sender_name = EXCLUDED.sender_name,
                 sender_email = EXCLUDED.sender_email,
@@ -298,12 +328,15 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             cursor.execute(sql, payload)
             connection.commit()
 
-    def get_mail_metadata(self, artifact_id: UUID, user: UserContext) -> ArtifactMailMetadata | None:
+    def get_mail_metadata(
+        self, artifact_id: UUID, user: UserContext
+    ) -> ArtifactMailMetadata | None:
         if self.get_artifact(artifact_id, user) is None:
             return None
         sql = """
-            SELECT artifact_id, source_kind, parse_status, subject, sender_name, sender_email,
-                   sender_domain, recipients_json, sent_at, created_at
+            SELECT artifact_id, source_system, message_format, parse_status, external_message_id,
+                   rfc_message_id, source_account, source_mailbox, subject, sender_name,
+                   sender_email, sender_domain, recipients_json, sent_at, created_at
             FROM artifact_mail_metadata
             WHERE artifact_id = %(artifact_id)s
         """
@@ -383,8 +416,13 @@ def _row_to_suggestion(row: dict[str, object]) -> AssignmentSuggestion:
 def _row_to_mail_metadata(row: dict[str, object]) -> ArtifactMailMetadata:
     return ArtifactMailMetadata(
         artifact_id=row["artifact_id"],
-        source_kind=row["source_kind"],
+        source_system=row["source_system"],
+        message_format=row["message_format"],
         parse_status=row["parse_status"],
+        external_message_id=row["external_message_id"],
+        rfc_message_id=row["rfc_message_id"],
+        source_account=row["source_account"],
+        source_mailbox=row["source_mailbox"],
         subject=row["subject"],
         sender_name=row["sender_name"],
         sender_email=row["sender_email"],

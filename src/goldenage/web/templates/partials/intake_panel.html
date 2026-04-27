@@ -6,7 +6,9 @@
 </div>
 
 {% if intake_state.message %}
-  <div class="message">{{ intake_state.message }}</div>
+  <div class="message{% if intake_state.message_kind == 'error' %} message-error{% endif %}">
+    {{ intake_state.message }}
+  </div>
 {% endif %}
 
 <form
@@ -28,12 +30,137 @@
       <span>Select Outlook mail</span>
       <input type="file" name="file" accept=".msg" required />
     </label>
-    <small class="muted">Only Outlook <code>.msg</code> exports are supported in this MVP.</small>
+    <small class="muted">Manual uploads still only accept Outlook <code>.msg</code> exports in this slice.</small>
   </div>
 </form>
 
-{% if intake_state.artifact %}
+{% if intake_queue %}
   <section class="detail-section intake-state">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Unassigned Intake</p>
+        <h3>Recent imports</h3>
+      </div>
+    </div>
+    <ul class="search-results">
+      {% for item in intake_queue %}
+        <li>
+          <form
+            method="get"
+            action="/artifacts/{{ item.id }}/intake"
+            hx-get="/artifacts/{{ item.id }}/intake"
+            hx-target="#intake-panel"
+            hx-swap="innerHTML show:top"
+            class="result-card"
+          >
+            <div class="result-copy">
+              <h4>{{ item.file_name }}</h4>
+              <small>{{ item.media_type }} · {{ format_datetime(item.uploaded_at, local_timezone) }}</small>
+            </div>
+            <button type="submit">Open intake</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
+{% if mail_import_state.enabled %}
+  <section class="detail-section intake-state">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Mail Import</p>
+        <h3>Selector Queue</h3>
+      </div>
+    </div>
+
+    {% if mail_import_state.message %}
+      <div class="message{% if mail_import_state.message_kind == 'error' %} message-error{% endif %}">
+        {{ mail_import_state.message }}
+      </div>
+    {% endif %}
+
+    <form
+      method="post"
+      action="/mail/desktop-mail/search"
+      hx-post="/mail/desktop-mail/search"
+      hx-target="#intake-panel"
+      hx-swap="innerHTML"
+      class="workflow-form"
+    >
+      <label>
+        Mail address
+        <input type="text" name="account_name" value="{{ mail_import_state.selector.account_name or '' }}" placeholder="name@example.com" />
+      </label>
+      <label>
+        Folder
+        <input type="text" name="mailbox_name" value="{{ mail_import_state.selector.mailbox_name or '' }}" placeholder="Leave blank for all folders" />
+      </label>
+      <label>
+        Sender contains
+        <input type="text" name="sender_filter" value="{{ mail_import_state.selector.sender_filter }}" placeholder="newsletter@example.com" />
+      </label>
+      <label>
+        Subject contains
+        <input type="text" name="subject_filter" value="{{ mail_import_state.selector.subject_filter }}" placeholder="invoice" />
+      </label>
+      <label>
+        Sent after
+        <input
+          type="datetime-local"
+          name="sent_after"
+          value="{{ format_form_datetime(mail_import_state.selector.sent_after, local_timezone) }}"
+        />
+      </label>
+      <label>
+        Result limit
+        <input type="number" name="result_limit" min="1" max="50" value="{{ mail_import_state.selector.result_limit }}" />
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="unread_only" {% if mail_import_state.selector.unread_only %}checked{% endif %} />
+        Only unread messages
+      </label>
+      <div class="button-row">
+        <button type="submit">Search mail</button>
+      </div>
+    </form>
+
+    {% if mail_import_state.candidates %}
+      <ul class="search-results">
+        {% for candidate in mail_import_state.candidates %}
+          <li>
+            <form
+              method="post"
+              action="/mail/desktop-mail/import"
+              hx-post="/mail/desktop-mail/import"
+              hx-target="#intake-panel"
+              hx-swap="innerHTML show:top"
+              class="result-card"
+            >
+              <input type="hidden" name="candidate_id" value="{{ candidate.candidate_id }}" />
+              <div class="result-copy">
+                <h4>{{ candidate.subject or "(no subject)" }}</h4>
+                <p>{{ candidate.sender_name or candidate.sender_email or "Unknown sender" }}</p>
+                <small>
+                  {{ candidate.account_name or "Any account" }} ·
+                  {{ candidate.mailbox_name or "Mailbox" }} ·
+                  {{ format_datetime(candidate.sent_at, local_timezone) }}
+                </small>
+                {% if candidate.preview_text %}
+                  <p class="muted">{{ candidate.preview_text }}</p>
+                {% endif %}
+              </div>
+              <button type="submit">Import into intake</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% if intake_state.artifact %}
+  <section class="detail-section intake-state intake-active">
     <div class="artifact-header">
       <div>
         <h3>{{ intake_state.artifact.file_name }}</h3>

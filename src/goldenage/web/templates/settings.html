@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">User Settings</p>
+      <h1>Settings</h1>
+      <p class="subhead">Manage local account security and mail import defaults.</p>
+    </div>
+    <div class="user-chip">
+      {% if profile_image_url %}
+        <img class="user-avatar" src="{{ profile_image_url }}" alt="{{ user.display_name }}" />
+      {% else %}
+        <span class="avatar-placeholder">{{ user.display_name[:1]|upper }}</span>
+      {% endif %}
+      <div class="user-copy">
+        <span>{{ user.display_name }}</span>
+        <small>{{ user.email }}</small>
+        <a class="button-link" href="/worklist">Back to worklist</a>
+        <form method="post" action="/logout">
+          <button class="button-link" type="submit">Sign out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+
+  <main class="settings-layout">
+    <section class="panel settings-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Mail Import</p>
+          <h2>Import defaults</h2>
+        </div>
+      </div>
+
+      {% if mail_message %}
+        <div class="message{% if mail_message_kind == 'error' %} message-error{% endif %}">
+          {{ mail_message }}
+        </div>
+      {% endif %}
+
+      <form method="post" action="/settings/mail" class="workflow-form">
+        <label>
+          Mail address
+          <input type="text" name="account_name" value="{{ mail_selector.account_name or '' }}" placeholder="name@example.com" />
+        </label>
+        <label>
+          Folder
+          <input type="text" name="mailbox_name" value="{{ mail_selector.mailbox_name or '' }}" placeholder="Leave blank for all folders" />
+        </label>
+        <label>
+          Sender contains
+          <input type="text" name="sender_filter" value="{{ mail_selector.sender_filter }}" placeholder="newsletter@example.com" />
+        </label>
+        <label>
+          Subject contains
+          <input type="text" name="subject_filter" value="{{ mail_selector.subject_filter }}" placeholder="Nürnberg" />
+        </label>
+        <label>
+          Sent after
+          <input
+            type="datetime-local"
+            name="sent_after"
+            value="{{ format_form_datetime(mail_selector.sent_after, local_timezone) }}"
+          />
+        </label>
+        <label>
+          Result limit
+          <input type="number" name="result_limit" min="1" max="50" value="{{ mail_selector.result_limit }}" />
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" name="unread_only" {% if mail_selector.unread_only %}checked{% endif %} />
+          Only unread messages
+        </label>
+        <div class="button-row">
+          <button type="submit">Save mail defaults</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel settings-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">LocalDB</p>
+          <h2>Password</h2>
+        </div>
+      </div>
+
+      {% if password_message %}
+        <div class="message{% if password_message_kind == 'error' %} message-error{% endif %}">
+          {{ password_message }}
+        </div>
+      {% endif %}
+
+      {% if local_password_enabled %}
+        <form method="post" action="/settings/password" class="workflow-form">
+          <label>
+            Current password
+            <input type="password" name="current_password" autocomplete="current-password" required />
+          </label>
+          <label>
+            New password
+            <input type="password" name="new_password" autocomplete="new-password" minlength="8" required />
+          </label>
+          <label>
+            Confirm new password
+            <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required />
+          </label>
+          <div class="button-row">
+            <button type="submit">Change password</button>
+          </div>
+        </form>
+      {% else %}
+        <div class="empty-state">
+          <p>Password changes are available only for LocalDB accounts.</p>
+        </div>
+      {% endif %}
+    </section>
+  </main>
+{% endblock %}

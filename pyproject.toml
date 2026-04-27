@@ -14,6 +14,7 @@ dependencies = [
   "psycopg[binary]>=3.2.9,<4.0.0",
   "python-oxmsg>=0.0.2,<1.0.0",
   "python-multipart>=0.0.20,<1.0.0",
+  "pywin32>=306; platform_system == 'Windows'",
   "uvicorn>=0.34.0,<1.0.0",
 ]
 
@@ -21,11 +22,38 @@ dependencies = [
 dev = [
   "httpx>=0.28.1,<1.0.0",
   "pytest>=8.3.5,<9.0.0",
+  "ruff>=0.15.11",
+  "ty>=0.0.32",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+include = ["src", "tests"]
+exclude = [
+  "src/goldenage/adapters/demo.py",
+  "src/goldenage/adapters/postgres.py",
+  "src/goldenage/adapters/sqlite.py",
+  "src/goldenage/bootstrap_postgres.py",
+  "src/goldenage/web/app.py",
+  "tests/test_web.py",
+]
+
+[tool.ty.terminal]
+output-format = "concise"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

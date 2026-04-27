@@ -15,6 +15,10 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     ExtractedArtifactData,
+    ImportedMailPayload,
+    MailCandidate,
+    MailSelector,
+    MailSourceSystem,
     SearchResult,
     UserContext,
 )
@@ -61,6 +65,14 @@ class ArtifactRepository(Protocol):
     def list_case_artifacts(self, case_id: UUID, user: UserContext) -> Sequence[Artifact]:
         """Return artifacts linked to a case."""
 
+    def list_unassigned_artifacts(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        """Return recent artifacts that are still waiting for case assignment."""
+
     def save_suggestion(self, suggestion: AssignmentSuggestion) -> None:
         """Persist the current suggestion for an artifact."""
 
@@ -101,6 +113,103 @@ class ArtifactContentExtractor(Protocol):
 
     def extract(self, file_name: str, media_type: str, content: bytes) -> ExtractedArtifactData:
         """Extract analyzable content and envelope metadata from an artifact."""
+
+
+class MailImportClient(Protocol):
+    """Read-only client for mailbox-backed candidate discovery and fetch."""
+
+    def search_candidates(self, selector: MailSelector) -> Sequence[MailCandidate]:
+        """Return review candidates matching the selector."""
+
+    def fetch_message(self, candidate_id: str) -> ImportedMailPayload:
+        """Return one raw message payload for ingestion."""
+
+
+class MailImportRepository(Protocol):
+    """Persistence for selector, review queue, and dedupe state."""
+
+    def upsert_source(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        now: datetime,
+    ) -> None:
+        """Persist that the user has configured or used a mail source."""
+
+    def save_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        selector: MailSelector,
+        now: datetime,
+    ) -> None:
+        """Persist the last selector used for a mail source."""
+
+    def get_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> MailSelector | None:
+        """Return the last saved selector, if any."""
+
+    def replace_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidates: Sequence[MailCandidate],
+        now: datetime,
+    ) -> None:
+        """Replace the current review queue for a mail source."""
+
+    def list_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> Sequence[MailCandidate]:
+        """Return the stored review queue for a mail source."""
+
+    def get_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> MailCandidate | None:
+        """Return one stored review candidate."""
+
+    def discard_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> None:
+        """Remove one review candidate from the queue."""
+
+    def list_imported_message_ids(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> frozenset[str]:
+        """Return previously imported external message ids for dedupe."""
+
+    def save_imported_message(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        external_message_id: str,
+        rfc_message_id: str | None,
+        artifact_id: UUID,
+        now: datetime,
+    ) -> None:
+        """Persist the mapping from a source message to the created artifact."""
 
 
 class GiselaClient(Protocol):

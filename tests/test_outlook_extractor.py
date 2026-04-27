@@ -1,5 +1,5 @@
-from datetime import UTC, datetime
 import sys
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from goldenage.adapters.demo import OutlookMsgExtractor
@@ -32,6 +32,7 @@ def test_outlook_msg_extractor_maps_subject_sender_and_recipients(monkeypatch) -
         content=b"msg-bytes",
     )
 
+    assert extracted.message_format == "outlook_msg"
     assert extracted.subject == "RE: Acme contract renewal"
     assert extracted.sender is not None
     assert extracted.sender.name == "Max Mustermann"

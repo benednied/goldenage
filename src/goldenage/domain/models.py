@@ -10,7 +10,8 @@ from uuid import UUID
 CaseStatus = Literal["open", "closed"]
 ActivityKind = Literal["intake", "follow_up", "question", "escalation"]
 DueLabel = Literal["overdue", "today", "upcoming"]
-ArtifactSourceKind = Literal["outlook_msg"]
+MailSourceSystem = Literal["outlook_upload", "apple_mail_client", "desktop_mail_client"]
+MailMessageFormat = Literal["outlook_msg", "rfc822_email"]
 ParseStatus = Literal["parsed"]
 
 
@@ -99,11 +100,16 @@ class MailParticipant:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactMailMetadata:
-    """Parsed Outlook-specific envelope data stored alongside an artifact."""
+    """Parsed email envelope data stored alongside an artifact."""
 
     artifact_id: UUID
-    source_kind: ArtifactSourceKind
+    source_system: MailSourceSystem
+    message_format: MailMessageFormat
     parse_status: ParseStatus
+    external_message_id: str | None
+    rfc_message_id: str | None
+    source_account: str | None
+    source_mailbox: str | None
     subject: str | None
     sender_name: str | None
     sender_email: str | None
@@ -117,13 +123,59 @@ class ArtifactMailMetadata:
 class ExtractedArtifactData:
     """Normalized output from an artifact extractor."""
 
-    source_kind: ArtifactSourceKind
+    message_format: MailMessageFormat
     parse_status: ParseStatus
+    rfc_message_id: str | None
     content_text: str
     subject: str | None
     sender: MailParticipant | None
     recipients: tuple[MailParticipant, ...]
     sent_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class MailSelector:
+    """Criteria used to ask a mail source for review candidates."""
+
+    account_name: str | None = None
+    mailbox_name: str | None = None
+    unread_only: bool = True
+    sender_filter: str = ""
+    subject_filter: str = ""
+    sent_after: datetime | None = None
+    result_limit: int = 25
+
+
+@dataclass(frozen=True, slots=True)
+class MailCandidate:
+    """One reviewable message exposed by a mail import source."""
+
+    candidate_id: str
+    source_system: MailSourceSystem
+    account_name: str | None
+    mailbox_name: str | None
+    subject: str | None
+    sender_name: str | None
+    sender_email: str | None
+    sent_at: datetime | None
+    preview_text: str
+    unread: bool
+    rfc_message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedMailPayload:
+    """Raw message payload returned by a mail source for ingestion."""
+
+    source_system: MailSourceSystem
+    external_message_id: str
+    rfc_message_id: str | None
+    account_name: str | None
+    mailbox_name: str | None
+    file_name: str
+    media_type: str
+    content: bytes
+    unread: bool
 
 
 @dataclass(frozen=True, slots=True)

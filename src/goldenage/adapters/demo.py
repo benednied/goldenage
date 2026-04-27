@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -34,7 +35,7 @@ from goldenage.domain.models import (
     UserContext,
 )
 
-WORD_RE = re.compile(r"[a-z0-9]{3,}")
+WORD_RE = re.compile(r"[^\W_]{3,}")
 
 
 @dataclass
@@ -93,9 +94,7 @@ class InMemoryActivityRepository(ActivityRepository):
         if self._case_repository.get_case(case_id, user) is None:
             return ()
         return tuple(
-            activity
-            for activity in self._state.activities.values()
-            if activity.case_id == case_id
+            activity for activity in self._state.activities.values() if activity.case_id == case_id
         )
 
     def get_activity(self, activity_id: UUID, user: UserContext) -> Activity | None:
@@ -139,6 +138,21 @@ class InMemoryArtifactRepository(ArtifactRepository):
             if artifact.assigned_case_id == case_id
         )
 
+    def list_unassigned_artifacts(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        artifacts = [
+            artifact
+            for artifact in self._state.artifacts.values()
+            if artifact.assigned_case_id is None
+            and (artifact.uploaded_by is None or artifact.uploaded_by == user.id)
+        ]
+        artifacts.sort(key=lambda artifact: artifact.uploaded_at, reverse=True)
+        return tuple(artifacts[:limit])
+
     def save_suggestion(self, suggestion: AssignmentSuggestion) -> None:
         self._state.suggestions[suggestion.artifact_id] = suggestion
 
@@ -150,7 +164,9 @@ class InMemoryArtifactRepository(ArtifactRepository):
     def save_mail_metadata(self, metadata: ArtifactMailMetadata) -> None:
         self._state.artifact_mail_metadata[metadata.artifact_id] = metadata
 
-    def get_mail_metadata(self, artifact_id: UUID, user: UserContext) -> ArtifactMailMetadata | None:
+    def get_mail_metadata(
+        self, artifact_id: UUID, user: UserContext
+    ) -> ArtifactMailMetadata | None:
         if self.get_artifact(artifact_id, user) is None:
             return None
         return self._state.artifact_mail_metadata.get(artifact_id)
@@ -202,8 +218,9 @@ class OutlookMsgExtractor(ArtifactContentExtractor):
         )
         body_text = (message.body or message.html_body or "").strip()
         return ExtractedArtifactData(
-            source_kind="outlook_msg",
+            message_format="outlook_msg",
             parse_status="parsed",
+            rfc_message_id=None,
             content_text=body_text,
             subject=_coerce_optional_str(message.subject) or file_name,
             sender=sender,
@@ -356,21 +373,23 @@ def _case_visible_to_user(case_file: CaseFile, user: UserContext) -> bool:
     return case_file.visible_group_id in user.visible_group_ids
 
 
-def _rank_cases(source_text: str, visible_cases: Sequence[CaseFile]) -> list[tuple[float, CaseFile, str]]:
-    tokens = set(WORD_RE.findall(source_text.lower()))
+def _rank_cases(
+    source_text: str, visible_cases: Sequence[CaseFile]
+) -> list[tuple[float, CaseFile, str]]:
+    tokens = set(_normalized_tokens(source_text))
     ranked: list[tuple[float, CaseFile, str]] = []
     for case_file in visible_cases:
         fields = {
-            "title": case_file.title.lower(),
-            "company": (case_file.company or "").lower(),
-            "contact": (case_file.primary_contact or "").lower(),
+            "title": case_file.title,
+            "company": case_file.company or "",
+            "contact": case_file.primary_contact or "",
         }
         score = 0.0
         reasons: list[str] = []
         for label, value in fields.items():
             if not value:
                 continue
-            field_tokens = set(WORD_RE.findall(value))
+            field_tokens = set(_normalized_tokens(value))
             overlap = tokens & field_tokens
             if overlap:
                 increment = float(len(overlap))
@@ -417,8 +436,7 @@ def _subject_suggestion_for_cases(
         artifact_id=mail_metadata.artifact_id,
         suggested_case_id=best_case.id,
         summary_reason=(
-            f'subject matched case title "{best_case.title}" '
-            f"with score {best_score:.0f}"
+            f'subject matched case title "{best_case.title}" with score {best_score:.0f}'
         ),
         confidence=round(best_score / 100.0, 3),
         created_at=now,
@@ -456,7 +474,28 @@ def _normalize_subject(subject: str) -> str:
 
 
 def _normalized_tokens(text: str) -> tuple[str, ...]:
-    return tuple(sorted(set(WORD_RE.findall(text.lower()))))
+    normalized = unicodedata.normalize("NFC", text).casefold()
+    forms = {
+        normalized,
+        _strip_diacritics(normalized),
+        _german_transliteration(normalized),
+    }
+    tokens: set[str] = set()
+    for form in forms:
+        tokens.update(WORD_RE.findall(form))
+    return tuple(sorted(tokens))
+
+
+def _strip_diacritics(value: str) -> str:
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(character)
+    )
+
+
+def _german_transliteration(value: str) -> str:
+    return value.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
 
 
 def _participant_from_address(raw_value: str | None) -> MailParticipant | None:

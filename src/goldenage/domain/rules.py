@@ -67,6 +67,7 @@ def build_resolution_plan(
 
     follow_up_activity: Activity | None = None
     if has_next_step:
+        assert next_due_at is not None
         follow_up_activity = Activity(
             id=uuid4(),
             case_id=activity.case_id,

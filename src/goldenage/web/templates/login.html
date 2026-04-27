@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <main class="login-shell">
+    <section
+      class="login-video-pane"
+      role="button"
+      tabindex="0"
+      aria-label="Corporate video. Click to mute or unmute."
+    >
+      <video
+        id="login-video"
+        class="login-video"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="auto"
+        aria-hidden="true"
+      >
+        <source class="login-video-source" src="{{ request.url_for('static', path='corporate-login.webm') }}" type="video/webm" />
+        <source class="login-video-source" src="{{ request.url_for('static', path='corporate-login.mp4') }}" type="video/mp4" />
+      </video>
+      <div class="login-video-fallback">
+        <p class="/">Welcome to YOUR GoldenAge</p>
+        <h2>
+          <span>Work gets done when</span>
+          <span>operating context is clear.</span>
+        </h2>
+        <p class="login-video-error" aria-live="polite">
+          Corporate video unavailable: add <code>corporate-login.webm</code> or
+          <code>corporate-login.mp4</code> to <code>src/goldenage/web/static/</code>.
+        </p>
+      </div>
+      <span class="login-sound-hint">Click video to toggle sound</span>
+    </section>
+
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="login-card">
+        <h1 id="login-title">Sign in to GoldenAge</h1>
+        <p class="subhead">Use the configured identity backend for this workspace.</p>
+
+        {% if message %}
+          <div class="message message-error">{{ message }}</div>
+        {% endif %}
+
+        <form
+          id="login-credential-form"
+          class="workflow-form login-form"
+          method="post"
+          action="/login/local"
+          data-local-action="/login/local"
+          data-ldap-action="/login/ldap"
+        >
+          <h2>Workspace credentials</h2>
+          <div class="login-provider-toggle" role="radiogroup" aria-label="Credential backend">
+            <label>
+              <input type="radio" name="credential_provider" value="local" checked />
+              <span>LocalDB</span>
+            </label>
+            <label>
+              <input type="radio" name="credential_provider" value="ldap" />
+              <span>LDAP</span>
+            </label>
+            <label>
+              <input type="radio" name="credential_provider" value="entraid" disabled />
+              <span>Entra ID</span>
+            </label>
+          </div>
+          <label>
+            Email or username
+            <input type="text" name="email" placeholder="name@example.com or domain\\username" autocomplete="username" required />
+          </label>
+          <label>
+            Password
+            <input type="password" name="password" placeholder="Password" autocomplete="current-password" required />
+          </label>
+          <input type="hidden" name="username" value="" />
+          <button type="submit">Sign in</button>
+        </form>
+      </div>
+    </section>
+  </main>
+  <script src="{{ request.url_for('static', path='login.js') }}" defer></script>
+{% endblock %}

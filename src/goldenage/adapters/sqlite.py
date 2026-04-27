@@ -24,7 +24,10 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     LocalUserAccount,
+    MailCandidate,
     MailParticipant,
+    MailSelector,
+    MailSourceSystem,
     UserContext,
 )
 
@@ -249,6 +252,25 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             rows = connection.execute(sql, (str(case_id),)).fetchall()
         return tuple(_row_to_artifact(row) for row in rows)
 
+    def list_unassigned_artifacts(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        sql = """
+            SELECT id, file_name, media_type, size_bytes, content_text, storage_key,
+                   uploaded_at, uploaded_by, assigned_case_id
+            FROM artifact
+            WHERE assigned_case_id IS NULL
+              AND (uploaded_by IS NULL OR uploaded_by = ?)
+            ORDER BY uploaded_at DESC
+            LIMIT ?
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(user.id), limit)).fetchall()
+        return tuple(_row_to_artifact(row) for row in rows)
+
     def save_suggestion(self, suggestion: AssignmentSuggestion) -> None:
         sql = """
             INSERT INTO assignment_suggestion (
@@ -292,15 +314,23 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
     def save_mail_metadata(self, metadata: ArtifactMailMetadata) -> None:
         sql = """
             INSERT INTO artifact_mail_metadata (
-                artifact_id, source_kind, parse_status, subject, sender_name, sender_email,
-                sender_domain, recipients_json, sent_at, created_at
+                artifact_id, source_kind, source_system, message_format, parse_status,
+                external_message_id, rfc_message_id, source_account, source_mailbox, subject,
+                sender_name, sender_email, sender_domain, recipients_json, sent_at, created_at
             ) VALUES (
-                :artifact_id, :source_kind, :parse_status, :subject, :sender_name, :sender_email,
-                :sender_domain, :recipients_json, :sent_at, :created_at
+                :artifact_id, :source_kind, :source_system, :message_format, :parse_status,
+                :external_message_id, :rfc_message_id, :source_account, :source_mailbox, :subject,
+                :sender_name, :sender_email, :sender_domain, :recipients_json, :sent_at, :created_at
             )
             ON CONFLICT(artifact_id) DO UPDATE SET
                 source_kind = excluded.source_kind,
+                source_system = excluded.source_system,
+                message_format = excluded.message_format,
                 parse_status = excluded.parse_status,
+                external_message_id = excluded.external_message_id,
+                rfc_message_id = excluded.rfc_message_id,
+                source_account = excluded.source_account,
+                source_mailbox = excluded.source_mailbox,
                 subject = excluded.subject,
                 sender_name = excluded.sender_name,
                 sender_email = excluded.sender_email,
@@ -311,15 +341,19 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         """
         payload = {
             "artifact_id": str(metadata.artifact_id),
-            "source_kind": metadata.source_kind,
+            "source_kind": metadata.message_format,
+            "source_system": metadata.source_system,
+            "message_format": metadata.message_format,
             "parse_status": metadata.parse_status,
+            "external_message_id": metadata.external_message_id,
+            "rfc_message_id": metadata.rfc_message_id,
+            "source_account": metadata.source_account,
+            "source_mailbox": metadata.source_mailbox,
             "subject": metadata.subject,
             "sender_name": metadata.sender_name,
             "sender_email": metadata.sender_email,
             "sender_domain": metadata.sender_domain,
-            "recipients_json": json.dumps(
-                [asdict(recipient) for recipient in metadata.recipients]
-            ),
+            "recipients_json": json.dumps([asdict(recipient) for recipient in metadata.recipients]),
             "sent_at": _serialize_datetime(metadata.sent_at),
             "created_at": _serialize_datetime(metadata.created_at),
         }
@@ -327,12 +361,15 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             connection.execute(sql, payload)
             connection.commit()
 
-    def get_mail_metadata(self, artifact_id: UUID, user: UserContext) -> ArtifactMailMetadata | None:
+    def get_mail_metadata(
+        self, artifact_id: UUID, user: UserContext
+    ) -> ArtifactMailMetadata | None:
         if self.get_artifact(artifact_id, user) is None:
             return None
         sql = """
-            SELECT artifact_id, source_kind, parse_status, subject, sender_name, sender_email,
-                   sender_domain, recipients_json, sent_at, created_at
+            SELECT artifact_id, source_system, message_format, parse_status, external_message_id,
+                   rfc_message_id, source_account, source_mailbox, subject, sender_name,
+                   sender_email, sender_domain, recipients_json, sent_at, created_at
             FROM artifact_mail_metadata
             WHERE artifact_id = ?
         """
@@ -379,6 +416,18 @@ class SQLiteLocalUserRepository(_SQLiteRepositoryBase):
             row = connection.execute(sql).fetchone()
         return _row_to_local_user(row) if row else None
 
+    def get_user_by_email(self, email: str) -> LocalUserAccount | None:
+        """Return the local account matching the normalized email address."""
+        sql = """
+            SELECT id, email, display_name, password_hash, profile_image_path
+            FROM app_user
+            WHERE lower(email) = lower(?)
+            LIMIT 1
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (email.strip(),)).fetchone()
+        return _row_to_local_user(row) if row else None
+
     def create_user(
         self,
         *,
@@ -414,6 +463,247 @@ class SQLiteLocalUserRepository(_SQLiteRepositoryBase):
             password_hash=password_hash,
             profile_image_path=profile_image_path,
         )
+
+    def update_password_hash(self, *, account_id: UUID, password_hash: str) -> None:
+        """Replace the stored password hash for a local account."""
+        sql = """
+            UPDATE app_user
+            SET password_hash = ?
+            WHERE id = ?
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(sql, (password_hash, str(account_id)))
+            if cursor.rowcount == 0:
+                raise SQLiteRepositoryError("Local user account not found.")
+            connection.commit()
+
+
+class SQLiteMailImportRepository(_SQLiteRepositoryBase):
+    """SQLite persistence for mail selectors, review queue, and dedupe state."""
+
+    def upsert_source(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        now: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO mail_import_source (user_id, source_system, enabled_at, updated_at)
+            VALUES (:user_id, :source_system, :enabled_at, :updated_at)
+            ON CONFLICT(user_id, source_system) DO UPDATE SET
+                updated_at = excluded.updated_at
+        """
+        payload = {
+            "user_id": str(user.id),
+            "source_system": source_system,
+            "enabled_at": _serialize_datetime(now),
+            "updated_at": _serialize_datetime(now),
+        }
+        with self._connect() as connection:
+            connection.execute(sql, payload)
+            connection.commit()
+
+    def save_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        selector: MailSelector,
+        now: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO mail_import_selector (
+                user_id, source_system, account_name, mailbox_name, unread_only, sender_filter,
+                subject_filter, sent_after, result_limit, updated_at
+            ) VALUES (
+                :user_id, :source_system, :account_name, :mailbox_name, :unread_only, :sender_filter,
+                :subject_filter, :sent_after, :result_limit, :updated_at
+            )
+            ON CONFLICT(user_id, source_system) DO UPDATE SET
+                account_name = excluded.account_name,
+                mailbox_name = excluded.mailbox_name,
+                unread_only = excluded.unread_only,
+                sender_filter = excluded.sender_filter,
+                subject_filter = excluded.subject_filter,
+                sent_after = excluded.sent_after,
+                result_limit = excluded.result_limit,
+                updated_at = excluded.updated_at
+        """
+        payload = {
+            "user_id": str(user.id),
+            "source_system": source_system,
+            "account_name": selector.account_name,
+            "mailbox_name": selector.mailbox_name,
+            "unread_only": int(selector.unread_only),
+            "sender_filter": selector.sender_filter,
+            "subject_filter": selector.subject_filter,
+            "sent_after": _serialize_datetime(selector.sent_after),
+            "result_limit": selector.result_limit,
+            "updated_at": _serialize_datetime(now),
+        }
+        with self._connect() as connection:
+            connection.execute(sql, payload)
+            connection.commit()
+
+    def get_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> MailSelector | None:
+        sql = """
+            SELECT account_name, mailbox_name, unread_only, sender_filter, subject_filter,
+                   sent_after, result_limit
+            FROM mail_import_selector
+            WHERE user_id = ? AND source_system = ?
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(user.id), source_system)).fetchone()
+        return _row_to_mail_selector(row) if row else None
+
+    def replace_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidates: Sequence[MailCandidate],
+        now: datetime,
+    ) -> None:
+        delete_sql = (
+            "DELETE FROM mail_import_review_candidate WHERE user_id = ? AND source_system = ?"
+        )
+        insert_sql = """
+            INSERT INTO mail_import_review_candidate (
+                user_id, source_system, candidate_id, account_name, mailbox_name, subject,
+                sender_name, sender_email, sent_at, preview_text, unread, rfc_message_id,
+                created_at
+            ) VALUES (
+                :user_id, :source_system, :candidate_id, :account_name, :mailbox_name, :subject,
+                :sender_name, :sender_email, :sent_at, :preview_text, :unread, :rfc_message_id,
+                :created_at
+            )
+        """
+        with self._connect() as connection:
+            connection.execute(delete_sql, (str(user.id), source_system))
+            for candidate in candidates:
+                connection.execute(
+                    insert_sql,
+                    {
+                        "user_id": str(user.id),
+                        "source_system": source_system,
+                        "candidate_id": candidate.candidate_id,
+                        "account_name": candidate.account_name,
+                        "mailbox_name": candidate.mailbox_name,
+                        "subject": candidate.subject,
+                        "sender_name": candidate.sender_name,
+                        "sender_email": candidate.sender_email,
+                        "sent_at": _serialize_datetime(candidate.sent_at),
+                        "preview_text": candidate.preview_text,
+                        "unread": int(candidate.unread),
+                        "rfc_message_id": candidate.rfc_message_id,
+                        "created_at": _serialize_datetime(now),
+                    },
+                )
+            connection.commit()
+
+    def list_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> Sequence[MailCandidate]:
+        sql = """
+            SELECT candidate_id, source_system, account_name, mailbox_name, subject,
+                   sender_name, sender_email, sent_at, preview_text, unread, rfc_message_id
+            FROM mail_import_review_candidate
+            WHERE user_id = ? AND source_system = ?
+            ORDER BY sent_at DESC, candidate_id ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(user.id), source_system)).fetchall()
+        return tuple(_row_to_mail_candidate(row) for row in rows)
+
+    def get_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> MailCandidate | None:
+        sql = """
+            SELECT candidate_id, source_system, account_name, mailbox_name, subject,
+                   sender_name, sender_email, sent_at, preview_text, unread, rfc_message_id
+            FROM mail_import_review_candidate
+            WHERE user_id = ? AND source_system = ? AND candidate_id = ?
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(user.id), source_system, candidate_id)).fetchone()
+        return _row_to_mail_candidate(row) if row else None
+
+    def discard_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> None:
+        sql = """
+            DELETE FROM mail_import_review_candidate
+            WHERE user_id = ? AND source_system = ? AND candidate_id = ?
+        """
+        with self._connect() as connection:
+            connection.execute(sql, (str(user.id), source_system, candidate_id))
+            connection.commit()
+
+    def list_imported_message_ids(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> frozenset[str]:
+        sql = """
+            SELECT external_message_id, rfc_message_id
+            FROM imported_mail_message
+            WHERE user_id = ? AND source_system = ?
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(user.id), source_system)).fetchall()
+        ids = set()
+        for row in rows:
+            ids.add(str(row["external_message_id"]))
+            if row["rfc_message_id"]:
+                ids.add(str(row["rfc_message_id"]))
+        return frozenset(ids)
+
+    def save_imported_message(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        external_message_id: str,
+        rfc_message_id: str | None,
+        artifact_id: UUID,
+        now: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO imported_mail_message (
+                user_id, source_system, external_message_id, rfc_message_id, artifact_id, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(user.id),
+                    source_system,
+                    external_message_id,
+                    rfc_message_id,
+                    str(artifact_id),
+                    _serialize_datetime(now),
+                ),
+            )
+            connection.commit()
 
 
 def _group_visibility_clause(
@@ -492,8 +782,13 @@ def _row_to_mail_metadata(row: sqlite3.Row) -> ArtifactMailMetadata:
     recipients = json.loads(row["recipients_json"])
     return ArtifactMailMetadata(
         artifact_id=UUID(row["artifact_id"]),
-        source_kind=row["source_kind"],
+        source_system=row["source_system"],
+        message_format=row["message_format"],
         parse_status=row["parse_status"],
+        external_message_id=row["external_message_id"],
+        rfc_message_id=row["rfc_message_id"],
+        source_account=row["source_account"],
+        source_mailbox=row["source_mailbox"],
         subject=row["subject"],
         sender_name=row["sender_name"],
         sender_email=row["sender_email"],
@@ -517,4 +812,32 @@ def _row_to_local_user(row: sqlite3.Row) -> LocalUserAccount:
         display_name=row["display_name"],
         password_hash=row["password_hash"],
         profile_image_path=row["profile_image_path"],
+    )
+
+
+def _row_to_mail_selector(row: sqlite3.Row) -> MailSelector:
+    return MailSelector(
+        account_name=row["account_name"],
+        mailbox_name=row["mailbox_name"],
+        unread_only=bool(row["unread_only"]),
+        sender_filter=row["sender_filter"] or "",
+        subject_filter=row["subject_filter"] or "",
+        sent_after=_deserialize_datetime(row["sent_after"]),
+        result_limit=int(row["result_limit"]),
+    )
+
+
+def _row_to_mail_candidate(row: sqlite3.Row) -> MailCandidate:
+    return MailCandidate(
+        candidate_id=row["candidate_id"],
+        source_system=row["source_system"],
+        account_name=row["account_name"],
+        mailbox_name=row["mailbox_name"],
+        subject=row["subject"],
+        sender_name=row["sender_name"],
+        sender_email=row["sender_email"],
+        sent_at=_deserialize_datetime(row["sent_at"]),
+        preview_text=row["preview_text"],
+        unread=bool(row["unread"]),
+        rfc_message_id=row["rfc_message_id"],
     )

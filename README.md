@@ -15,8 +15,14 @@ GoldenAge is a focused web application for operational case work. The current im
 
 - Python: `3.14` pinned via `uv` and [`.python-version`](.python-version)
 - Package/runtime tooling: `uv`
+- Linting and formatting: `ruff`
+- Type checking: `ty`
 - Database: PostgreSQL with hand-written SQL, no ORM
 - Web/UI: FastAPI + server-rendered HTML partials for HTMX-style interactions
+
+## Development Tooling
+
+This repository prefers Astral's `ruff` for linting and formatting and `ty` for type checking. They are included in the `dev` extra, so `uv sync --extra dev` installs them into `.venv/`.
 
 ## Local Setup
 
@@ -41,6 +47,15 @@ GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3
 
 When that mode is active, app startup bootstraps the SQLite schema automatically, serves profile images from the local artifact directory, replaces the fixed `Alex Example` user with a first-user onboarding flow, and renders the worklist header as `welcome to the golden age`.
 
+Mailbox-backed intake uses the same persisted selector defaults on macOS and Windows:
+
+```bash
+GOLDENAGE_MAIL_CLIENT_MODE=auto
+GOLDENAGE_OUTLOOK_SCAN_PER_FOLDER_LIMIT=250
+```
+
+In `auto` mode, macOS uses Apple Mail automation when available and Windows uses classic Outlook desktop through COM. Set the mail address in Settings; leaving the folder field blank scans all mail folders under that configured address. The legacy `GOLDENAGE_APPLE_MAIL_*` env vars still work as fallbacks.
+
 ## PostgreSQL Bootstrap
 
 ```bash
@@ -56,8 +71,18 @@ That command:
 ## Verification
 
 ```bash
+uv run --extra dev ruff check .
+uv run --extra dev ruff format --check .
+uv run --extra dev ty check
 ./.venv/bin/python -m compileall src tests
 ./.venv/bin/pytest -q
+```
+
+To auto-fix style issues locally, use:
+
+```bash
+uv run --extra dev ruff check . --fix
+uv run --extra dev ruff format .
 ```
 
 ## Repository Guide

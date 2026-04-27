@@ -16,6 +16,23 @@
       <div class="user-copy">
         <span>{{ user.display_name }}</span>
         <small>{{ user.email }}</small>
+        <div class="user-actions">
+          <a class="icon-link settings-link" href="/settings" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l2-1.5-2-3.5-2.4 1a8 8 0 0 0-2.6-1.5L14 2.5h-4L9.6 5a8 8 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a7.7 7.7 0 0 0 0 3l-2 1.5 2 3.5 2.4-1a8 8 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a8 8 0 0 0 2.6-1.5l2.4 1 2-3.5-2-1.5Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </a>
+          <form method="post" action="/logout">
+            <button class="icon-link" type="submit" aria-label="Sign out" title="Sign out">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M10 5H6.5A2.5 2.5 0 0 0 4 7.5v9A2.5 2.5 0 0 0 6.5 19H10" />
+                <path d="M14 8l4 4-4 4" />
+                <path d="M18 12H9" />
+              </svg>
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   </header>
