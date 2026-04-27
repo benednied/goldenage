@@ -20,6 +20,10 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    MailConversation,
+    MailMessage,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     MailParticipant,
     UserContext,
 )
@@ -345,6 +349,264 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             row = cursor.fetchone()
             return _row_to_mail_metadata(row) if row else None
 
+    def save_mail_conversation(self, conversation: MailConversation) -> None:
+        sql = """
+            INSERT INTO mail_conversation (
+                id, source_kind, external_conversation_id, normalized_subject, latest_subject,
+                latest_message_at, participants_json, message_count, latest_artifact_id,
+                assigned_case_id, created_at, updated_at
+            ) VALUES (
+                %(id)s, %(source_kind)s, %(external_conversation_id)s, %(normalized_subject)s,
+                %(latest_subject)s, %(latest_message_at)s, %(participants_json)s, %(message_count)s,
+                %(latest_artifact_id)s, %(assigned_case_id)s, %(created_at)s, %(updated_at)s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                source_kind = EXCLUDED.source_kind,
+                external_conversation_id = EXCLUDED.external_conversation_id,
+                normalized_subject = EXCLUDED.normalized_subject,
+                latest_subject = EXCLUDED.latest_subject,
+                latest_message_at = EXCLUDED.latest_message_at,
+                participants_json = EXCLUDED.participants_json,
+                message_count = EXCLUDED.message_count,
+                latest_artifact_id = EXCLUDED.latest_artifact_id,
+                assigned_case_id = EXCLUDED.assigned_case_id,
+                created_at = EXCLUDED.created_at,
+                updated_at = EXCLUDED.updated_at
+        """
+        payload = asdict(conversation)
+        payload["participants_json"] = Jsonb(payload.pop("participants"))
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, payload)
+            connection.commit()
+
+    def get_mail_conversation(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> MailConversation | None:
+        sql = """
+            SELECT mc.*
+            FROM mail_conversation mc
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE mc.id = %(conversation_id)s
+              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR c.id IS NULL)
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+            )
+            row = cursor.fetchone()
+            return _row_to_mail_conversation(row) if row else None
+
+    def list_recent_mail_conversations(
+        self,
+        user: UserContext,
+        *,
+        limit: int = 10,
+    ) -> Sequence[MailConversation]:
+        sql = """
+            SELECT mc.*
+            FROM mail_conversation mc
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR c.id IS NULL
+            ORDER BY mc.latest_message_at DESC
+            LIMIT %(limit)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"group_ids": list(user.visible_group_ids), "limit": limit})
+            return tuple(_row_to_mail_conversation(row) for row in cursor.fetchall())
+
+    def save_mail_message(self, message: MailMessage) -> None:
+        sql = """
+            INSERT INTO mail_message (
+                artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
+                source_message_id, source_conversation_id, internet_message_id,
+                dedupe_fingerprint, direction, received_at, created_at
+            ) VALUES (
+                %(artifact_id)s, %(conversation_id)s, %(source_kind)s, %(source_account_id)s,
+                %(source_folder_id)s, %(source_message_id)s, %(source_conversation_id)s,
+                %(internet_message_id)s, %(dedupe_fingerprint)s, %(direction)s,
+                %(received_at)s, %(created_at)s
+            )
+            ON CONFLICT (artifact_id) DO UPDATE SET
+                conversation_id = EXCLUDED.conversation_id,
+                source_kind = EXCLUDED.source_kind,
+                source_account_id = EXCLUDED.source_account_id,
+                source_folder_id = EXCLUDED.source_folder_id,
+                source_message_id = EXCLUDED.source_message_id,
+                source_conversation_id = EXCLUDED.source_conversation_id,
+                internet_message_id = EXCLUDED.internet_message_id,
+                dedupe_fingerprint = EXCLUDED.dedupe_fingerprint,
+                direction = EXCLUDED.direction,
+                received_at = EXCLUDED.received_at,
+                created_at = EXCLUDED.created_at
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, asdict(message))
+            connection.commit()
+
+    def get_mail_message(self, artifact_id: UUID, user: UserContext) -> MailMessage | None:
+        if self.get_artifact(artifact_id, user) is None:
+            return None
+        sql = """
+            SELECT artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
+                   source_message_id, source_conversation_id, internet_message_id,
+                   dedupe_fingerprint, direction, received_at, created_at
+            FROM mail_message
+            WHERE artifact_id = %(artifact_id)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"artifact_id": artifact_id})
+            row = cursor.fetchone()
+            return _row_to_mail_message(row) if row else None
+
+    def find_mail_message_by_source(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_message_id: str | None,
+        internet_message_id: str | None,
+        dedupe_fingerprint: str,
+        user: UserContext,
+    ) -> MailMessage | None:
+        sql = """
+            SELECT mm.artifact_id, mm.conversation_id, mm.source_kind, mm.source_account_id,
+                   mm.source_folder_id, mm.source_message_id, mm.source_conversation_id,
+                   mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
+                   mm.created_at
+            FROM mail_message mm
+            JOIN artifact a ON a.id = mm.artifact_id
+            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            WHERE mm.source_kind = %(source_kind)s
+              AND (
+                    (
+                        %(source_account_id)s IS NOT NULL
+                    AND %(source_folder_id)s IS NOT NULL
+                    AND %(source_message_id)s IS NOT NULL
+                    AND mm.source_account_id = %(source_account_id)s
+                    AND mm.source_folder_id = %(source_folder_id)s
+                    AND mm.source_message_id = %(source_message_id)s
+                    )
+                 OR (%(internet_message_id)s IS NOT NULL AND mm.internet_message_id = %(internet_message_id)s)
+                 OR mm.dedupe_fingerprint = %(dedupe_fingerprint)s
+              )
+              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+            LIMIT 1
+        """
+        params = {
+            "source_kind": source_kind,
+            "source_account_id": source_account_id,
+            "source_folder_id": source_folder_id,
+            "source_message_id": source_message_id,
+            "internet_message_id": internet_message_id,
+            "dedupe_fingerprint": dedupe_fingerprint,
+            "group_ids": list(user.visible_group_ids),
+        }
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            return _row_to_mail_message(row) if row else None
+
+    def list_conversation_artifacts(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[Artifact]:
+        sql = """
+            SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
+                   a.uploaded_at, a.uploaded_by, a.assigned_case_id
+            FROM mail_message mm
+            JOIN artifact a ON a.id = mm.artifact_id
+            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            WHERE mm.conversation_id = %(conversation_id)s
+              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+            ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+            )
+            return tuple(_row_to_artifact(row) for row in cursor.fetchall())
+
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        sql = """
+            INSERT INTO mailbox_account_config (
+                id, user_id, source_kind, account_key, outlook_store_name, inbox_folder_key,
+                sent_folder_key, polling_interval_seconds, active, created_at, updated_at
+            ) VALUES (
+                %(id)s, %(user_id)s, %(source_kind)s, %(account_key)s, %(outlook_store_name)s,
+                %(inbox_folder_key)s, %(sent_folder_key)s, %(polling_interval_seconds)s,
+                %(active)s, %(created_at)s, %(updated_at)s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                source_kind = EXCLUDED.source_kind,
+                account_key = EXCLUDED.account_key,
+                outlook_store_name = EXCLUDED.outlook_store_name,
+                inbox_folder_key = EXCLUDED.inbox_folder_key,
+                sent_folder_key = EXCLUDED.sent_folder_key,
+                polling_interval_seconds = EXCLUDED.polling_interval_seconds,
+                active = EXCLUDED.active,
+                created_at = EXCLUDED.created_at,
+                updated_at = EXCLUDED.updated_at
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, asdict(config))
+            connection.commit()
+
+    def get_active_mailbox_account_config(
+        self,
+        user: UserContext,
+    ) -> MailboxAccountConfig | None:
+        sql = """
+            SELECT *
+            FROM mailbox_account_config
+            WHERE active = TRUE
+              AND (user_id IS NULL OR user_id = %(user_id)s)
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"user_id": user.id})
+            row = cursor.fetchone()
+            return _row_to_mailbox_account_config(row) if row else None
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        sql = """
+            INSERT INTO mailbox_sync_checkpoint (
+                account_config_id, folder_key, last_message_key, last_message_at, updated_at
+            ) VALUES (
+                %(account_config_id)s, %(folder_key)s, %(last_message_key)s, %(last_message_at)s, %(updated_at)s
+            )
+            ON CONFLICT (account_config_id, folder_key) DO UPDATE SET
+                last_message_key = EXCLUDED.last_message_key,
+                last_message_at = EXCLUDED.last_message_at,
+                updated_at = EXCLUDED.updated_at
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, asdict(checkpoint))
+            connection.commit()
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> Sequence[MailboxSyncCheckpoint]:
+        sql = """
+            SELECT account_config_id, folder_key, last_message_key, last_message_at, updated_at
+            FROM mailbox_sync_checkpoint
+            WHERE account_config_id = %(account_config_id)s
+            ORDER BY folder_key ASC
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"account_config_id": account_config_id})
+            return tuple(_row_to_mailbox_sync_checkpoint(row) for row in cursor.fetchall())
+
 
 class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
     """Audit repository backed by PostgreSQL."""
@@ -436,4 +698,67 @@ def _row_to_mail_metadata(row: dict[str, object]) -> ArtifactMailMetadata:
         ),
         sent_at=row["sent_at"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_mail_conversation(row: dict[str, object]) -> MailConversation:
+    return MailConversation(
+        id=row["id"],
+        source_kind=row["source_kind"],
+        external_conversation_id=row["external_conversation_id"],
+        normalized_subject=row["normalized_subject"],
+        latest_subject=row["latest_subject"],
+        latest_message_at=row["latest_message_at"],
+        participants=tuple(
+            MailParticipant(name=participant.get("name"), email=participant.get("email"))
+            for participant in row["participants_json"]
+        ),
+        message_count=int(row["message_count"]),
+        latest_artifact_id=row["latest_artifact_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        assigned_case_id=row["assigned_case_id"],
+    )
+
+
+def _row_to_mail_message(row: dict[str, object]) -> MailMessage:
+    return MailMessage(
+        artifact_id=row["artifact_id"],
+        conversation_id=row["conversation_id"],
+        source_kind=row["source_kind"],
+        source_account_id=row["source_account_id"],
+        source_folder_id=row["source_folder_id"],
+        source_message_id=row["source_message_id"],
+        source_conversation_id=row["source_conversation_id"],
+        internet_message_id=row["internet_message_id"],
+        dedupe_fingerprint=row["dedupe_fingerprint"],
+        direction=row["direction"],
+        received_at=row["received_at"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_mailbox_account_config(row: dict[str, object]) -> MailboxAccountConfig:
+    return MailboxAccountConfig(
+        id=row["id"],
+        user_id=row["user_id"],
+        source_kind=row["source_kind"],
+        account_key=row["account_key"],
+        outlook_store_name=row["outlook_store_name"],
+        inbox_folder_key=row["inbox_folder_key"],
+        sent_folder_key=row["sent_folder_key"],
+        polling_interval_seconds=int(row["polling_interval_seconds"]),
+        active=bool(row["active"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_mailbox_sync_checkpoint(row: dict[str, object]) -> MailboxSyncCheckpoint:
+    return MailboxSyncCheckpoint(
+        account_config_id=row["account_config_id"],
+        folder_key=row["folder_key"],
+        last_message_key=row["last_message_key"],
+        last_message_at=row["last_message_at"],
+        updated_at=row["updated_at"],
     )
