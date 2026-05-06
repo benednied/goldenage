@@ -579,9 +579,19 @@ class GoldenAgeService:
             if artifact is not None
             else None
         )
+        artifact_state = (
+            self._intake_state_for_artifact(artifact, suggestion)
+            if artifact is not None
+            else IntakeState()
+        )
         return IntakeState(
-            artifact=artifact,
-            suggestion=suggestion,
+            artifact=artifact_state.artifact,
+            suggestion=artifact_state.suggestion,
+            search_mode=artifact_state.search_mode,
+            search_query=artifact_state.search_query,
+            search_results=artifact_state.search_results,
+            message=artifact_state.message,
+            message_kind=artifact_state.message_kind,
             conversation=conversation,
             conversation_artifacts=artifacts,
             recent_conversations=tuple(

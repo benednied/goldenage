@@ -23,9 +23,16 @@ from goldenage.adapters.demo import (
     InMemoryArtifactRepository,
     InMemoryAuditRepository,
     InMemoryCaseRepository,
+    InMemoryMailImportRepository,
     LocalArtifactStore,
     OutlookMsgExtractor,
     build_demo_state,
+)
+from goldenage.adapters.mail import (
+    MailImportClientError,
+    MultiplexedArtifactExtractor,
+    Rfc822EmailExtractor,
+    build_desktop_mail_import_client,
 )
 from goldenage.adapters.outlook_mailbox import (
     OutlookMailboxMessage,
@@ -288,6 +295,90 @@ def create_app() -> FastAPI:
                 user=user,
                 mail_message=message,
                 mail_message_kind=message_kind,
+            ),
+        )
+
+    @app.post("/mail/desktop-mail/search", response_class=HTMLResponse)
+    async def search_desktop_mail(
+        request: Request,
+        account_name: str = Form(default=""),
+        mailbox_name: str = Form(default=""),
+        sender_filter: str = Form(default=""),
+        subject_filter: str = Form(default=""),
+        sent_after: str = Form(default=""),
+        result_limit: int = Form(default=25),
+        unread_only: str | None = Form(default=None),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            mail_import_state = context.service.search_mail_candidates(
+                selector=MailSelector(
+                    account_name=account_name.strip() or None,
+                    mailbox_name=mailbox_name.strip() or None,
+                    unread_only=unread_only == "on",
+                    sender_filter=sender_filter.strip(),
+                    subject_filter=subject_filter.strip(),
+                    sent_after=_parse_form_datetime(sent_after, context.settings.local_timezone),
+                    result_limit=result_limit,
+                ),
+                user=user,
+                now=_now(context),
+            )
+        except (MailImportClientError, ValueError) as error:
+            mail_import_state = context.service.get_mail_import_state(
+                user=user,
+                message=str(error),
+                message_kind="error",
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/intake_panel.html",
+            context=_page_context(
+                request,
+                context,
+                detail=None,
+                intake_state=IntakeState(),
+                mail_import_state=mail_import_state,
+                user=user,
+            ),
+        )
+
+    @app.post("/mail/desktop-mail/import", response_class=HTMLResponse)
+    async def import_desktop_mail(
+        request: Request,
+        candidate_id: str = Form(...),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            intake_state = context.service.import_mail_candidate(
+                candidate_id=candidate_id,
+                user=user,
+                now=_now(context),
+            )
+            mail_import_state = None
+        except (MailImportClientError, ResolutionError) as error:
+            intake_state = IntakeState()
+            mail_import_state = context.service.get_mail_import_state(
+                user=user,
+                message=str(error),
+                message_kind="error",
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/intake_panel.html",
+            context=_page_context(
+                request,
+                context,
+                detail=None,
+                intake_state=intake_state,
+                mail_import_state=mail_import_state,
+                user=user,
             ),
         )
 
@@ -697,6 +788,7 @@ def _build_context(settings: Settings) -> AppContext:
             display_name="Alex Example",
         )
         local_user_repository = None
+        mail_import_repository = InMemoryMailImportRepository()
     else:
         state, user = build_demo_state()
         case_repository = InMemoryCaseRepository(state)
@@ -705,6 +797,7 @@ def _build_context(settings: Settings) -> AppContext:
         audit_repository = InMemoryAuditRepository(state)
         default_user = user
         local_user_repository = None
+        mail_import_repository = InMemoryMailImportRepository()
 
     service = GoldenAgeService(
         case_repository=case_repository,
@@ -712,9 +805,17 @@ def _build_context(settings: Settings) -> AppContext:
         artifact_repository=artifact_repository,
         audit_repository=audit_repository,
         artifact_store=LocalArtifactStore(settings.artifact_dir),
-        content_extractor=OutlookMsgExtractor(),
+        content_extractor=MultiplexedArtifactExtractor(
+            outlook_extractor=OutlookMsgExtractor(),
+            rfc822_extractor=Rfc822EmailExtractor(),
+        ),
         gisela_client=HeuristicGiselaClient(),
         elizabethan_client=HeuristicElizabethanSearchClient(),
+        mail_import_client=build_desktop_mail_import_client(
+            fixture_path=settings.mail_fixture_path,
+            client_mode=settings.mail_client_mode,
+            outlook_scan_per_folder_limit=settings.outlook_scan_per_folder_limit,
+        ),
         mail_import_repository=mail_import_repository,
     )
     outlook_worker = None
@@ -779,6 +880,7 @@ def _page_context(
     detail: CaseDetail | None,
     intake_state: IntakeState,
     user: UserContext,
+    mail_import_state: object | None = None,
 ) -> dict[str, object]:
     hydrated_intake = _hydrate_intake_state(context, intake_state=intake_state, user=user)
     return {
@@ -796,8 +898,9 @@ def _page_context(
         "detail": detail,
         "detail_error": None,
         "intake_state": hydrated_intake,
-        "mail_import_state": context.service.get_mail_import_state(user=user),
+        "mail_import_state": mail_import_state or context.service.get_mail_import_state(user=user),
         "format_datetime": _format_datetime,
+        "format_form_datetime": _format_form_datetime,
         "due_label": due_label,
         "local_timezone": context.settings.local_timezone,
     }

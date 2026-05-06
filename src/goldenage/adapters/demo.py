@@ -21,6 +21,7 @@ from goldenage.application.ports import (
     CaseRepository,
     ElizabethanSearchClient,
     GiselaClient,
+    MailImportRepository,
 )
 from goldenage.domain.models import (
     Activity,
@@ -32,9 +33,12 @@ from goldenage.domain.models import (
     ExtractedArtifactData,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
+    MailCandidate,
     MailConversation,
     MailMessage,
     MailParticipant,
+    MailSelector,
+    MailSourceSystem,
     SearchResult,
     UserContext,
 )
@@ -301,6 +305,114 @@ class InMemoryAuditRepository(AuditRepository):
 
     def save_event(self, event: AuditEvent) -> None:
         self._state.audit_events.append(event)
+
+
+class InMemoryMailImportRepository(MailImportRepository):
+    """In-memory selector, queue, and dedupe state for demo/runtime fallback."""
+
+    def __init__(self) -> None:
+        self._selectors: dict[tuple[UUID, MailSourceSystem], MailSelector] = {}
+        self._candidates: dict[tuple[UUID, MailSourceSystem], tuple[MailCandidate, ...]] = {}
+        self._imported_ids: dict[tuple[UUID, MailSourceSystem], frozenset[str]] = {}
+
+    def upsert_source(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        now: datetime,
+    ) -> None:
+        del user, source_system, now
+
+    def save_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        selector: MailSelector,
+        now: datetime,
+    ) -> None:
+        del now
+        self._selectors[(user.id, source_system)] = selector
+
+    def get_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> MailSelector | None:
+        return self._selectors.get((user.id, source_system))
+
+    def replace_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidates: Sequence[MailCandidate],
+        now: datetime,
+    ) -> None:
+        del now
+        self._candidates[(user.id, source_system)] = tuple(candidates)
+
+    def list_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> Sequence[MailCandidate]:
+        return self._candidates.get((user.id, source_system), ())
+
+    def get_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> MailCandidate | None:
+        for candidate in self.list_review_candidates(user=user, source_system=source_system):
+            if candidate.candidate_id == candidate_id:
+                return candidate
+        return None
+
+    def discard_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> None:
+        key = (user.id, source_system)
+        self._candidates[key] = tuple(
+            candidate
+            for candidate in self._candidates.get(key, ())
+            if candidate.candidate_id != candidate_id
+        )
+
+    def list_imported_message_ids(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> frozenset[str]:
+        return self._imported_ids.get((user.id, source_system), frozenset())
+
+    def save_imported_message(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        external_message_id: str,
+        rfc_message_id: str | None,
+        artifact_id: UUID,
+        now: datetime,
+    ) -> None:
+        del artifact_id, now
+        key = (user.id, source_system)
+        ids = set(self._imported_ids.get(key, frozenset()))
+        ids.add(external_message_id)
+        if rfc_message_id is not None:
+            ids.add(rfc_message_id)
+        self._imported_ids[key] = frozenset(ids)
 
 
 class LocalArtifactStore(ArtifactStore):

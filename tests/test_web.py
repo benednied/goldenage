@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import UTC, datetime
 
@@ -222,6 +223,45 @@ def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypat
     assert "Thread with 1 mail" in response.text
 
 
+def test_recent_conversation_opens_fallback_triage_when_no_suggestion(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        OutlookMsgExtractor,
+        "extract",
+        lambda self, file_name, media_type, content: _sample_extracted_data(
+            subject="totally unrelated phrase cluster"
+        ),
+    )
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
+    monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    client = TestClient(create_app())
+
+    upload_response = client.post(
+        "/artifacts/upload",
+        files={"file": ("unmatched.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+    )
+
+    import re
+
+    conversation_id = re.search(
+        r"/intake/conversations/([0-9a-f-]+)",
+        upload_response.text,
+    ).group(1)
+
+    response = client.get(f"/intake/conversations/{conversation_id}")
+
+    assert response.status_code == 200
+    assert "No safe single-case match was found" in response.text
+    assert "Search cases" in response.text
+    assert "Create new case" in response.text
+
+
 def test_non_msg_upload_shows_not_supported_and_logs_to_console(
     tmp_path,
     monkeypatch,
@@ -345,6 +385,135 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     )
     assert login_response.status_code == 200
     assert "Bened Example" in login_response.text
+
+
+def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) -> None:
+    sqlite_path = tmp_path / "goldenage.sqlite3"
+    artifact_dir = tmp_path / "artifacts"
+    fixture_path = tmp_path / "mail-fixture.json"
+    fixture_path.write_text(
+        json.dumps(
+            [
+                {
+                    "candidate_id": "mail-1",
+                    "account_name": "bened@example.com",
+                    "mailbox_name": "Inbox",
+                    "subject": "Acme contract renewal",
+                    "sender_name": "Max Mustermann",
+                    "sender_email": "max@acme.example",
+                    "sent_at": "2026-04-12T09:30:00+00:00",
+                    "preview_text": "Please review the latest renewal draft.",
+                    "unread": True,
+                    "rfc_message_id": "<mail-1@example.com>",
+                    "raw_source": (
+                        "From: Max Mustermann <max@acme.example>\n"
+                        "To: Bened Example <bened@example.com>\n"
+                        "Subject: Acme contract renewal\n"
+                        "Date: Sun, 12 Apr 2026 09:30:00 +0000\n"
+                        "Message-ID: <mail-1@example.com>\n"
+                        "\n"
+                        "Please review the latest renewal draft.\n"
+                    ),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
+    monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(sqlite_path))
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
+    monkeypatch.setenv("GOLDENAGE_MAIL_FIXTURE_PATH", str(fixture_path))
+    client = TestClient(create_app())
+    client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+        },
+    )
+
+    search_response = client.post(
+        "/mail/desktop-mail/search",
+        data={
+            "account_name": "bened@example.com",
+            "mailbox_name": "Inbox",
+            "sender_filter": "max@acme.example",
+            "subject_filter": "renewal",
+            "result_limit": "10",
+            "unread_only": "on",
+        },
+    )
+
+    assert search_response.status_code == 200
+    assert "Mail candidates loaded" in search_response.text
+    assert "Import into intake" in search_response.text
+    assert "Acme contract renewal" in search_response.text
+
+    import_response = client.post(
+        "/mail/desktop-mail/import",
+        data={"candidate_id": "mail-1"},
+    )
+
+    assert import_response.status_code == 200
+    assert "Mail message imported" in import_response.text
+    assert "Create new case" in import_response.text
+    assert "Acme contract renewal" in import_response.text
+
+
+def test_demo_mode_enables_desktop_mail_import_with_fixture(tmp_path, monkeypatch) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    fixture_path = tmp_path / "mail-fixture.json"
+    fixture_path.write_text(
+        json.dumps(
+            [
+                {
+                    "candidate_id": "mail-1",
+                    "account_name": "alex@example.com",
+                    "mailbox_name": "Inbox",
+                    "subject": "Acme contract renewal",
+                    "sender_email": "max@acme.example",
+                    "sent_at": "2026-04-12T09:30:00+00:00",
+                    "preview_text": "Please review the latest renewal draft.",
+                    "unread": True,
+                    "raw_source": (
+                        "From: Max Mustermann <max@acme.example>\n"
+                        "To: Alex Example <alex@example.com>\n"
+                        "Subject: Acme contract renewal\n"
+                        "\n"
+                        "Please review the latest renewal draft.\n"
+                    ),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
+    monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
+    monkeypatch.setenv("GOLDENAGE_MAIL_FIXTURE_PATH", str(fixture_path))
+    client = TestClient(create_app())
+
+    page_response = client.get("/worklist")
+    search_response = client.post(
+        "/mail/desktop-mail/search",
+        data={
+            "account_name": "alex@example.com",
+            "subject_filter": "renewal",
+            "result_limit": "10",
+            "unread_only": "on",
+        },
+    )
+
+    assert page_response.status_code == 200
+    assert "Mail Import" in page_response.text
+    assert search_response.status_code == 200
+    assert "Import into intake" in search_response.text
 
 
 def test_local_first_password_change_updates_login_credentials(tmp_path, monkeypatch) -> None:
