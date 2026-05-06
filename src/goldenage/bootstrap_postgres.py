@@ -142,5 +142,5 @@ def seed_demo_data(dsn: str) -> None:
         connection.commit()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

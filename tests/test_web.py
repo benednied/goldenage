@@ -143,11 +143,25 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
 
 
 def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> None:
+    long_body = "body text " + ("unbroken" * 40)
     monkeypatch.setattr(
         OutlookMsgExtractor,
         "extract",
-        lambda self, file_name, media_type, content: _sample_extracted_data(
-            subject="Acme contract renewal"
+        lambda self, file_name, media_type, content: ExtractedArtifactData(
+            source_kind="outlook_msg",
+            parse_status="parsed",
+            content_text=long_body,
+            subject="Acme contract renewal",
+            sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
+            recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+            sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
+            received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
+            direction="inbound",
+            source_account_id="account-1",
+            source_folder_id="inbox",
+            source_message_id="message-1",
+            conversation_id="conv-1",
+            internet_message_id="<msg-1@example.com>",
         ),
     )
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
@@ -186,7 +200,15 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
     assert "Conversation:" in detail_response.text
     assert "Acme contract renewal" in detail_response.text
     assert "Max Mustermann" in detail_response.text
-    assert "body text" in detail_response.text
+    assert '<pre class="mail-body">' in detail_response.text
+    assert long_body in detail_response.text
+
+    page_response = client.get(f"/worklist?case_id={case_id}&artifact_id={artifact_id}")
+    assert page_response.status_code == 200
+    assert '<main id="workspace" class="workspace">' in page_response.text
+    assert "Due activities" in page_response.text
+    assert "Message content" in page_response.text
+    assert '<pre class="mail-body">' in page_response.text
 
 
 def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypatch) -> None:

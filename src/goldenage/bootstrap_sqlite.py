@@ -71,5 +71,5 @@ def _schema_paths(schema_path: Path) -> list[Path]:
     return [schema_path]
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
