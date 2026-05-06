@@ -66,7 +66,7 @@ from goldenage.domain.models import MailSelector, UserContext
 from goldenage.domain.rules import ResolutionError, due_label
 
 BASE_DIR = Path(__file__).resolve().parent
-UNSUPPORTED_INTAKE_MESSAGE = "not supported in this mvp for now"
+UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
 AUTH_COOKIE_NAME = "goldenage_session"
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -889,9 +889,7 @@ def _page_context(
     return {
         "request": request,
         "page_title": "GoldenAge",
-        "hero_title": (
-            "welcome to the golden age" if context.settings.use_local_first_sqlite else "GoldenAge"
-        ),
+        "hero_title": "Local workspace" if context.settings.use_local_first_sqlite else "GoldenAge",
         "user": user,
         "profile_image_url": _profile_image_url(user),
         "worklist": context.service.get_today_worklist(

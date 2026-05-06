@@ -19,7 +19,7 @@
           >
             <strong>{{ conversation.latest_subject or "No subject" }}</strong>
           </a>
-          <small>{{ format_datetime(conversation.latest_message_at, local_timezone) }} · {{ conversation.message_count }} mails</small>
+          <small>{{ format_datetime(conversation.latest_message_at, local_timezone) }} · {{ conversation.message_count }} email{% if conversation.message_count != 1 %}s{% endif %}</small>
         </li>
       {% endfor %}
     </ul>
@@ -45,13 +45,13 @@
   <div class="wave wave-a"></div>
   <div class="wave wave-b"></div>
   <div class="dropzone-copy">
-    <h3>Bring in the next document</h3>
-    <p>Drop an Outlook <code>.msg</code> mail here and GoldenAge will suggest exactly one likely case before exposing broader search.</p>
+    <h3>Add a document</h3>
+    <p>Drop an Outlook <code>.msg</code> email here to check for a likely case match before searching manually.</p>
     <label class="file-picker">
       <span>Select Outlook mail</span>
       <input type="file" name="file" accept=".msg" required />
     </label>
-    <small class="muted">Manual uploads still only accept Outlook <code>.msg</code> exports in this slice.</small>
+    <small class="muted">Manual uploads currently accept Outlook <code>.msg</code> exports.</small>
   </div>
 </form>
 
@@ -216,7 +216,7 @@
 
     {% if intake_state.suggestion and intake_state.suggestion.suggested_case_id %}
       <div class="suggestion-card">
-        <p class="suggestion-title">Vermutlich gehoert dieses Dokument zu einem bestehenden Vorgang.</p>
+        <p class="suggestion-title">This document likely belongs to an existing case.</p>
         <p class="muted">{{ intake_state.suggestion.summary_reason }}</p>
         <form
           method="post"
@@ -232,7 +232,7 @@
             <input type="text" name="next_step" placeholder="Review the newly received draft and reply" required />
           </label>
           <label>
-            Wiedervorlage
+            Follow-up due
             <input type="datetime-local" name="next_due_at" required />
           </label>
           <div class="button-row">
@@ -266,7 +266,7 @@
           <input type="hidden" name="artifact_id" value="{{ intake_state.artifact.id }}" />
           <label>
             Search description
-            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Mail from Acme to Max Mustermann about renewal" required />
+            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Email from Acme to Alex Morgan about renewal" required />
           </label>
           <button type="submit">Search cases</button>
         </form>
@@ -294,7 +294,7 @@
                     <input type="text" name="next_step" placeholder="Create next follow-up activity" required />
                   </label>
                   <label>
-                    Wiedervorlage
+                    Follow-up due
                     <input type="datetime-local" name="next_due_at" required />
                   </label>
                   <button type="submit">Assign to this case</button>
@@ -303,11 +303,11 @@
             {% endfor %}
           </ul>
         {% else %}
-          <p class="muted">No existing Vorgaenge matched yet. Create a new one from this intake.</p>
+          <p class="muted">No existing cases matched yet. Create a new one from this intake.</p>
         {% endif %}
 
         <div class="suggestion-card">
-          <p class="suggestion-title">Neuen Vorgang anlegen</p>
+          <p class="suggestion-title">Create a new case</p>
           <p class="muted">Use this when the document starts fresh work instead of belonging to an existing case.</p>
           <form
             method="post"
@@ -318,7 +318,7 @@
             class="workflow-form"
           >
             <label>
-              Vorgang title
+              Case title
               <input
                 type="text"
                 name="title"
@@ -329,18 +329,18 @@
             </label>
             <label>
               Company
-              <input type="text" name="company" placeholder="Acme GmbH" />
+              <input type="text" name="company" placeholder="Acme Inc." />
             </label>
             <label>
               Primary contact
-              <input type="text" name="primary_contact" placeholder="Max Mustermann" />
+              <input type="text" name="primary_contact" placeholder="Alex Morgan" />
             </label>
             <label>
               Next step
               <input type="text" name="next_step" placeholder="Review the new mail and prepare a response" required />
             </label>
             <label>
-              Wiedervorlage
+              Follow-up due
               <input type="datetime-local" name="next_due_at" required />
             </label>
             <button type="submit">Create new case</button>

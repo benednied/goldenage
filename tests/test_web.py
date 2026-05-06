@@ -281,9 +281,9 @@ def test_non_msg_upload_shows_not_supported_and_logs_to_console(
     )
 
     assert response.status_code == 400
-    assert "not supported in this mvp for now" in response.text
+    assert "This upload type is not supported yet." in response.text
     captured = capsys.readouterr()
-    assert "not supported in this mvp for now" in captured.out
+    assert "This upload type is not supported yet." in captured.out
 
 
 def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch) -> None:
@@ -298,7 +298,7 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
 
     first_response = client.get("/worklist")
     assert first_response.status_code == 200
-    assert "welcome to the golden age" in first_response.text
+    assert "Create your local workspace" in first_response.text
     assert "Create local workspace user" in first_response.text
     assert sqlite_path.exists()
 
@@ -312,7 +312,7 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
         files={"profile_picture": ("profile.png", b"fake-image", "image/png")},
     )
     assert onboard_response.status_code == 200
-    assert "welcome to the golden age" in onboard_response.text
+    assert "Local workspace" in onboard_response.text
     assert "Bened Example" in onboard_response.text
     assert "bened@example.com" in onboard_response.text
     assert "Alex Example" not in onboard_response.text

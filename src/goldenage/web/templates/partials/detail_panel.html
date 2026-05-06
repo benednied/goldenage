@@ -37,7 +37,7 @@
           <input type="text" name="next_step" placeholder="Call back with revised clause wording" />
         </label>
         <label>
-          Wiedervorlage
+          Follow-up due
           <input type="datetime-local" name="next_due_at" />
         </label>
         <label class="checkbox-row">
@@ -46,7 +46,7 @@
         </label>
         <label class="checkbox-row">
           <input type="checkbox" name="skip_follow_up" />
-          <span>Record that no Wiedervorlage is needed.</span>
+          <span>Record that no follow-up is needed.</span>
         </label>
         <button type="submit">Resolve with a clear next state</button>
       </form>
@@ -102,7 +102,7 @@
         <span>{{ format_datetime(detail.selected_artifact.uploaded_at, local_timezone) }}</span>
       </div>
       {% if detail.selected_conversation %}
-        <p><strong>Conversation:</strong> {{ detail.selected_conversation.latest_subject or "No subject" }} ({{ detail.selected_conversation.message_count }} mails)</p>
+        <p><strong>Conversation:</strong> {{ detail.selected_conversation.latest_subject or "No subject" }} ({{ detail.selected_conversation.message_count }} email{% if detail.selected_conversation.message_count != 1 %}s{% endif %})</p>
       {% endif %}
       {% if detail.selected_mail_metadata %}
         <p><strong>Subject:</strong> {{ detail.selected_mail_metadata.subject or "No subject" }}</p>
