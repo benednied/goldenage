@@ -425,11 +425,21 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/worklist", response_class=HTMLResponse)
-    async def worklist(request: Request, case_id: str | None = None) -> HTMLResponse:
+    async def worklist(
+        request: Request,
+        case_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        detail = _load_case_detail(case_id=case_id, context=context, now=_now(context), user=user)
+        detail = _load_case_detail(
+            case_id=case_id,
+            artifact_id=artifact_id,
+            context=context,
+            now=_now(context),
+            user=user,
+        )
         return templates.TemplateResponse(
             request=request,
             name="page.html",
@@ -923,6 +933,7 @@ def _panel_context(
 def _load_case_detail(
     *,
     case_id: str | None,
+    artifact_id: str | None = None,
     context: AppContext,
     now: datetime,
     user: UserContext,
@@ -930,7 +941,12 @@ def _load_case_detail(
     if not case_id:
         return None
     try:
-        return context.service.get_case_detail(case_id=_uuid(case_id), user=user, now=now)
+        return context.service.get_case_detail(
+            case_id=_uuid(case_id),
+            user=user,
+            now=now,
+            selected_artifact_id=_uuid(artifact_id) if artifact_id else None,
+        )
     except NotFoundError:
         return None
 

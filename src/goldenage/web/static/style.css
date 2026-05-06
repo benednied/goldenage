@@ -154,6 +154,12 @@ h4 {
   padding: 0 3rem 3rem;
 }
 
+.workspace,
+.side-pane,
+.panel {
+  min-width: 0;
+}
+
 .side-pane {
   display: grid;
   gap: 1.5rem;
@@ -306,6 +312,22 @@ h4 {
 .activity-copy {
   margin: 0.75rem 0 0.4rem;
   font-size: 1.02rem;
+}
+
+.mail-body {
+  max-height: min(52rem, 70vh);
+  margin: 0.9rem 0 0;
+  padding: 1rem;
+  overflow: auto;
+  border: 1px solid rgba(99, 93, 85, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #24211d;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 0.96rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .workflow-form {

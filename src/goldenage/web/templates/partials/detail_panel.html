@@ -77,7 +77,7 @@
         {% for artifact in detail.recent_artifacts %}
           <li>
             <a
-              href="/cases/{{ detail.case_file.id }}/artifacts/{{ artifact.id }}/panel"
+              href="/worklist?case_id={{ detail.case_file.id }}&artifact_id={{ artifact.id }}"
               hx-get="/cases/{{ detail.case_file.id }}/artifacts/{{ artifact.id }}/panel"
               hx-target="#detail-panel"
               hx-swap="innerHTML"
@@ -129,7 +129,7 @@
           {% endfor %}
         </ul>
       {% endif %}
-      <pre class="activity-copy">{{ detail.selected_artifact.content_text or "No message body was extracted." }}</pre>
+      <pre class="mail-body">{{ detail.selected_artifact.content_text or "No message body was extracted." }}</pre>
     </section>
   {% endif %}
 {% else %}
