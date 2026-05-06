@@ -26,7 +26,12 @@ from goldenage.adapters.demo import (
     OutlookMsgExtractor,
     build_demo_state,
 )
-from goldenage.adapters.outlook_mailbox import OutlookMailboxWorker, WindowsOutlookMailboxSource
+from goldenage.adapters.outlook_mailbox import (
+    OutlookMailboxMessage,
+    OutlookMailboxWorker,
+    WindowsOutlookMailboxSource,
+    normalize_outlook_message,
+)
 from goldenage.adapters.postgres import (
     PostgresActivityRepository,
     PostgresArtifactRepository,
@@ -531,9 +536,26 @@ def _build_context(settings: Settings) -> AppContext:
     )
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:
+        def ingest_outlook_message(message: OutlookMailboxMessage) -> None:
+            user = _current_user_for_repositories(
+                default_user=default_user,
+                local_user_repository=local_user_repository,
+            )
+            if user is None:
+                return
+            extracted = normalize_outlook_message(message)
+            service.ingest_mail(
+                file_name=_mailbox_file_name(message),
+                media_type="text/plain",
+                content=message.body_text.encode("utf-8"),
+                extracted=extracted,
+                user=user,
+                now=datetime.now(UTC),
+            )
+
         source = WindowsOutlookMailboxSource(
             settings,
-            on_message=lambda message: None,
+            on_message=ingest_outlook_message,
         )
         outlook_worker = OutlookMailboxWorker(source)
     return AppContext(
@@ -656,10 +678,30 @@ def _onboarding_context(request: Request, message: str | None) -> dict[str, obje
 
 
 def _current_user(context: AppContext) -> UserContext | None:
-    if context.local_user_repository is not None:
-        account = context.local_user_repository.get_first_user()
+    return _current_user_for_repositories(
+        default_user=context.default_user,
+        local_user_repository=context.local_user_repository,
+    )
+
+
+def _current_user_for_repositories(
+    *,
+    default_user: UserContext | None,
+    local_user_repository: SQLiteLocalUserRepository | None,
+) -> UserContext | None:
+    if local_user_repository is not None:
+        account = local_user_repository.get_first_user()
         return account.to_user_context() if account is not None else None
-    return context.default_user
+    return default_user
+
+
+def _mailbox_file_name(message: OutlookMailboxMessage) -> str:
+    subject = (message.subject or "outlook-message").strip()
+    safe_subject = "".join(
+        character if character.isalnum() or character in {" ", ".", "-", "_"} else "_"
+        for character in subject
+    ).strip()
+    return f"{safe_subject or 'outlook-message'}.txt"
 
 
 def _require_current_user(context: AppContext) -> UserContext:

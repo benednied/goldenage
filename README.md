@@ -1,12 +1,13 @@
 # GoldenAge
 
-GoldenAge is a focused web application for operational case work. The current implementation slice ships the daily worklist, case-detail workflow, manual Outlook `.msg` intake, single-case assignment suggestion, and fallback search flow behind clean architecture boundaries.
+GoldenAge is a focused web application for operational case work. The current implementation slice ships the daily worklist, case-detail workflow, manual Outlook `.msg` intake, optional Windows classic Outlook mailbox intake, single-case assignment suggestion, and fallback search flow behind clean architecture boundaries.
 
 ## What Exists
 
 - Daily worklist with overdue/today prioritization
 - Case detail panel with enforced next-step resolution
 - Outlook `.msg` intake with drag/drop, subject-based case suggestion, and bounded fallback search
+- Optional Windows classic Outlook mailbox polling for Inbox and Sent mail
 - FastAPI web app with server-rendered templates and HTMX interactions
 - Demo/in-memory runtime plus raw-SQL PostgreSQL adapters
 - Initial schema, tests, and uv-managed Python 3.14 environment
@@ -75,6 +76,48 @@ uv run uvicorn goldenage.web.app:create_app --factory --reload
 ```
 
 Then open `http://127.0.0.1:8000/`. On first launch in standalone mode, GoldenAge redirects to onboarding so the first local user can create an account.
+
+## Windows Outlook Mailbox Intake
+
+The mailbox integration only works on Windows with classic desktop Outlook installed and signed in. It uses Outlook COM/MAPI through `pywin32`, so it does not run on Linux, macOS, Outlook Web, or the new WebView-based Outlook app.
+
+To enable automatic mailbox intake:
+
+1. Use the Windows standalone setup above and create the first local user in the app.
+
+2. Confirm the Outlook store display name. In classic Outlook, this is usually the mailbox/account name shown in the left folder pane, for example `Mailbox - bened@example.com` or `bened@example.com`.
+
+3. Add the Outlook settings to the repository-root `.env` file:
+
+```dotenv
+GOLDENAGE_OUTLOOK_SYNC_ENABLED=1
+GOLDENAGE_OUTLOOK_ACCOUNT=Mailbox - bened@example.com
+GOLDENAGE_OUTLOOK_POLL_SECONDS=15
+```
+
+4. Start the app from the same Windows user session where Outlook is available:
+
+```powershell
+uv run uvicorn goldenage.web.app:create_app --factory --reload
+```
+
+5. Open `http://127.0.0.1:8000/`. Keep the server running. GoldenAge polls the configured Outlook store, reads recent Inbox and Sent messages, normalizes the mail envelope, and ingests each new message through the same intake/conversation flow used by manual `.msg` uploads.
+
+Operational notes:
+
+- `GOLDENAGE_OUTLOOK_SYNC_ENABLED=1` turns the worker on.
+- `GOLDENAGE_OUTLOOK_ACCOUNT` must exactly match the Outlook store display name, ignoring case.
+- `GOLDENAGE_OUTLOOK_POLL_SECONDS` defaults to `15`; values below `5` are treated as `5`.
+- `pywin32` is installed automatically by `uv sync` on Windows because it is declared as a Windows-only dependency.
+- The worker currently polls the 25 most recent messages in Inbox and Sent during each interval and deduplicates messages for the current app process by Outlook `EntryID`; persisted duplicate protection also uses the existing mail source metadata.
+- If the app starts before local-first onboarding has created a user, mailbox messages are skipped until a user exists. Create the local user first, then restart the server with Outlook sync enabled.
+
+Troubleshooting:
+
+- `Classic Outlook intake is only available on Windows.` means the integration is running on a non-Windows platform.
+- `pywin32 is required for classic Outlook mailbox intake.` means dependencies were not installed in the active environment; rerun `uv sync --extra dev` on Windows.
+- `Outlook account not found` means `GOLDENAGE_OUTLOOK_ACCOUNT` does not match any classic Outlook store display name.
+- If no mail appears, verify classic Outlook can open normally in the same Windows session, check the account name, then restart `uvicorn`.
 
 ## PostgreSQL Bootstrap
 

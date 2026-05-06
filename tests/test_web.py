@@ -1,11 +1,19 @@
 from datetime import UTC, datetime
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 from goldenage.adapters.demo import OutlookMsgExtractor
+from goldenage.adapters.outlook_mailbox import OutlookMailboxMessage
 from goldenage.domain.models import ExtractedArtifactData, MailParticipant
 from goldenage.web.app import create_app
+
+
+@pytest.fixture(autouse=True)
+def disable_outlook_sync_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "0")
+    monkeypatch.delenv("GOLDENAGE_OUTLOOK_ACCOUNT", raising=False)
 
 
 def test_worklist_page_renders(monkeypatch) -> None:
@@ -21,6 +29,56 @@ def test_worklist_page_renders(monkeypatch) -> None:
     assert response.status_code == 200
     assert "GoldenAge" in response.text
     assert "Due activities" in response.text
+
+
+def test_windows_outlook_callback_ingests_mailbox_message(tmp_path, monkeypatch) -> None:
+    captured = {}
+
+    class FakeOutlookSource:
+        def __init__(self, settings, on_message) -> None:
+            del settings
+            captured["on_message"] = on_message
+
+        def watch_forever(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr("goldenage.web.app.WindowsOutlookMailboxSource", FakeOutlookSource)
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "1")
+    monkeypatch.setenv("GOLDENAGE_OUTLOOK_ACCOUNT", "Mailbox - bened@example.com")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
+    monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    app = create_app()
+
+    captured["on_message"](
+        OutlookMailboxMessage(
+            account_name="Mailbox - bened@example.com",
+            folder_key="Inbox",
+            message_key="abc123",
+            conversation_key="conv-42",
+            internet_message_id="<abc123@example.com>",
+            subject="RE: Acme contract renewal",
+            sender_name="Max Mustermann",
+            sender_email="max@acme.example",
+            recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+            body_text="Please review the renewal changes.",
+            sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
+            received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
+            direction="inbound",
+        )
+    )
+
+    context = app.state.context
+    user = context.default_user
+    assert user is not None
+    recent = context.service.get_recent_intake(user=user, limit=1)
+    assert recent.recent_conversations[0].latest_subject == "RE: Acme contract renewal"
 
 
 def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
