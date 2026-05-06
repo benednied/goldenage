@@ -584,6 +584,7 @@ def create_app() -> FastAPI:
             suggestion=intake_state.suggestion,
             search_mode=True,
             message="Suggestion rejected. Describe the case to search for it.",
+            new_case_title_suggestion=intake_state.new_case_title_suggestion,
         )
         return templates.TemplateResponse(
             request=request,
@@ -663,6 +664,7 @@ def create_app() -> FastAPI:
                 suggestion=intake_state.suggestion,
                 search_mode=True,
                 message=str(error),
+                new_case_title_suggestion=intake_state.new_case_title_suggestion,
             )
             response = templates.TemplateResponse(
                 request=request,
@@ -730,6 +732,7 @@ def create_app() -> FastAPI:
                 search_query=intake_state.search_query,
                 search_results=intake_state.search_results,
                 message=str(error),
+                new_case_title_suggestion=intake_state.new_case_title_suggestion,
             )
             response = templates.TemplateResponse(
                 request=request,
@@ -954,6 +957,7 @@ def _hydrate_intake_state(
         conversation_artifacts=intake_state.conversation_artifacts,
         recent_conversations=fallback.recent_conversations,
         ingest_status=intake_state.ingest_status,
+        new_case_title_suggestion=intake_state.new_case_title_suggestion,
     )
 
 

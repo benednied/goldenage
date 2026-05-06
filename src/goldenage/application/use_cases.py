@@ -88,6 +88,7 @@ class IntakeState:
     conversation_artifacts: tuple[Artifact, ...] = ()
     recent_conversations: tuple[MailConversation, ...] = ()
     ingest_status: str | None = None
+    new_case_title_suggestion: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,7 +581,7 @@ class GoldenAgeService:
             else None
         )
         artifact_state = (
-            self._intake_state_for_artifact(artifact, suggestion)
+            self._intake_state_for_artifact(artifact, suggestion, user=user)
             if artifact is not None
             else IntakeState()
         )
@@ -597,6 +598,7 @@ class GoldenAgeService:
             recent_conversations=tuple(
                 self._artifact_repository.list_recent_mail_conversations(user, limit=10)
             ),
+            new_case_title_suggestion=artifact_state.new_case_title_suggestion,
         )
 
     def _mail_selector_for_user(self, user: UserContext) -> MailSelector:
@@ -689,7 +691,7 @@ class GoldenAgeService:
             },
             now=now,
         )
-        intake_state = self._intake_state_for_artifact(artifact, suggestion)
+        intake_state = self._intake_state_for_artifact(artifact, suggestion, user=user)
         if intake_state.search_mode:
             return intake_state
         return IntakeState(
@@ -702,6 +704,7 @@ class GoldenAgeService:
                 if conversation is not None
                 else ()
             ),
+            new_case_title_suggestion=intake_state.new_case_title_suggestion,
         )
 
     def get_intake_state(self, *, artifact_id: UUID, user: UserContext) -> IntakeState:
@@ -710,7 +713,7 @@ class GoldenAgeService:
         if artifact is None:
             raise NotFoundError("Artifact not found.")
         suggestion = self._artifact_repository.get_suggestion(artifact_id, user)
-        return self._intake_state_for_artifact(artifact, suggestion)
+        return self._intake_state_for_artifact(artifact, suggestion, user=user)
 
     def search_cases_for_artifact(
         self,
@@ -746,6 +749,7 @@ class GoldenAgeService:
             search_mode=True,
             search_query=query,
             search_results=tuple(results),
+            new_case_title_suggestion=_suggest_new_case_title(mail_metadata),
         )
 
     def assign_artifact_to_case(
@@ -934,15 +938,24 @@ class GoldenAgeService:
         self,
         artifact: Artifact,
         suggestion: AssignmentSuggestion | None,
+        *,
+        user: UserContext,
     ) -> IntakeState:
+        mail_metadata = self._artifact_repository.get_mail_metadata(artifact.id, user)
+        new_case_title_suggestion = _suggest_new_case_title(mail_metadata)
         if suggestion is None or suggestion.suggested_case_id is None:
             return IntakeState(
                 artifact=artifact,
                 suggestion=suggestion,
                 search_mode=True,
                 message="No safe single-case match was found. Use the bounded search flow.",
+                new_case_title_suggestion=new_case_title_suggestion,
             )
-        return IntakeState(artifact=artifact, suggestion=suggestion)
+        return IntakeState(
+            artifact=artifact,
+            suggestion=suggestion,
+            new_case_title_suggestion=new_case_title_suggestion,
+        )
 
 
 def _build_mail_metadata(
@@ -983,6 +996,23 @@ def _build_mail_metadata(
         sent_at=extracted.sent_at,
         created_at=now,
     )
+
+
+_SUBJECT_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:aw|re|fw|fwd|wg|sv|antwort|reply)(?:\[\d+\])?\s*:\s*)+",
+    re.IGNORECASE,
+)
+
+
+def _suggest_new_case_title(mail_metadata: ArtifactMailMetadata | None) -> str:
+    if mail_metadata is None or mail_metadata.subject is None:
+        return ""
+    title = mail_metadata.subject.strip()
+    previous = None
+    while title and title != previous:
+        previous = title
+        title = _SUBJECT_PREFIX_RE.sub("", title).strip()
+    return title
 
 
 def _normalize_mail_selector(selector: MailSelector) -> MailSelector:

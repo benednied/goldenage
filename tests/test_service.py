@@ -162,6 +162,23 @@ def test_upload_subject_match_proposes_case(tmp_path) -> None:
     assert mail_metadata.sender_domain == "acme.example"
 
 
+def test_upload_sets_new_case_title_suggestion_from_cleaned_subject(tmp_path) -> None:
+    service, user, _ = build_service(
+        tmp_path,
+        extracted=_sample_extracted_data(subject="AW: RE: Fwd: Fresh intake matter"),
+    )
+
+    intake = service.upload_artifact(
+        file_name="fresh.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"fake msg bytes",
+        user=user,
+        now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+    )
+
+    assert intake.new_case_title_suggestion == "Fresh intake matter"
+
+
 def test_upload_subject_match_handles_decomposed_german_city_name(tmp_path) -> None:
     service, user, state = build_service(
         tmp_path,

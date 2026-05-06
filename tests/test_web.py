@@ -597,6 +597,7 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
     )
     assert upload_response.status_code == 200
     assert "Create new case" in upload_response.text
+    assert 'value="totally unrelated phrase cluster"' in upload_response.text
 
     import re
 

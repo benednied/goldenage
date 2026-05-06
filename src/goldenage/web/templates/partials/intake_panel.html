@@ -319,7 +319,13 @@
           >
             <label>
               Vorgang title
-              <input type="text" name="title" placeholder="Acme contract renewal" required />
+              <input
+                type="text"
+                name="title"
+                placeholder="Acme contract renewal"
+                value="{{ intake_state.new_case_title_suggestion }}"
+                required
+              />
             </label>
             <label>
               Company
