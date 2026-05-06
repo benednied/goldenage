@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -44,6 +45,7 @@ from goldenage.adapters.sqlite import (
     SQLiteAuditRepository,
     SQLiteCaseRepository,
     SQLiteLocalUserRepository,
+    SQLiteMailImportRepository,
 )
 from goldenage.application.use_cases import (
     CaseDetail,
@@ -53,11 +55,12 @@ from goldenage.application.use_cases import (
 )
 from goldenage.bootstrap_sqlite import ensure_sqlite_bootstrapped
 from goldenage.config import Settings, load_settings
-from goldenage.domain.models import UserContext
+from goldenage.domain.models import MailSelector, UserContext
 from goldenage.domain.rules import ResolutionError, due_label
 
 BASE_DIR = Path(__file__).resolve().parent
 UNSUPPORTED_INTAKE_MESSAGE = "not supported in this mvp for now"
+AUTH_COOKIE_NAME = "goldenage_session"
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
@@ -100,11 +103,75 @@ def create_app() -> FastAPI:
             return RedirectResponse(url="/onboarding", status_code=302)
         return RedirectResponse(url="/worklist", status_code=302)
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> FileResponse:
+        return FileResponse(
+            BASE_DIR / "static" / "golden_age_favicon_48.ico",
+            media_type="image/x-icon",
+        )
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login(request: Request) -> HTMLResponse:
+        if not settings.use_local_first_sqlite:
+            return RedirectResponse(url="/worklist", status_code=302)
+        if context.local_user_repository is not None:
+            account = context.local_user_repository.get_first_user()
+            if account is None:
+                return RedirectResponse(url="/onboarding", status_code=302)
+            if _current_user(context, request=request) is not None:
+                return RedirectResponse(url="/worklist", status_code=302)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context=_login_context(request, message=None),
+        )
+
+    @app.post("/login/local", response_class=HTMLResponse)
+    async def login_local(
+        request: Request,
+        email: str = Form(default=""),
+        password: str = Form(default=""),
+    ) -> HTMLResponse:
+        if not settings.use_local_first_sqlite:
+            return RedirectResponse(url="/worklist", status_code=302)
+        local_user_repository = context.local_user_repository
+        if local_user_repository is None:
+            raise HTTPException(status_code=500, detail="Local-first login is not configured.")
+        account = local_user_repository.get_user_by_email(email)
+        if account is None or not _verify_password(password, account.password_hash):
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context=_login_context(request, message="Invalid email or password."),
+                status_code=401,
+            )
+        response = RedirectResponse(url="/worklist", status_code=303)
+        _set_auth_cookie(response, account.id, settings=settings)
+        return response
+
+    @app.post("/login/ldap", response_class=HTMLResponse)
+    async def login_ldap(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context=_login_context(request, message="LDAP sign-in is not configured yet."),
+            status_code=400,
+        )
+
+    @app.post("/logout", response_class=HTMLResponse)
+    async def logout() -> RedirectResponse:
+        response = RedirectResponse(
+            url="/login" if settings.use_local_first_sqlite else "/worklist",
+            status_code=303,
+        )
+        response.delete_cookie(AUTH_COOKIE_NAME)
+        return response
+
     @app.get("/onboarding", response_class=HTMLResponse)
     async def onboarding(request: Request) -> HTMLResponse:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
-        if _current_user(context) is not None:
+        if _current_user(context, request=request) is not None:
             return RedirectResponse(url="/worklist", status_code=302)
         return templates.TemplateResponse(
             request=request,
@@ -122,7 +189,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
-        if _current_user(context) is not None:
+        if _current_user(context, request=request) is not None:
             return RedirectResponse(url="/worklist", status_code=302)
 
         normalized_name = display_name.strip()
@@ -156,32 +223,135 @@ def create_app() -> FastAPI:
         local_user_repository = context.local_user_repository
         if local_user_repository is None:
             raise HTTPException(status_code=500, detail="Local-first onboarding is not configured.")
-        local_user_repository.create_user(
+        account = local_user_repository.create_user(
             account_id=uuid4(),
             email=normalized_email,
             display_name=normalized_name,
             password_hash=_hash_password(password),
             profile_image_path=profile_image_path,
         )
-        return RedirectResponse(url="/worklist", status_code=303)
+        response = RedirectResponse(url="/worklist", status_code=303)
+        _set_auth_cookie(response, account.id, settings=settings)
+        return response
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context=_settings_context(request, context, user=user),
+        )
+
+    @app.post("/settings/mail", response_class=HTMLResponse)
+    async def save_mail_settings(
+        request: Request,
+        account_name: str = Form(default=""),
+        mailbox_name: str = Form(default=""),
+        sender_filter: str = Form(default=""),
+        subject_filter: str = Form(default=""),
+        sent_after: str = Form(default=""),
+        result_limit: int = Form(default=25),
+        unread_only: str | None = Form(default=None),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            selector = MailSelector(
+                account_name=account_name.strip() or None,
+                mailbox_name=mailbox_name.strip() or None,
+                unread_only=unread_only == "on",
+                sender_filter=sender_filter.strip(),
+                subject_filter=subject_filter.strip(),
+                sent_after=_parse_form_datetime(sent_after, context.settings.local_timezone),
+                result_limit=result_limit,
+            )
+            context.service.save_mail_selector_settings(
+                selector=selector,
+                user=user,
+                now=_now(context),
+            )
+            message = "Mail defaults saved."
+            message_kind = "info"
+        except (NotFoundError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context=_settings_context(
+                request,
+                context,
+                user=user,
+                mail_message=message,
+                mail_message_kind=message_kind,
+            ),
+        )
+
+    @app.post("/settings/password", response_class=HTMLResponse)
+    async def change_password(
+        request: Request,
+        current_password: str = Form(default=""),
+        new_password: str = Form(default=""),
+        confirm_password: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        repository = context.local_user_repository
+        message = "Password changes are available only for LocalDB accounts."
+        message_kind = "error"
+        if repository is not None:
+            account = repository.get_user_by_email(user.email)
+            if account is None:
+                message = "Local user account not found."
+            elif not _verify_password(current_password, account.password_hash):
+                message = "Current password is incorrect."
+            elif len(new_password) < 8:
+                message = "New password must be at least 8 characters."
+            elif new_password != confirm_password:
+                message = "New passwords do not match."
+            else:
+                repository.update_password_hash(
+                    account_id=account.id,
+                    password_hash=_hash_password(new_password),
+                )
+                message = "Password changed."
+                message_kind = "info"
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context=_settings_context(
+                request,
+                context,
+                user=user,
+                password_message=message,
+                password_message_kind=message_kind,
+            ),
+        )
 
     @app.get("/worklist", response_class=HTMLResponse)
     async def worklist(request: Request, case_id: str | None = None) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         detail = _load_case_detail(case_id=case_id, context=context, now=_now(context), user=user)
         return templates.TemplateResponse(
             request=request,
             name="page.html",
-            context=_page_context(request, context, detail=detail, intake_state=IntakeState(), user=user),
+            context=_page_context(
+                request, context, detail=detail, intake_state=IntakeState(), user=user
+            ),
         )
 
     @app.get("/cases/{case_id}/panel", response_class=HTMLResponse)
     async def case_panel(request: Request, case_id: str) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         detail = _load_case_detail(case_id=case_id, context=context, now=_now(context), user=user)
         return templates.TemplateResponse(
             request=request,
@@ -191,9 +361,9 @@ def create_app() -> FastAPI:
 
     @app.get("/cases/{case_id}/artifacts/{artifact_id}/panel", response_class=HTMLResponse)
     async def artifact_panel(request: Request, case_id: str, artifact_id: str) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         try:
             detail = context.service.get_case_detail(
                 case_id=_uuid(case_id),
@@ -218,9 +388,9 @@ def create_app() -> FastAPI:
         close_case: str | None = Form(default=None),
         skip_follow_up: str | None = Form(default=None),
     ) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         try:
             detail = context.service.resolve_activity(
                 activity_id=_uuid(activity_id),
@@ -260,7 +430,9 @@ def create_app() -> FastAPI:
                 request,
                 context,
                 detail=detail,
-                intake_state=IntakeState(message="Activity resolved. The worklist has been updated."),
+                intake_state=IntakeState(
+                    message="Activity resolved. The worklist has been updated."
+                ),
                 user=user,
             ),
         )
@@ -270,9 +442,9 @@ def create_app() -> FastAPI:
         request: Request,
         file: UploadFile = File(...),
     ) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         content = await file.read()
         if not content:
             response = templates.TemplateResponse(
@@ -302,14 +474,16 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="partials/intake_panel.html",
-            context=_page_context(request, context, detail=None, intake_state=intake_state, user=user),
+            context=_page_context(
+                request, context, detail=None, intake_state=intake_state, user=user
+            ),
         )
 
     @app.post("/artifacts/{artifact_id}/suggestion/reject", response_class=HTMLResponse)
     async def reject_suggestion(request: Request, artifact_id: str) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         intake_state = context.service.get_intake_state(
             artifact_id=_uuid(artifact_id),
             user=user,
@@ -323,14 +497,16 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="partials/intake_panel.html",
-            context=_page_context(request, context, detail=None, intake_state=intake_state, user=user),
+            context=_page_context(
+                request, context, detail=None, intake_state=intake_state, user=user
+            ),
         )
 
     @app.get("/intake/conversations/{conversation_id}", response_class=HTMLResponse)
     async def intake_conversation_panel(request: Request, conversation_id: str) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         intake_state = context.service.get_intake_state_for_conversation(
             conversation_id=_uuid(conversation_id),
             user=user,
@@ -338,7 +514,9 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="partials/intake_panel.html",
-            context=_page_context(request, context, detail=None, intake_state=intake_state, user=user),
+            context=_page_context(
+                request, context, detail=None, intake_state=intake_state, user=user
+            ),
         )
 
     @app.post("/cases/search", response_class=HTMLResponse)
@@ -347,9 +525,9 @@ def create_app() -> FastAPI:
         artifact_id: str = Form(...),
         query: str = Form(...),
     ) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         intake_state = context.service.search_cases_for_artifact(
             artifact_id=_uuid(artifact_id),
             query=query,
@@ -359,7 +537,9 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="partials/intake_panel.html",
-            context=_page_context(request, context, detail=None, intake_state=intake_state, user=user),
+            context=_page_context(
+                request, context, detail=None, intake_state=intake_state, user=user
+            ),
         )
 
     @app.post("/artifacts/{artifact_id}/assign", response_class=HTMLResponse)
@@ -370,9 +550,9 @@ def create_app() -> FastAPI:
         next_step: str = Form(...),
         next_due_at: str = Form(...),
     ) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         try:
             detail = context.service.assign_artifact_to_case(
                 artifact_id=_uuid(artifact_id),
@@ -433,9 +613,9 @@ def create_app() -> FastAPI:
         next_step: str = Form(...),
         next_due_at: str = Form(...),
     ) -> HTMLResponse:
-        if (redirect := _redirect_to_onboarding_if_needed(context)) is not None:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
-        user = _require_current_user(context)
+        user = _require_current_user(context, request=request)
         try:
             detail = context.service.create_case_for_artifact(
                 artifact_id=_uuid(artifact_id),
@@ -494,6 +674,7 @@ def create_app() -> FastAPI:
 
 
 def _build_context(settings: Settings) -> AppContext:
+    mail_import_repository = None
     if settings.use_local_first_sqlite:
         if settings.sqlite_path is None:
             raise RuntimeError("GOLDENAGE_SQLITE_PATH must be set for local-first SQLite mode.")
@@ -503,6 +684,7 @@ def _build_context(settings: Settings) -> AppContext:
         artifact_repository = SQLiteArtifactRepository(settings.sqlite_path)
         audit_repository = SQLiteAuditRepository(settings.sqlite_path)
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
+        mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
         default_user = None
     elif settings.database_url:
         case_repository = PostgresCaseRepository(settings.database_url)
@@ -533,9 +715,11 @@ def _build_context(settings: Settings) -> AppContext:
         content_extractor=OutlookMsgExtractor(),
         gisela_client=HeuristicGiselaClient(),
         elizabethan_client=HeuristicElizabethanSearchClient(),
+        mail_import_repository=mail_import_repository,
     )
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:
+
         def ingest_outlook_message(message: OutlookMailboxMessage) -> None:
             user = _current_user_for_repositories(
                 default_user=default_user,
@@ -612,6 +796,7 @@ def _page_context(
         "detail": detail,
         "detail_error": None,
         "intake_state": hydrated_intake,
+        "mail_import_state": context.service.get_mail_import_state(user=user),
         "format_datetime": _format_datetime,
         "due_label": due_label,
         "local_timezone": context.settings.local_timezone,
@@ -677,11 +862,53 @@ def _onboarding_context(request: Request, message: str | None) -> dict[str, obje
     }
 
 
-def _current_user(context: AppContext) -> UserContext | None:
-    return _current_user_for_repositories(
-        default_user=context.default_user,
-        local_user_repository=context.local_user_repository,
-    )
+def _login_context(request: Request, message: str | None) -> dict[str, object]:
+    return {
+        "request": request,
+        "page_title": "Sign in to GoldenAge",
+        "message": message,
+    }
+
+
+def _settings_context(
+    request: Request,
+    context: AppContext,
+    *,
+    user: UserContext,
+    mail_message: str | None = None,
+    mail_message_kind: str = "info",
+    password_message: str | None = None,
+    password_message_kind: str = "info",
+) -> dict[str, object]:
+    return {
+        "request": request,
+        "page_title": "Settings",
+        "user": user,
+        "profile_image_url": _profile_image_url(user),
+        "mail_selector": context.service.get_mail_selector_settings(user=user),
+        "mail_message": mail_message,
+        "mail_message_kind": mail_message_kind,
+        "password_message": password_message,
+        "password_message_kind": password_message_kind,
+        "local_password_enabled": context.local_user_repository is not None,
+        "format_form_datetime": _format_form_datetime,
+        "local_timezone": context.settings.local_timezone,
+    }
+
+
+def _current_user(context: AppContext, *, request: Request | None = None) -> UserContext | None:
+    if context.local_user_repository is None:
+        return context.default_user
+
+    account = context.local_user_repository.get_first_user()
+    if account is None:
+        return None
+    if request is None:
+        return account.to_user_context()
+    account_id = _authenticated_account_id(request, settings=context.settings)
+    if account_id != account.id:
+        return None
+    return account.to_user_context()
 
 
 def _current_user_for_repositories(
@@ -704,16 +931,25 @@ def _mailbox_file_name(message: OutlookMailboxMessage) -> str:
     return f"{safe_subject or 'outlook-message'}.txt"
 
 
-def _require_current_user(context: AppContext) -> UserContext:
-    user = _current_user(context)
+def _require_current_user(context: AppContext, *, request: Request | None = None) -> UserContext:
+    user = _current_user(context, request=request)
     if user is None:
         raise HTTPException(status_code=503, detail="No user is configured.")
     return user
 
 
-def _redirect_to_onboarding_if_needed(context: AppContext) -> RedirectResponse | None:
-    if context.settings.use_local_first_sqlite and _current_user(context) is None:
+def _redirect_to_login_or_onboarding_if_needed(
+    request: Request,
+    context: AppContext,
+) -> RedirectResponse | None:
+    if not context.settings.use_local_first_sqlite:
+        return None
+    if context.local_user_repository is None:
         return RedirectResponse(url="/onboarding", status_code=302)
+    if context.local_user_repository.get_first_user() is None:
+        return RedirectResponse(url="/onboarding", status_code=302)
+    if _current_user(context, request=request) is None:
+        return RedirectResponse(url="/login", status_code=302)
     return None
 
 
@@ -748,6 +984,60 @@ def _hash_password(password: str) -> str:
     return f"pbkdf2_sha256$600000${salt}${digest}"
 
 
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations_text, salt, expected = password_hash.split("$", 3)
+        iterations = int(iterations_text)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    ).hex()
+    return hmac.compare_digest(digest, expected)
+
+
+def _set_auth_cookie(response: RedirectResponse, account_id: UUID, *, settings: Settings) -> None:
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _signed_account_id(account_id, settings=settings),
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite="lax",
+    )
+
+
+def _authenticated_account_id(request: Request, *, settings: Settings) -> UUID | None:
+    raw_value = request.cookies.get(AUTH_COOKIE_NAME)
+    if not raw_value or "." not in raw_value:
+        return None
+    account_id_text, signature = raw_value.rsplit(".", 1)
+    expected = _auth_signature(account_id_text, settings=settings)
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        return UUID(account_id_text)
+    except ValueError:
+        return None
+
+
+def _signed_account_id(account_id: UUID, *, settings: Settings) -> str:
+    account_id_text = str(account_id)
+    return f"{account_id_text}.{_auth_signature(account_id_text, settings=settings)}"
+
+
+def _auth_signature(value: str, *, settings: Settings) -> str:
+    return hmac.new(
+        settings.auth_secret.encode("utf-8"),
+        value.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _profile_image_url(user: UserContext) -> str | None:
     if user.profile_image_path is None:
         return None
@@ -772,6 +1062,12 @@ def _format_datetime(value: datetime | None, timezone_name: str) -> str:
     return local_value.strftime("%d.%m.%Y %H:%M")
 
 
+def _format_form_datetime(value: datetime | None, timezone_name: str) -> str:
+    if value is None:
+        return ""
+    return value.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%dT%H:%M")
+
+
 def _parse_form_datetime(value: str, timezone_name: str) -> datetime | None:
     if not value:
         return None
@@ -789,6 +1085,4 @@ def _require_form_datetime(value: str, timezone_name: str) -> datetime:
 
 
 def _uuid(raw_value: str):
-    from uuid import UUID
-
     return UUID(raw_value)

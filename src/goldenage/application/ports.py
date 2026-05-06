@@ -17,6 +17,8 @@ from goldenage.domain.models import (
     ExtractedArtifactData,
     ImportedMailPayload,
     MailCandidate,
+    MailConversation,
+    MailMessage,
     MailSelector,
     MailSourceSystem,
     SearchResult,
@@ -93,6 +95,50 @@ class ArtifactRepository(Protocol):
     ) -> ArtifactMailMetadata | None:
         """Return parsed mail metadata for an artifact."""
 
+    def save_mail_conversation(self, conversation: MailConversation) -> None:
+        """Persist a mail conversation."""
+
+    def get_mail_conversation(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> MailConversation | None:
+        """Return one visible mail conversation."""
+
+    def list_recent_mail_conversations(
+        self,
+        user: UserContext,
+        *,
+        limit: int = 10,
+    ) -> Sequence[MailConversation]:
+        """Return recent visible mail conversations."""
+
+    def save_mail_message(self, message: MailMessage) -> None:
+        """Persist source metadata for a mail artifact."""
+
+    def get_mail_message(self, artifact_id: UUID, user: UserContext) -> MailMessage | None:
+        """Return source metadata for a visible mail artifact."""
+
+    def find_mail_message_by_source(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_message_id: str | None,
+        internet_message_id: str | None,
+        dedupe_fingerprint: str,
+        user: UserContext,
+    ) -> MailMessage | None:
+        """Return an existing source message for dedupe checks."""
+
+    def list_conversation_artifacts(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[Artifact]:
+        """Return artifacts belonging to a visible mail conversation."""
+
 
 class AuditRepository(Protocol):
     """Persistence port for audit events."""
@@ -123,6 +169,16 @@ class MailImportClient(Protocol):
 
     def fetch_message(self, candidate_id: str) -> ImportedMailPayload:
         """Return one raw message payload for ingestion."""
+
+
+class MailboxSource(Protocol):
+    """Long-running local mailbox source."""
+
+    def watch_forever(self) -> None:
+        """Watch the mailbox and invoke its callback for new messages."""
+
+    def stop(self) -> None:
+        """Stop watching the mailbox."""
 
 
 class MailImportRepository(Protocol):

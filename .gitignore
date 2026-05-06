@@ -39,6 +39,22 @@ pip-delete-this-directory.txt
 # Local media assets
 *.mp4
 *.webm
+*.mov
+*.m4v
+*.avi
+*.mkv
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.avif
+*.heic
+*.tif
+*.tiff
+*.bmp
+*.svg
+!*.ico
 
 # Unit test / coverage reports
 htmlcov/

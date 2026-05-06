@@ -20,10 +20,10 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
-    MailConversation,
-    MailMessage,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
+    MailConversation,
+    MailMessage,
     MailParticipant,
     UserContext,
 )

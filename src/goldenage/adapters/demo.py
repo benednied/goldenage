@@ -30,10 +30,10 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     ExtractedArtifactData,
-    MailConversation,
-    MailMessage,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
+    MailConversation,
+    MailMessage,
     MailParticipant,
     SearchResult,
     UserContext,
@@ -236,9 +236,14 @@ class InMemoryArtifactRepository(ArtifactRepository):
                 and message.source_folder_id == source_folder_id
                 and message.source_message_id == source_message_id
             )
-            if source_match or (
-                internet_message_id is not None and message.internet_message_id == internet_message_id
-            ) or message.dedupe_fingerprint == dedupe_fingerprint:
+            if (
+                source_match
+                or (
+                    internet_message_id is not None
+                    and message.internet_message_id == internet_message_id
+                )
+                or message.dedupe_fingerprint == dedupe_fingerprint
+            ):
                 if self.get_artifact(message.artifact_id, user) is not None:
                     return message
         return None

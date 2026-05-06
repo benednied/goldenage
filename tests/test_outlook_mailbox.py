@@ -82,6 +82,8 @@ def test_normalize_com_message_reads_outlook_mail_fields() -> None:
     assert normalized.conversation_key == "conversation-entry"
     assert normalized.internet_message_id == "<abc123@example.com>"
     assert normalized.sender_email == "max@acme.example"
-    assert normalized.recipients == (MailParticipant(name="Alex Example", email="alex@example.com"),)
+    assert normalized.recipients == (
+        MailParticipant(name="Alex Example", email="alex@example.com"),
+    )
     assert normalized.sent_at == datetime(2026, 4, 12, 9, 30, tzinfo=UTC)
     assert normalized.received_at == datetime(2026, 4, 12, 9, 31, tzinfo=UTC)

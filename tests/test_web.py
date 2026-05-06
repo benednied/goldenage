@@ -1,5 +1,5 @@
-from datetime import UTC, datetime
 import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,6 +29,23 @@ def test_worklist_page_renders(monkeypatch) -> None:
     assert response.status_code == 200
     assert "GoldenAge" in response.text
     assert "Due activities" in response.text
+    assert 'rel="icon"' in response.text
+    assert "golden_age_favicon_48.ico" in response.text
+
+
+def test_favicon_route_serves_icon(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
+    monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    client = TestClient(create_app())
+
+    response = client.get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/x-icon")
+    assert response.content
 
 
 def test_windows_outlook_callback_ingests_mailbox_message(tmp_path, monkeypatch) -> None:
@@ -271,6 +288,108 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
     assert row[1] == "Bened Example"
     assert row[2] is not None
     assert (artifact_dir / "profiles" / row[2]).exists()
+
+
+def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
+    sqlite_path = tmp_path / "goldenage.sqlite3"
+    artifact_dir = tmp_path / "artifacts"
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
+    monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(sqlite_path))
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
+    client = TestClient(create_app())
+    client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+        },
+    )
+
+    settings_response = client.get("/settings")
+    assert settings_response.status_code == 200
+    assert "Settings" in settings_response.text
+    assert "Import defaults" in settings_response.text
+
+    mail_response = client.post(
+        "/settings/mail",
+        data={
+            "account_name": "bened@example.com",
+            "mailbox_name": "Inbox",
+            "sender_filter": "acme.example",
+            "subject_filter": "Renewal",
+            "sent_after": "2026-04-12T09:30",
+            "result_limit": "7",
+            "unread_only": "on",
+        },
+    )
+    assert mail_response.status_code == 200
+    assert "Mail defaults saved." in mail_response.text
+    assert 'value="bened@example.com"' in mail_response.text
+    assert 'value="Inbox"' in mail_response.text
+    assert 'value="2026-04-12T09:30"' in mail_response.text
+
+    logout_response = client.post("/logout")
+    assert logout_response.status_code == 200
+    assert "Sign in to GoldenAge" in logout_response.text
+
+    worklist_response = client.get("/worklist")
+    assert worklist_response.status_code == 200
+    assert "Sign in to GoldenAge" in worklist_response.text
+
+    login_response = client.post(
+        "/login/local",
+        data={"email": "bened@example.com", "password": "secret-passphrase"},
+    )
+    assert login_response.status_code == 200
+    assert "Bened Example" in login_response.text
+
+
+def test_local_first_password_change_updates_login_credentials(tmp_path, monkeypatch) -> None:
+    sqlite_path = tmp_path / "goldenage.sqlite3"
+    artifact_dir = tmp_path / "artifacts"
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
+    monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(sqlite_path))
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
+    client = TestClient(create_app())
+    client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+        },
+    )
+
+    response = client.post(
+        "/settings/password",
+        data={
+            "current_password": "secret-passphrase",
+            "new_password": "new-passphrase",
+            "confirm_password": "new-passphrase",
+        },
+    )
+    assert response.status_code == 200
+    assert "Password changed." in response.text
+
+    client.post("/logout")
+    old_login_response = client.post(
+        "/login/local",
+        data={"email": "bened@example.com", "password": "secret-passphrase"},
+    )
+    assert old_login_response.status_code == 401
+    assert "Invalid email or password." in old_login_response.text
+
+    new_login_response = client.post(
+        "/login/local",
+        data={"email": "bened@example.com", "password": "new-passphrase"},
+    )
+    assert new_login_response.status_code == 200
+    assert "Bened Example" in new_login_response.text
 
 
 def test_local_first_intake_can_create_new_case_when_search_has_no_results(

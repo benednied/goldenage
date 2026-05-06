@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Literal
@@ -28,6 +30,9 @@ from goldenage.domain.models import (
     CaseFile,
     ExtractedArtifactData,
     MailCandidate,
+    MailConversation,
+    MailMessage,
+    MailParticipant,
     MailSelector,
     MailSourceSystem,
     SearchResult,
@@ -61,6 +66,11 @@ class CaseDetail:
     active_activity: Activity | None
     open_activities: tuple[Activity, ...]
     recent_artifacts: tuple[Artifact, ...]
+    selected_artifact: Artifact | None = None
+    selected_mail_metadata: ArtifactMailMetadata | None = None
+    selected_mail_message: MailMessage | None = None
+    selected_conversation: MailConversation | None = None
+    selected_conversation_artifacts: tuple[Artifact, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +84,10 @@ class IntakeState:
     search_results: tuple[SearchResult, ...] = ()
     message: str | None = None
     message_kind: MessageKind = "info"
+    conversation: MailConversation | None = None
+    conversation_artifacts: tuple[Artifact, ...] = ()
+    recent_conversations: tuple[MailConversation, ...] = ()
+    ingest_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +149,14 @@ class GoldenAgeService:
             )
         return tuple(sorted(items, key=lambda item: (item.activity.due_at, item.case_file.title)))
 
-    def get_case_detail(self, *, case_id: UUID, user: UserContext, now: datetime) -> CaseDetail:
+    def get_case_detail(
+        self,
+        *,
+        case_id: UUID,
+        user: UserContext,
+        now: datetime,
+        selected_artifact_id: UUID | None = None,
+    ) -> CaseDetail:
         """Build detail state for one case."""
         del now
         case_file = self._case_repository.get_case(case_id, user)
@@ -159,11 +180,45 @@ class GoldenAgeService:
                 reverse=True,
             )[:5]
         )
+        selected_artifact = None
+        selected_mail_metadata = None
+        selected_mail_message = None
+        selected_conversation = None
+        selected_conversation_artifacts: tuple[Artifact, ...] = ()
+        if selected_artifact_id is not None:
+            selected_artifact = self._artifact_repository.get_artifact(selected_artifact_id, user)
+            if selected_artifact is None or selected_artifact.assigned_case_id != case_id:
+                raise NotFoundError("Artifact not found.")
+            selected_mail_metadata = self._artifact_repository.get_mail_metadata(
+                selected_artifact_id,
+                user,
+            )
+            selected_mail_message = self._artifact_repository.get_mail_message(
+                selected_artifact_id,
+                user,
+            )
+            if selected_mail_message is not None:
+                selected_conversation = self._artifact_repository.get_mail_conversation(
+                    selected_mail_message.conversation_id,
+                    user,
+                )
+                selected_conversation_artifacts = tuple(
+                    self._artifact_repository.list_conversation_artifacts(
+                        selected_mail_message.conversation_id,
+                        user,
+                    )
+                )
+
         return CaseDetail(
             case_file=case_file,
             active_activity=active_activity,
             open_activities=open_activities,
             recent_artifacts=recent_artifacts,
+            selected_artifact=selected_artifact,
+            selected_mail_metadata=selected_mail_metadata,
+            selected_mail_message=selected_mail_message,
+            selected_conversation=selected_conversation,
+            selected_conversation_artifacts=selected_conversation_artifacts,
         )
 
     def get_case_detail_for_activity(
@@ -467,6 +522,71 @@ class GoldenAgeService:
             search_query=intake_state.search_query,
             search_results=intake_state.search_results,
             message="Mail message imported. Confirm or reject the proposed case.",
+            conversation=intake_state.conversation,
+            conversation_artifacts=intake_state.conversation_artifacts,
+        )
+
+    def ingest_mail(
+        self,
+        *,
+        file_name: str,
+        media_type: str,
+        content: bytes,
+        extracted: ExtractedArtifactData,
+        user: UserContext,
+        now: datetime,
+    ) -> IntakeState:
+        """Ingest a normalized mailbox message."""
+        return self._ingest_mail_artifact(
+            file_name=file_name,
+            media_type=media_type,
+            content=content,
+            source_system=DESKTOP_MAIL_SOURCE,
+            user=user,
+            now=now,
+            external_message_id=extracted.source_message_id,
+            rfc_message_id=extracted.internet_message_id or extracted.rfc_message_id,
+            source_account=extracted.source_account_id,
+            source_mailbox=extracted.source_folder_id,
+            audit_event_type="mailbox_message_ingested",
+            extracted=extracted,
+        )
+
+    def get_recent_intake(self, *, user: UserContext, limit: int = 10) -> IntakeState:
+        """Return recent mail conversations for the intake panel."""
+        return IntakeState(
+            recent_conversations=tuple(
+                self._artifact_repository.list_recent_mail_conversations(user, limit=limit)
+            )
+        )
+
+    def get_intake_state_for_conversation(
+        self,
+        *,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> IntakeState:
+        """Load intake state for one conversation."""
+        conversation = self._artifact_repository.get_mail_conversation(conversation_id, user)
+        if conversation is None:
+            raise NotFoundError("Conversation not found.")
+        artifacts = tuple(
+            self._artifact_repository.list_conversation_artifacts(conversation_id, user)
+        )
+        artifact = artifacts[0] if artifacts else None
+        suggestion = (
+            self._artifact_repository.get_suggestion(artifact.id, user)
+            if artifact is not None
+            else None
+        )
+        return IntakeState(
+            artifact=artifact,
+            suggestion=suggestion,
+            conversation=conversation,
+            conversation_artifacts=artifacts,
+            recent_conversations=tuple(
+                self._artifact_repository.list_recent_mail_conversations(user, limit=10)
+            ),
         )
 
     def _mail_selector_for_user(self, user: UserContext) -> MailSelector:
@@ -498,10 +618,11 @@ class GoldenAgeService:
         source_account: str | None,
         source_mailbox: str | None,
         audit_event_type: str,
+        extracted: ExtractedArtifactData | None = None,
     ) -> IntakeState:
         artifact_id = uuid4()
         storage_key = self._artifact_store.store(artifact_id, file_name, content)
-        extracted = self._content_extractor.extract(file_name, media_type, content)
+        extracted = extracted or self._content_extractor.extract(file_name, media_type, content)
         artifact = Artifact(
             id=artifact_id,
             file_name=file_name,
@@ -525,6 +646,15 @@ class GoldenAgeService:
         )
         if mail_metadata is not None:
             self._artifact_repository.save_mail_metadata(mail_metadata)
+        conversation = self._save_mail_thread(
+            artifact=artifact,
+            extracted=extracted,
+            source_system=source_system,
+            source_account=source_account,
+            source_mailbox=source_mailbox,
+            now=now,
+            user=user,
+        )
         suggestion = self._gisela_client.analyze_artifact(
             artifact,
             mail_metadata,
@@ -556,6 +686,12 @@ class GoldenAgeService:
             artifact=intake_state.artifact,
             suggestion=intake_state.suggestion,
             message="Document analyzed. Confirm or reject the proposed case.",
+            conversation=conversation,
+            conversation_artifacts=(
+                tuple(self._artifact_repository.list_conversation_artifacts(conversation.id, user))
+                if conversation is not None
+                else ()
+            ),
         )
 
     def get_intake_state(self, *, artifact_id: UUID, user: UserContext) -> IntakeState:
@@ -626,6 +762,16 @@ class GoldenAgeService:
 
         updated_artifact = replace(artifact, assigned_case_id=case_id)
         self._artifact_repository.save_artifact(updated_artifact)
+        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
+        if mail_message is not None:
+            conversation = self._artifact_repository.get_mail_conversation(
+                mail_message.conversation_id,
+                user,
+            )
+            if conversation is not None:
+                self._artifact_repository.save_mail_conversation(
+                    replace(conversation, assigned_case_id=case_id, updated_at=now)
+                )
         self._activity_repository.save_activity(
             Activity(
                 id=uuid4(),
@@ -646,6 +792,113 @@ class GoldenAgeService:
             now=now,
         )
         return self.get_case_detail(case_id=case_id, user=user, now=now)
+
+    def create_case_for_artifact(
+        self,
+        *,
+        artifact_id: UUID,
+        title: str,
+        company: str,
+        primary_contact: str,
+        next_step: str,
+        next_due_at: datetime,
+        user: UserContext,
+        now: datetime,
+    ) -> CaseDetail:
+        """Create a case from an intake artifact and schedule its first step."""
+        artifact = self._artifact_repository.get_artifact(artifact_id, user)
+        if artifact is None:
+            raise NotFoundError("Artifact not found.")
+        normalized_title = title.strip()
+        normalized_step = next_step.strip()
+        if not normalized_title:
+            raise ResolutionError("A case title is required.")
+        if not normalized_step:
+            raise ResolutionError("A next step description is required.")
+        case_id = uuid4()
+        self._case_repository.save_case(
+            CaseFile(
+                id=case_id,
+                title=normalized_title,
+                company=company.strip() or None,
+                primary_contact=primary_contact.strip() or None,
+                status="open",
+                last_activity_at=now,
+            )
+        )
+        return self.assign_artifact_to_case(
+            artifact_id=artifact_id,
+            case_id=case_id,
+            next_step=normalized_step,
+            next_due_at=next_due_at,
+            user=user,
+            now=now,
+        )
+
+    def _save_mail_thread(
+        self,
+        *,
+        artifact: Artifact,
+        extracted: ExtractedArtifactData,
+        source_system: MailSourceSystem,
+        source_account: str | None,
+        source_mailbox: str | None,
+        now: datetime,
+        user: UserContext,
+    ) -> MailConversation | None:
+        source_kind = extracted.source_kind or source_system
+        external_conversation_id = extracted.conversation_id or _normalize_subject(
+            extracted.subject
+        )
+        dedupe_fingerprint = _dedupe_fingerprint(
+            source_kind=source_kind,
+            source_account_id=extracted.source_account_id or source_account,
+            source_folder_id=extracted.source_folder_id or source_mailbox,
+            source_message_id=extracted.source_message_id,
+            internet_message_id=extracted.internet_message_id or extracted.rfc_message_id,
+            subject=extracted.subject,
+            sent_at=extracted.sent_at,
+            content_text=extracted.content_text,
+        )
+        existing = self._artifact_repository.find_mail_message_by_source(
+            source_kind=source_kind,
+            source_account_id=extracted.source_account_id or source_account,
+            source_folder_id=extracted.source_folder_id or source_mailbox,
+            source_message_id=extracted.source_message_id,
+            internet_message_id=extracted.internet_message_id or extracted.rfc_message_id,
+            dedupe_fingerprint=dedupe_fingerprint,
+            user=user,
+        )
+        if existing is not None:
+            return self._artifact_repository.get_mail_conversation(existing.conversation_id, user)
+
+        conversation = _conversation_for_message(
+            repository=self._artifact_repository,
+            user=user,
+            source_kind=source_kind,
+            external_conversation_id=external_conversation_id,
+            artifact=artifact,
+            extracted=extracted,
+            now=now,
+        )
+        self._artifact_repository.save_mail_conversation(conversation)
+        self._artifact_repository.save_mail_message(
+            MailMessage(
+                artifact_id=artifact.id,
+                conversation_id=conversation.id,
+                source_kind=source_kind,
+                source_account_id=extracted.source_account_id or source_account,
+                source_folder_id=extracted.source_folder_id or source_mailbox,
+                source_message_id=extracted.source_message_id,
+                source_conversation_id=extracted.conversation_id,
+                internet_message_id=extracted.internet_message_id or extracted.rfc_message_id,
+                dedupe_fingerprint=dedupe_fingerprint,
+                direction=extracted.direction,
+                received_at=extracted.received_at,
+                created_at=now,
+            )
+        )
+        return conversation
 
     def _record_audit(
         self,
@@ -693,7 +946,8 @@ def _build_mail_metadata(
     source_mailbox: str | None,
     now: datetime,
 ) -> ArtifactMailMetadata | None:
-    if extracted.message_format not in {"outlook_msg", "rfc822_email"}:
+    message_format = extracted.message_format
+    if message_format not in {"outlook_msg", "rfc822_email"}:
         return None
 
     sender_name = extracted.sender.name if extracted.sender is not None else None
@@ -705,7 +959,7 @@ def _build_mail_metadata(
     return ArtifactMailMetadata(
         artifact_id=artifact_id,
         source_system=source_system,
-        message_format=extracted.message_format,
+        message_format=message_format,
         parse_status=extracted.parse_status,
         external_message_id=external_message_id,
         rfc_message_id=rfc_message_id or extracted.rfc_message_id,
@@ -737,3 +991,112 @@ def _already_imported_message(count: int) -> str:
     if count == 1:
         return "Already imported: 1 matching mail message is already in intake."
     return f"Already imported: {count} matching mail messages are already in intake."
+
+
+def _conversation_for_message(
+    *,
+    repository: ArtifactRepository,
+    user: UserContext,
+    source_kind: str,
+    external_conversation_id: str | None,
+    artifact: Artifact,
+    extracted: ExtractedArtifactData,
+    now: datetime,
+) -> MailConversation:
+    latest_message_at = extracted.received_at or extracted.sent_at or artifact.uploaded_at
+    participants = _mail_participants(extracted)
+    existing = None
+    for candidate in repository.list_recent_mail_conversations(user, limit=50):
+        if (
+            candidate.source_kind == source_kind
+            and candidate.external_conversation_id == external_conversation_id
+            and external_conversation_id is not None
+        ):
+            existing = candidate
+            break
+    if existing is None:
+        return MailConversation(
+            id=uuid4(),
+            source_kind=source_kind,
+            external_conversation_id=external_conversation_id,
+            normalized_subject=_normalize_subject(extracted.subject),
+            latest_subject=extracted.subject,
+            latest_message_at=latest_message_at,
+            participants=participants,
+            message_count=1,
+            latest_artifact_id=artifact.id,
+            created_at=now,
+            updated_at=now,
+            assigned_case_id=artifact.assigned_case_id,
+        )
+    return replace(
+        existing,
+        latest_subject=extracted.subject or existing.latest_subject,
+        latest_message_at=max(existing.latest_message_at, latest_message_at),
+        participants=_merge_participants(existing.participants, participants),
+        message_count=existing.message_count + 1,
+        latest_artifact_id=artifact.id,
+        updated_at=now,
+        assigned_case_id=artifact.assigned_case_id or existing.assigned_case_id,
+    )
+
+
+def _mail_participants(extracted: ExtractedArtifactData) -> tuple[MailParticipant, ...]:
+    participants = []
+    if extracted.sender is not None:
+        participants.append(extracted.sender)
+    participants.extend(extracted.recipients)
+    return _merge_participants((), tuple(participants))
+
+
+def _merge_participants(
+    existing: tuple[MailParticipant, ...],
+    incoming: tuple[MailParticipant, ...],
+) -> tuple[MailParticipant, ...]:
+    merged: list[MailParticipant] = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for participant in (*existing, *incoming):
+        key = (
+            participant.name.lower() if participant.name else None,
+            participant.email.lower() if participant.email else None,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(participant)
+    return tuple(merged)
+
+
+def _normalize_subject(subject: str | None) -> str | None:
+    if subject is None:
+        return None
+    normalized = subject.strip().lower()
+    normalized = re.sub(r"^((re|fw|fwd):\s*)+", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized or None
+
+
+def _dedupe_fingerprint(
+    *,
+    source_kind: str,
+    source_account_id: str | None,
+    source_folder_id: str | None,
+    source_message_id: str | None,
+    internet_message_id: str | None,
+    subject: str | None,
+    sent_at: datetime | None,
+    content_text: str,
+) -> str:
+    payload = "|".join(
+        (
+            source_kind,
+            source_account_id or "",
+            source_folder_id or "",
+            source_message_id or "",
+            internet_message_id or "",
+            subject or "",
+            sent_at.isoformat() if sent_at is not None else "",
+            content_text,
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
