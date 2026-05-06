@@ -23,6 +23,9 @@ class Settings:
     mail_client_mode: str | None
     mail_fixture_path: Path | None
     outlook_scan_per_folder_limit: int
+    outlook_sync_enabled: bool
+    outlook_account_name: str | None
+    outlook_poll_seconds: int
     apple_mail_client_mode: str | None
     apple_mail_fixture_path: Path | None
     auth_secret: str
@@ -57,6 +60,9 @@ def load_settings() -> Settings:
         or os.environ.get("GOLDENAGE_APPLE_MAIL_CLIENT_MODE"),
         mail_fixture_path=Path(raw_mail_fixture_path) if raw_mail_fixture_path else None,
         outlook_scan_per_folder_limit=_env_int("GOLDENAGE_OUTLOOK_SCAN_PER_FOLDER_LIMIT", 250),
+        outlook_sync_enabled=_env_flag("GOLDENAGE_OUTLOOK_SYNC_ENABLED"),
+        outlook_account_name=os.environ.get("GOLDENAGE_OUTLOOK_ACCOUNT"),
+        outlook_poll_seconds=_env_int("GOLDENAGE_OUTLOOK_POLL_SECONDS", 30),
         apple_mail_client_mode=os.environ.get("GOLDENAGE_APPLE_MAIL_CLIENT_MODE"),
         apple_mail_fixture_path=(
             Path(raw_path)

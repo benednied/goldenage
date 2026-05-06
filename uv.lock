@@ -109,6 +109,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.5,<9.0.0" },
     { name = "python-multipart", specifier = ">=0.0.20,<1.0.0" },
     { name = "python-oxmsg", specifier = ">=0.0.2,<1.0.0" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.11" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },

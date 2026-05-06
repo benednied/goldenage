@@ -52,7 +52,7 @@ def normalize_outlook_message(message: OutlookMailboxMessage) -> ExtractedArtifa
         recipients=message.recipients,
         sent_at=message.sent_at,
         received_at=message.received_at,
-        direction=message.direction,  # type: ignore[arg-type]
+        direction=cast(MailDirection, message.direction),
         source_account_id=message.account_name,
         source_folder_id=message.folder_key,
         source_message_id=message.message_key,
@@ -64,7 +64,9 @@ def normalize_outlook_message(message: OutlookMailboxMessage) -> ExtractedArtifa
 class WindowsOutlookMailboxSource(MailboxSource):
     """Classic Outlook COM/MAPI watcher."""
 
-    def __init__(self, settings: Settings, on_message: Callable[[OutlookMailboxMessage], None]) -> None:
+    def __init__(
+        self, settings: Settings, on_message: Callable[[OutlookMailboxMessage], None]
+    ) -> None:
         self._settings = settings
         self._on_message = on_message
         self._stop_event = threading.Event()
@@ -205,9 +207,7 @@ def _internet_message_id(message: Any) -> str | None:
     if accessor is None:
         return None
     try:
-        return accessor.GetProperty(
-            "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
-        )
+        return accessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x1035001F")
     except Exception:
         return None
 

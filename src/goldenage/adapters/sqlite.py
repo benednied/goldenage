@@ -25,6 +25,8 @@ from goldenage.domain.models import (
     CaseFile,
     LocalUserAccount,
     MailCandidate,
+    MailConversation,
+    MailMessage,
     MailParticipant,
     MailSelector,
     MailSourceSystem,
@@ -376,6 +378,214 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         with self._connect() as connection:
             row = connection.execute(sql, (str(artifact_id),)).fetchone()
         return _row_to_mail_metadata(row) if row else None
+
+    def save_mail_conversation(self, conversation: MailConversation) -> None:
+        sql = """
+            INSERT INTO mail_conversation (
+                id, source_kind, external_conversation_id, normalized_subject, latest_subject,
+                latest_message_at, participants_json, message_count, latest_artifact_id,
+                assigned_case_id, created_at, updated_at
+            ) VALUES (
+                :id, :source_kind, :external_conversation_id, :normalized_subject, :latest_subject,
+                :latest_message_at, :participants_json, :message_count, :latest_artifact_id,
+                :assigned_case_id, :created_at, :updated_at
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                source_kind = excluded.source_kind,
+                external_conversation_id = excluded.external_conversation_id,
+                normalized_subject = excluded.normalized_subject,
+                latest_subject = excluded.latest_subject,
+                latest_message_at = excluded.latest_message_at,
+                participants_json = excluded.participants_json,
+                message_count = excluded.message_count,
+                latest_artifact_id = excluded.latest_artifact_id,
+                assigned_case_id = excluded.assigned_case_id,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+        """
+        payload = {
+            "id": str(conversation.id),
+            "source_kind": conversation.source_kind,
+            "external_conversation_id": conversation.external_conversation_id,
+            "normalized_subject": conversation.normalized_subject,
+            "latest_subject": conversation.latest_subject,
+            "latest_message_at": _serialize_datetime(conversation.latest_message_at),
+            "participants_json": json.dumps([asdict(p) for p in conversation.participants]),
+            "message_count": conversation.message_count,
+            "latest_artifact_id": str(conversation.latest_artifact_id),
+            "assigned_case_id": (
+                str(conversation.assigned_case_id)
+                if conversation.assigned_case_id is not None
+                else None
+            ),
+            "created_at": _serialize_datetime(conversation.created_at),
+            "updated_at": _serialize_datetime(conversation.updated_at),
+        }
+        with self._connect() as connection:
+            connection.execute(sql, payload)
+            connection.commit()
+
+    def get_mail_conversation(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> MailConversation | None:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        sql = f"""
+            SELECT mc.*
+            FROM mail_conversation mc
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE mc.id = ?
+              AND (c.id IS NULL OR {clause})
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(conversation_id), *params)).fetchone()
+        return _row_to_mail_conversation(row) if row else None
+
+    def list_recent_mail_conversations(
+        self,
+        user: UserContext,
+        *,
+        limit: int = 10,
+    ) -> Sequence[MailConversation]:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        sql = f"""
+            SELECT mc.*
+            FROM mail_conversation mc
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE c.id IS NULL OR {clause}
+            ORDER BY mc.latest_message_at DESC
+            LIMIT ?
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (*params, limit)).fetchall()
+        return tuple(_row_to_mail_conversation(row) for row in rows)
+
+    def save_mail_message(self, message: MailMessage) -> None:
+        sql = """
+            INSERT INTO mail_message (
+                artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
+                source_message_id, source_conversation_id, internet_message_id,
+                dedupe_fingerprint, direction, received_at, created_at
+            ) VALUES (
+                :artifact_id, :conversation_id, :source_kind, :source_account_id,
+                :source_folder_id, :source_message_id, :source_conversation_id,
+                :internet_message_id, :dedupe_fingerprint, :direction, :received_at, :created_at
+            )
+            ON CONFLICT(artifact_id) DO UPDATE SET
+                conversation_id = excluded.conversation_id,
+                source_kind = excluded.source_kind,
+                source_account_id = excluded.source_account_id,
+                source_folder_id = excluded.source_folder_id,
+                source_message_id = excluded.source_message_id,
+                source_conversation_id = excluded.source_conversation_id,
+                internet_message_id = excluded.internet_message_id,
+                dedupe_fingerprint = excluded.dedupe_fingerprint,
+                direction = excluded.direction,
+                received_at = excluded.received_at,
+                created_at = excluded.created_at
+        """
+        payload = {
+            "artifact_id": str(message.artifact_id),
+            "conversation_id": str(message.conversation_id),
+            "source_kind": message.source_kind,
+            "source_account_id": message.source_account_id,
+            "source_folder_id": message.source_folder_id,
+            "source_message_id": message.source_message_id,
+            "source_conversation_id": message.source_conversation_id,
+            "internet_message_id": message.internet_message_id,
+            "dedupe_fingerprint": message.dedupe_fingerprint,
+            "direction": message.direction,
+            "received_at": _serialize_datetime(message.received_at),
+            "created_at": _serialize_datetime(message.created_at),
+        }
+        with self._connect() as connection:
+            connection.execute(sql, payload)
+            connection.commit()
+
+    def get_mail_message(self, artifact_id: UUID, user: UserContext) -> MailMessage | None:
+        if self.get_artifact(artifact_id, user) is None:
+            return None
+        sql = """
+            SELECT artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
+                   source_message_id, source_conversation_id, internet_message_id,
+                   dedupe_fingerprint, direction, received_at, created_at
+            FROM mail_message
+            WHERE artifact_id = ?
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(artifact_id),)).fetchone()
+        return _row_to_mail_message(row) if row else None
+
+    def find_mail_message_by_source(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_message_id: str | None,
+        internet_message_id: str | None,
+        dedupe_fingerprint: str,
+        user: UserContext,
+    ) -> MailMessage | None:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        sql = f"""
+            SELECT mm.artifact_id, mm.conversation_id, mm.source_kind, mm.source_account_id,
+                   mm.source_folder_id, mm.source_message_id, mm.source_conversation_id,
+                   mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
+                   mm.created_at
+            FROM mail_message mm
+            JOIN artifact a ON a.id = mm.artifact_id
+            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            WHERE mm.source_kind = ?
+              AND (
+                    (? IS NOT NULL AND ? IS NOT NULL AND ? IS NOT NULL
+                     AND mm.source_account_id = ? AND mm.source_folder_id = ?
+                     AND mm.source_message_id = ?)
+                 OR (? IS NOT NULL AND mm.internet_message_id = ?)
+                 OR mm.dedupe_fingerprint = ?
+              )
+              AND (a.assigned_case_id IS NULL OR {clause})
+            LIMIT 1
+        """
+        query_params = (
+            source_kind,
+            source_account_id,
+            source_folder_id,
+            source_message_id,
+            source_account_id,
+            source_folder_id,
+            source_message_id,
+            internet_message_id,
+            internet_message_id,
+            dedupe_fingerprint,
+            *params,
+        )
+        with self._connect() as connection:
+            row = connection.execute(sql, query_params).fetchone()
+        return _row_to_mail_message(row) if row else None
+
+    def list_conversation_artifacts(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[Artifact]:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        sql = f"""
+            SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
+                   a.uploaded_at, a.uploaded_by, a.assigned_case_id
+            FROM mail_message mm
+            JOIN artifact a ON a.id = mm.artifact_id
+            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            WHERE mm.conversation_id = ?
+              AND (a.assigned_case_id IS NULL OR {clause})
+            ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(conversation_id), *params)).fetchall()
+        return tuple(_row_to_artifact(row) for row in rows)
 
 
 class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
@@ -801,6 +1011,47 @@ def _row_to_mail_metadata(row: sqlite3.Row) -> ArtifactMailMetadata:
             for recipient in recipients
         ),
         sent_at=_deserialize_datetime(row["sent_at"]),
+        created_at=_deserialize_datetime(row["created_at"]),
+    )
+
+
+def _row_to_mail_conversation(row: sqlite3.Row) -> MailConversation:
+    participants = json.loads(row["participants_json"])
+    return MailConversation(
+        id=UUID(row["id"]),
+        source_kind=row["source_kind"],
+        external_conversation_id=row["external_conversation_id"],
+        normalized_subject=row["normalized_subject"],
+        latest_subject=row["latest_subject"],
+        latest_message_at=_deserialize_datetime(row["latest_message_at"]),
+        participants=tuple(
+            MailParticipant(
+                name=participant.get("name"),
+                email=participant.get("email"),
+            )
+            for participant in participants
+        ),
+        message_count=int(row["message_count"]),
+        latest_artifact_id=UUID(row["latest_artifact_id"]),
+        assigned_case_id=UUID(row["assigned_case_id"]) if row["assigned_case_id"] else None,
+        created_at=_deserialize_datetime(row["created_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
+    )
+
+
+def _row_to_mail_message(row: sqlite3.Row) -> MailMessage:
+    return MailMessage(
+        artifact_id=UUID(row["artifact_id"]),
+        conversation_id=UUID(row["conversation_id"]),
+        source_kind=row["source_kind"],
+        source_account_id=row["source_account_id"],
+        source_folder_id=row["source_folder_id"],
+        source_message_id=row["source_message_id"],
+        source_conversation_id=row["source_conversation_id"],
+        internet_message_id=row["internet_message_id"],
+        dedupe_fingerprint=row["dedupe_fingerprint"],
+        direction=row["direction"],
+        received_at=_deserialize_datetime(row["received_at"]),
         created_at=_deserialize_datetime(row["created_at"]),
     )
 

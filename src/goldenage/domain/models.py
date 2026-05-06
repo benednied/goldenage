@@ -13,6 +13,7 @@ DueLabel = Literal["overdue", "today", "upcoming"]
 MailSourceSystem = Literal["outlook_upload", "apple_mail_client", "desktop_mail_client"]
 MailMessageFormat = Literal["outlook_msg", "rfc822_email"]
 ParseStatus = Literal["parsed"]
+MailDirection = Literal["inbound", "outbound"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,14 +124,86 @@ class ArtifactMailMetadata:
 class ExtractedArtifactData:
     """Normalized output from an artifact extractor."""
 
-    message_format: MailMessageFormat
-    parse_status: ParseStatus
-    rfc_message_id: str | None
     content_text: str
     subject: str | None
     sender: MailParticipant | None
     recipients: tuple[MailParticipant, ...]
     sent_at: datetime | None
+    rfc_message_id: str | None = None
+    message_format: MailMessageFormat = "outlook_msg"
+    parse_status: ParseStatus = "parsed"
+    source_kind: str | None = None
+    received_at: datetime | None = None
+    direction: MailDirection | None = None
+    source_account_id: str | None = None
+    source_folder_id: str | None = None
+    source_message_id: str | None = None
+    conversation_id: str | None = None
+    internet_message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MailConversation:
+    """Normalized mail thread associated with one or more artifacts."""
+
+    id: UUID
+    source_kind: str
+    external_conversation_id: str | None
+    normalized_subject: str | None
+    latest_subject: str | None
+    latest_message_at: datetime
+    participants: tuple[MailParticipant, ...]
+    message_count: int
+    latest_artifact_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    assigned_case_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MailMessage:
+    """Source and dedupe metadata for an ingested mail artifact."""
+
+    artifact_id: UUID
+    conversation_id: UUID
+    source_kind: str
+    source_account_id: str | None
+    source_folder_id: str | None
+    source_message_id: str | None
+    source_conversation_id: str | None
+    internet_message_id: str | None
+    dedupe_fingerprint: str
+    direction: MailDirection | None
+    received_at: datetime | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxAccountConfig:
+    """Configuration for local mailbox polling."""
+
+    id: UUID
+    user_id: UUID | None
+    source_kind: str
+    account_key: str
+    outlook_store_name: str
+    inbox_folder_key: str | None
+    sent_folder_key: str | None
+    polling_interval_seconds: int
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxSyncCheckpoint:
+    """Last processed position for a mailbox folder."""
+
+    account_config_id: UUID
+    folder_key: str
+    last_message_key: str | None
+    last_message_at: datetime | None
+    updated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
