@@ -32,6 +32,192 @@
   </div>
 {% endif %}
 
+{% if intake_state.artifact %}
+  <section class="detail-section intake-state intake-active">
+    <div class="artifact-header">
+      <div>
+        <h3>{{ intake_state.conversation.latest_subject if intake_state.conversation else intake_state.artifact.file_name }}</h3>
+        <p class="muted">{{ intake_state.artifact.file_name }} · {{ intake_state.artifact.media_type }} · {{ intake_state.artifact.size_bytes }} bytes</p>
+      </div>
+      {% if intake_state.suggestion %}
+        <span class="pill">{{ "%.0f"|format(intake_state.suggestion.confidence * 100) }}% match</span>
+      {% endif %}
+    </div>
+
+    {% if intake_state.conversation %}
+      <p class="muted">
+        Thread with {{ intake_state.conversation.message_count }} mail{% if intake_state.conversation.message_count != 1 %}s{% endif %}
+        {% if intake_state.conversation.participants %}
+          ·
+          {% for participant in intake_state.conversation.participants %}
+            {{ participant.name or participant.email or "Unknown" }}{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        {% endif %}
+      </p>
+      {% if intake_state.conversation_artifacts %}
+        <ul class="mini-list">
+          {% for artifact in intake_state.conversation_artifacts %}
+            <li>
+              <strong>{{ artifact.file_name }}</strong>
+              <small>{{ format_datetime(artifact.uploaded_at, local_timezone) }}</small>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endif %}
+
+    {% if intake_state.suggestion and intake_state.suggestion.suggested_case_id %}
+      <div class="suggestion-card">
+        <p class="suggestion-title">This document likely belongs to an existing case.</p>
+        <p class="muted">{{ intake_state.suggestion.summary_reason }}</p>
+        <form
+          method="post"
+          action="/artifacts/{{ intake_state.artifact.id }}/assign"
+          hx-post="/artifacts/{{ intake_state.artifact.id }}/assign"
+          hx-target="#workspace"
+          hx-swap="innerHTML"
+          hx-indicator="find .busy-indicator"
+          class="workflow-form"
+        >
+          <input type="hidden" name="case_id" value="{{ intake_state.suggestion.suggested_case_id }}" />
+          <label>
+            What should happen next?
+            <input type="text" name="next_step" placeholder="Review the newly received draft and reply" required />
+          </label>
+          <label>
+            Follow-up due
+            <input type="datetime-local" name="next_due_at" required />
+          </label>
+          <div class="button-row">
+            <button type="submit">Confirm suggestion</button>
+            <button
+              type="submit"
+              formaction="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
+              formmethod="post"
+              hx-post="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
+              hx-target="#intake-panel"
+              hx-swap="innerHTML"
+              hx-indicator="find .busy-indicator"
+              class="button-secondary"
+            >
+              Reject suggestion
+            </button>
+            <span class="busy-indicator" role="status" aria-live="polite">Working…</span>
+          </div>
+        </form>
+      </div>
+    {% endif %}
+
+    {% if intake_state.search_mode %}
+      <div class="search-panel">
+        <form
+          method="post"
+          action="/cases/search"
+          hx-post="/cases/search"
+          hx-target="#intake-panel"
+          hx-swap="innerHTML"
+          hx-indicator="find .busy-indicator"
+          class="workflow-form"
+        >
+          <input type="hidden" name="artifact_id" value="{{ intake_state.artifact.id }}" />
+          <label>
+            Search description
+            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Email from Acme to Alex Morgan about renewal" required />
+          </label>
+          <div class="button-row">
+            <button type="submit">Search cases</button>
+            <span class="busy-indicator" role="status" aria-live="polite">Searching…</span>
+          </div>
+        </form>
+
+        {% if intake_state.search_results %}
+          <ul class="search-results">
+            {% for result in intake_state.search_results %}
+              <li>
+                <form
+                  method="post"
+                  action="/artifacts/{{ intake_state.artifact.id }}/assign"
+                  hx-post="/artifacts/{{ intake_state.artifact.id }}/assign"
+                  hx-target="#workspace"
+                  hx-swap="innerHTML"
+                  hx-indicator="find .busy-indicator"
+                  class="result-card"
+                >
+                  <input type="hidden" name="case_id" value="{{ result.case_id }}" />
+                  <div class="result-copy">
+                    <h4>{{ result.title }}</h4>
+                    <p>{{ result.company or "No company" }}</p>
+                    <small>{{ result.reason }}</small>
+                  </div>
+                  <label>
+                    Next step
+                    <input type="text" name="next_step" placeholder="Create next follow-up activity" required />
+                  </label>
+                  <label>
+                    Follow-up due
+                    <input type="datetime-local" name="next_due_at" required />
+                  </label>
+                  <div class="button-row">
+                    <button type="submit">Assign to this case</button>
+                    <span class="busy-indicator" role="status" aria-live="polite">Assigning…</span>
+                  </div>
+                </form>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">No existing cases matched yet. Create a new one from this intake.</p>
+        {% endif %}
+
+        <div class="suggestion-card">
+          <p class="suggestion-title">Create a new case</p>
+          <p class="muted">Use this when the document starts fresh work instead of belonging to an existing case.</p>
+          <form
+            method="post"
+            action="/artifacts/{{ intake_state.artifact.id }}/create-case"
+            hx-post="/artifacts/{{ intake_state.artifact.id }}/create-case"
+            hx-target="#workspace"
+            hx-swap="innerHTML"
+            hx-indicator="find .busy-indicator"
+            class="workflow-form"
+          >
+            <label>
+              Case title
+              <input
+                type="text"
+                name="title"
+                placeholder="Acme contract renewal"
+                value="{{ intake_state.new_case_title_suggestion }}"
+                required
+              />
+            </label>
+            <label>
+              Company
+              <input type="text" name="company" placeholder="Acme Inc." />
+            </label>
+            <label>
+              Primary contact
+              <input type="text" name="primary_contact" placeholder="Alex Morgan" />
+            </label>
+            <label>
+              Next step
+              <input type="text" name="next_step" placeholder="Review the new mail and prepare a response" required />
+            </label>
+            <label>
+              Follow-up due
+              <input type="datetime-local" name="next_due_at" required />
+            </label>
+            <div class="button-row">
+              <button type="submit">Create new case</button>
+              <span class="busy-indicator" role="status" aria-live="polite">Creating…</span>
+            </div>
+          </form>
+        </div>
+      </div>
+    {% endif %}
+  </section>
+{% endif %}
+
 <form
   class="intake-dropzone"
   method="post"
@@ -41,6 +227,7 @@
   hx-encoding="multipart/form-data"
   hx-target="#intake-panel"
   hx-swap="innerHTML"
+  hx-indicator="find .busy-indicator"
 >
   <div class="wave wave-a"></div>
   <div class="wave wave-b"></div>
@@ -51,6 +238,10 @@
       <span>Select Outlook mail</span>
       <input type="file" name="file" accept=".msg" required />
     </label>
+    <div class="button-row">
+      <button type="submit">Upload mail</button>
+      <span class="busy-indicator" role="status" aria-live="polite">Uploading…</span>
+    </div>
     <small class="muted">Manual uploads currently accept Outlook <code>.msg</code> exports.</small>
   </div>
 </form>
@@ -107,6 +298,7 @@
       hx-post="/mail/desktop-mail/search"
       hx-target="#intake-panel"
       hx-swap="innerHTML"
+      hx-indicator="find .busy-indicator"
       class="workflow-form"
     >
       <label>
@@ -143,6 +335,7 @@
       </label>
       <div class="button-row">
         <button type="submit">Search mail</button>
+        <span class="busy-indicator" role="status" aria-live="polite">Searching…</span>
       </div>
     </form>
 
@@ -156,6 +349,7 @@
               hx-post="/mail/desktop-mail/import"
               hx-target="#intake-panel"
               hx-swap="innerHTML show:top"
+              hx-indicator="find .busy-indicator"
               class="result-card"
             >
               <input type="hidden" name="candidate_id" value="{{ candidate.candidate_id }}" />
@@ -171,182 +365,14 @@
                   <p class="muted">{{ candidate.preview_text }}</p>
                 {% endif %}
               </div>
-              <button type="submit">Import into intake</button>
+              <div class="button-row">
+                <button type="submit">Import into intake</button>
+                <span class="busy-indicator" role="status" aria-live="polite">Importing…</span>
+              </div>
             </form>
           </li>
         {% endfor %}
       </ul>
-    {% endif %}
-  </section>
-{% endif %}
-
-{% if intake_state.artifact %}
-  <section class="detail-section intake-state intake-active">
-    <div class="artifact-header">
-      <div>
-        <h3>{{ intake_state.conversation.latest_subject if intake_state.conversation else intake_state.artifact.file_name }}</h3>
-        <p class="muted">{{ intake_state.artifact.file_name }} · {{ intake_state.artifact.media_type }} · {{ intake_state.artifact.size_bytes }} bytes</p>
-      </div>
-      {% if intake_state.suggestion %}
-        <span class="pill">{{ "%.0f"|format(intake_state.suggestion.confidence * 100) }}% match</span>
-      {% endif %}
-    </div>
-
-    {% if intake_state.conversation %}
-      <p class="muted">
-        Thread with {{ intake_state.conversation.message_count }} mail{% if intake_state.conversation.message_count != 1 %}s{% endif %}
-        {% if intake_state.conversation.participants %}
-          ·
-          {% for participant in intake_state.conversation.participants %}
-            {{ participant.name or participant.email or "Unknown" }}{% if not loop.last %}, {% endif %}
-          {% endfor %}
-        {% endif %}
-      </p>
-      {% if intake_state.conversation_artifacts %}
-        <ul class="mini-list">
-          {% for artifact in intake_state.conversation_artifacts %}
-            <li>
-              <strong>{{ artifact.file_name }}</strong>
-              <small>{{ format_datetime(artifact.uploaded_at, local_timezone) }}</small>
-            </li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endif %}
-
-    {% if intake_state.suggestion and intake_state.suggestion.suggested_case_id %}
-      <div class="suggestion-card">
-        <p class="suggestion-title">This document likely belongs to an existing case.</p>
-        <p class="muted">{{ intake_state.suggestion.summary_reason }}</p>
-        <form
-          method="post"
-          action="/artifacts/{{ intake_state.artifact.id }}/assign"
-          hx-post="/artifacts/{{ intake_state.artifact.id }}/assign"
-          hx-target="#workspace"
-          hx-swap="innerHTML"
-          class="workflow-form"
-        >
-          <input type="hidden" name="case_id" value="{{ intake_state.suggestion.suggested_case_id }}" />
-          <label>
-            What should happen next?
-            <input type="text" name="next_step" placeholder="Review the newly received draft and reply" required />
-          </label>
-          <label>
-            Follow-up due
-            <input type="datetime-local" name="next_due_at" required />
-          </label>
-          <div class="button-row">
-            <button type="submit">Confirm suggestion</button>
-            <button
-              type="submit"
-              formaction="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
-              formmethod="post"
-              hx-post="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
-              hx-target="#intake-panel"
-              hx-swap="innerHTML"
-              class="button-secondary"
-            >
-              Reject suggestion
-            </button>
-          </div>
-        </form>
-      </div>
-    {% endif %}
-
-    {% if intake_state.search_mode %}
-      <div class="search-panel">
-        <form
-          method="post"
-          action="/cases/search"
-          hx-post="/cases/search"
-          hx-target="#intake-panel"
-          hx-swap="innerHTML"
-          class="workflow-form"
-        >
-          <input type="hidden" name="artifact_id" value="{{ intake_state.artifact.id }}" />
-          <label>
-            Search description
-            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Email from Acme to Alex Morgan about renewal" required />
-          </label>
-          <button type="submit">Search cases</button>
-        </form>
-
-        {% if intake_state.search_results %}
-          <ul class="search-results">
-            {% for result in intake_state.search_results %}
-              <li>
-                <form
-                  method="post"
-                  action="/artifacts/{{ intake_state.artifact.id }}/assign"
-                  hx-post="/artifacts/{{ intake_state.artifact.id }}/assign"
-                  hx-target="#workspace"
-                  hx-swap="innerHTML"
-                  class="result-card"
-                >
-                  <input type="hidden" name="case_id" value="{{ result.case_id }}" />
-                  <div class="result-copy">
-                    <h4>{{ result.title }}</h4>
-                    <p>{{ result.company or "No company" }}</p>
-                    <small>{{ result.reason }}</small>
-                  </div>
-                  <label>
-                    Next step
-                    <input type="text" name="next_step" placeholder="Create next follow-up activity" required />
-                  </label>
-                  <label>
-                    Follow-up due
-                    <input type="datetime-local" name="next_due_at" required />
-                  </label>
-                  <button type="submit">Assign to this case</button>
-                </form>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">No existing cases matched yet. Create a new one from this intake.</p>
-        {% endif %}
-
-        <div class="suggestion-card">
-          <p class="suggestion-title">Create a new case</p>
-          <p class="muted">Use this when the document starts fresh work instead of belonging to an existing case.</p>
-          <form
-            method="post"
-            action="/artifacts/{{ intake_state.artifact.id }}/create-case"
-            hx-post="/artifacts/{{ intake_state.artifact.id }}/create-case"
-            hx-target="#workspace"
-            hx-swap="innerHTML"
-            class="workflow-form"
-          >
-            <label>
-              Case title
-              <input
-                type="text"
-                name="title"
-                placeholder="Acme contract renewal"
-                value="{{ intake_state.new_case_title_suggestion }}"
-                required
-              />
-            </label>
-            <label>
-              Company
-              <input type="text" name="company" placeholder="Acme Inc." />
-            </label>
-            <label>
-              Primary contact
-              <input type="text" name="primary_contact" placeholder="Alex Morgan" />
-            </label>
-            <label>
-              Next step
-              <input type="text" name="next_step" placeholder="Review the new mail and prepare a response" required />
-            </label>
-            <label>
-              Follow-up due
-              <input type="datetime-local" name="next_due_at" required />
-            </label>
-            <button type="submit">Create new case</button>
-          </form>
-        </div>
-      </div>
     {% endif %}
   </section>
 {% endif %}

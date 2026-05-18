@@ -23,6 +23,8 @@ def test_worklist_page_renders(monkeypatch) -> None:
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
     monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    monkeypatch.delenv("GOLDENAGE_MAIL_FIXTURE_PATH", raising=False)
+    monkeypatch.delenv("GOLDENAGE_MAIL_CLIENT_MODE", raising=False)
     client = TestClient(create_app())
 
     response = client.get("/worklist")
@@ -32,6 +34,24 @@ def test_worklist_page_renders(monkeypatch) -> None:
     assert "Due activities" in response.text
     assert 'rel="icon"' in response.text
     assert "golden_age_favicon_48.ico" in response.text
+    assert "Mail Import" not in response.text
+
+
+def test_demo_mail_import_requires_explicit_fixture_or_mode(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
+    monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
+    monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
+    monkeypatch.delenv("GOLDENAGE_MAIL_FIXTURE_PATH", raising=False)
+    monkeypatch.delenv("GOLDENAGE_MAIL_CLIENT_MODE", raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/mail/desktop-mail/search", data={"result_limit": "10"})
+
+    assert response.status_code == 200
+    assert "Mail Import" not in response.text
+    assert "Import into intake" not in response.text
 
 
 def test_favicon_route_serves_icon(monkeypatch) -> None:
@@ -473,6 +493,8 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     assert "Mail candidates loaded" in search_response.text
     assert "Import into intake" in search_response.text
     assert "Acme contract renewal" in search_response.text
+    assert 'hx-indicator="find .busy-indicator"' in search_response.text
+    assert 'role="status" aria-live="polite">Importing' in search_response.text
 
     import_response = client.post(
         "/mail/desktop-mail/import",
@@ -483,6 +505,10 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     assert "Mail message imported" in import_response.text
     assert "Create new case" in import_response.text
     assert "Acme contract renewal" in import_response.text
+    assert "Import into intake" not in import_response.text
+    assert import_response.text.index("intake-active") < import_response.text.index(
+        "intake-dropzone"
+    )
 
 
 def test_demo_mode_enables_desktop_mail_import_with_fixture(tmp_path, monkeypatch) -> None:
@@ -534,6 +560,7 @@ def test_demo_mode_enables_desktop_mail_import_with_fixture(tmp_path, monkeypatc
 
     assert page_response.status_code == 200
     assert "Mail Import" in page_response.text
+    assert 'hx-indicator="find .busy-indicator"' in page_response.text
     assert search_response.status_code == 200
     assert "Import into intake" in search_response.text
 
@@ -619,7 +646,11 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
     )
     assert upload_response.status_code == 200
     assert "Create new case" in upload_response.text
+    assert "Upload mail" in upload_response.text
     assert 'value="totally unrelated phrase cluster"' in upload_response.text
+    assert upload_response.text.index("intake-active") < upload_response.text.index(
+        "intake-dropzone"
+    )
 
     import re
 

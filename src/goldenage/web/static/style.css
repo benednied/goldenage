@@ -178,13 +178,7 @@ h4 {
   padding: 1.35rem;
 }
 
-.panel-intake {
-  display: flex;
-  flex-direction: column;
-}
-
-.panel-intake > .intake-active {
-  order: -1;
+.intake-active {
   margin-top: 0;
   padding: 1rem;
   border: 2px solid var(--accent);
@@ -393,6 +387,24 @@ button.icon-link {
   background: transparent;
   font-size: 0.84rem;
   font-weight: 600;
+}
+
+.busy-indicator {
+  display: none;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.htmx-request .busy-indicator,
+.busy-indicator.htmx-request {
+  display: inline-flex;
+}
+
+.htmx-request button[type="submit"] {
+  opacity: 0.62;
+  pointer-events: none;
 }
 
 .file-picker {
@@ -624,7 +636,7 @@ button.icon-link {
   opacity: 0.86;
 }
 
-.login-sound-hint {
+.login-sound-toggle {
   position: absolute;
   right: 1.4rem;
   bottom: 1.4rem;
@@ -775,5 +787,22 @@ button.icon-link {
 
   .app-header {
     flex-direction: column;
+  }
+
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header,
+  .workspace,
+  .settings-layout {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .work-item dl {
+    grid-template-columns: 1fr;
   }
 }

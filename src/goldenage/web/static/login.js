@@ -2,6 +2,7 @@ const videoPane = document.querySelector(".login-video-pane");
 const video = document.querySelector("#login-video");
 const videoSources = document.querySelectorAll(".login-video-source");
 const credentialForm = document.querySelector("#login-credential-form");
+const soundToggle = document.querySelector(".login-sound-toggle");
 
 function showVideoFallback() {
   videoPane?.classList.add("login-video-pane-fallback");
@@ -16,12 +17,7 @@ function toggleVideoAudio() {
 }
 
 if (videoPane instanceof HTMLElement && video instanceof HTMLVideoElement) {
-  videoPane.addEventListener("click", toggleVideoAudio);
-  videoPane.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-    event.preventDefault();
+  soundToggle?.addEventListener("click", () => {
     toggleVideoAudio();
   });
   video.addEventListener("canplay", () => {

@@ -307,6 +307,7 @@ def test_mail_client_builders_cover_fixture_disabled_platform_and_invalid_modes(
         mail.build_apple_mail_import_client(fixture_path=fixture, client_mode=None),
         mail.FixtureMailImportClient,
     )
+    assert mail.build_desktop_mail_import_client(fixture_path=None, client_mode=None) is None
     assert mail.build_apple_mail_import_client(fixture_path=None, client_mode="disabled") is None
     monkeypatch.setattr(mail.shutil, "which", lambda executable: None)
     assert mail.build_apple_mail_import_client(fixture_path=None, client_mode="auto") is None
@@ -324,6 +325,11 @@ def test_mail_client_builders_cover_fixture_disabled_platform_and_invalid_modes(
     )
     assert isinstance(
         mail.build_desktop_mail_import_client(fixture_path=None, client_mode="apple_mail"),
+        mail.OsaScriptAppleMailImportClient,
+    )
+    monkeypatch.setattr(mail.platform, "system", lambda: "Darwin")
+    assert isinstance(
+        mail.build_desktop_mail_import_client(fixture_path=None, client_mode="auto"),
         mail.OsaScriptAppleMailImportClient,
     )
     assert isinstance(

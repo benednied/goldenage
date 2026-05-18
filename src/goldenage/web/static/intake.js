@@ -12,14 +12,6 @@
         continue;
       }
 
-      const submit = function () {
-        if (fileInput.files && fileInput.files.length > 0) {
-          dropzone.requestSubmit();
-        }
-      };
-
-      fileInput.addEventListener("change", submit);
-
       for (const eventName of ["dragenter", "dragover"]) {
         dropzone.addEventListener(eventName, function (event) {
           event.preventDefault();
@@ -40,7 +32,6 @@
           return;
         }
         fileInput.files = files;
-        submit();
       });
     }
   }

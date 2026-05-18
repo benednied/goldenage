@@ -254,7 +254,7 @@ def build_desktop_mail_import_client(
     if fixture_path is not None:
         return FixtureMailImportClient(fixture_path)
 
-    normalized_mode = (client_mode or "auto").strip().lower()
+    normalized_mode = (client_mode or "disabled").strip().lower()
     if normalized_mode == "disabled":
         return None
     if normalized_mode in {"apple-mail", "apple_mail"}:

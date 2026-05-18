@@ -58,6 +58,7 @@ from goldenage.application.use_cases import (
     CaseDetail,
     GoldenAgeService,
     IntakeState,
+    MailImportState,
     NotFoundError,
 )
 from goldenage.bootstrap_sqlite import ensure_sqlite_bootstrapped
@@ -359,7 +360,11 @@ def create_app() -> FastAPI:
                 user=user,
                 now=_now(context),
             )
-            mail_import_state = None
+            current_mail_state = context.service.get_mail_import_state(user=user)
+            mail_import_state = MailImportState(
+                enabled=current_mail_state.enabled,
+                selector=current_mail_state.selector,
+            )
         except (MailImportClientError, ResolutionError) as error:
             intake_state = IntakeState()
             mail_import_state = context.service.get_mail_import_state(

@@ -64,6 +64,24 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     assert "Profile picture uploads must be image files." in bad_picture.text
 
 
+def test_static_ux_contracts_keep_focus_order_and_responsive_layout() -> None:
+    template = Path("src/goldenage/web/templates/partials/intake_panel.html").read_text(
+        encoding="utf-8"
+    )
+    style = Path("src/goldenage/web/static/style.css").read_text(encoding="utf-8")
+    intake_script = Path("src/goldenage/web/static/intake.js").read_text(encoding="utf-8")
+    login_template = Path("src/goldenage/web/templates/login.html").read_text(encoding="utf-8")
+
+    assert template.index("intake-active") < template.index("intake-dropzone")
+    assert "panel-intake > .intake-active" not in style
+    assert "requestSubmit" not in intake_script
+    assert "Upload mail" in template
+    assert ".busy-indicator" in style
+    assert ".settings-layout {\n    grid-template-columns: 1fr;" in style
+    assert 'role="button"' not in login_template
+    assert "login-sound-toggle" in login_template
+
+
 def test_startup_and_shutdown_delegate_to_outlook_worker(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -97,6 +115,9 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
 ) -> None:
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
+    mail_fixture = tmp_path / "mail-fixture.json"
+    mail_fixture.write_text("[]", encoding="utf-8")
+    monkeypatch.setenv("GOLDENAGE_MAIL_FIXTURE_PATH", str(mail_fixture))
     client = TestClient(web_app.create_app(), follow_redirects=False)
 
     assert client.get("/settings").headers["location"] == "/onboarding"
