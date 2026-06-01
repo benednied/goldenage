@@ -107,9 +107,9 @@ class FakeOutlookApp:
 def test_outlook_windows_searches_configured_account_all_folders() -> None:
     matching = FakeMailItem(
         entry_id="message-1",
-        subject="Acme contract renewal",
-        sender_name="Max Mustermann",
-        sender_email="max@acme.example",
+        subject="Vendor contract renewal",
+        sender_name="Sender Fixture",
+        sender_email="sender.fixture@vendor.example.test",
         sent_on=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
         body="Please review the latest renewal draft.",
         unread=True,
@@ -117,9 +117,9 @@ def test_outlook_windows_searches_configured_account_all_folders() -> None:
     )
     read_message = FakeMailItem(
         entry_id="message-2",
-        subject="Acme contract renewal",
-        sender_name="Max Mustermann",
-        sender_email="max@acme.example",
+        subject="Vendor contract renewal",
+        sender_name="Sender Fixture",
+        sender_email="sender.fixture@vendor.example.test",
         sent_on=datetime(2026, 4, 12, 8, 30, tzinfo=UTC),
         body="Already read.",
         unread=False,
@@ -136,7 +136,7 @@ def test_outlook_windows_searches_configured_account_all_folders() -> None:
         MailSelector(
             account_name="configured@example.com",
             unread_only=True,
-            sender_filter="max@acme.example",
+            sender_filter="sender.fixture@vendor.example.test",
             subject_filter="renewal",
         )
     )
@@ -150,9 +150,9 @@ def test_outlook_windows_searches_configured_account_all_folders() -> None:
 def test_outlook_windows_fetches_candidate_as_msg_payload(tmp_path) -> None:
     message = FakeMailItem(
         entry_id="message-1",
-        subject="Acme contract renewal",
-        sender_name="Max Mustermann",
-        sender_email="max@acme.example",
+        subject="Vendor contract renewal",
+        sender_name="Sender Fixture",
+        sender_email="sender.fixture@vendor.example.test",
         sent_on=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
         body="Please review the latest renewal draft.",
         unread=True,
@@ -170,7 +170,7 @@ def test_outlook_windows_fetches_candidate_as_msg_payload(tmp_path) -> None:
     payload = client.fetch_message(candidate.candidate_id)
 
     assert payload.source_system == "desktop_mail_client"
-    assert payload.file_name == "acme-contract-renewal.msg"
+    assert payload.file_name == "vendor-contract-renewal.msg"
     assert payload.media_type == "application/vnd.ms-outlook"
-    assert payload.content == b"MSG:Acme contract renewal"
+    assert payload.content == b"MSG:Vendor contract renewal"
     assert payload.rfc_message_id == "<message-1@example.com>"

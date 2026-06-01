@@ -802,8 +802,8 @@ def _build_context(settings: Settings) -> AppContext:
         audit_repository = PostgresAuditRepository(settings.database_url)
         default_user = UserContext(
             id=_uuid("11111111-1111-1111-1111-111111111111"),
-            email="alex@example.com",
-            display_name="Alex Example",
+            email="user.fixture@example.test",
+            display_name="Fixture User",
         )
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()

@@ -46,7 +46,7 @@ GOLDENAGE_LOCAL_FIRST_MODE=sqlite3
 GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3
 ```
 
-When that mode is active, app startup bootstraps the SQLite schema automatically, serves profile images from the local artifact directory, replaces the fixed `Alex Example` user with a first-user onboarding flow, and renders the worklist header as `welcome to the golden age`.
+When that mode is active, app startup bootstraps the SQLite schema automatically, serves profile images from the local artifact directory, replaces the fixed `Fixture User` user with a first-user onboarding flow, and renders the worklist header as `welcome to the golden age`.
 
 Mailbox-backed intake uses the same persisted selector defaults on macOS and Windows:
 
@@ -65,13 +65,13 @@ To enable automatic mailbox intake:
 
 1. Use the Windows standalone setup above and create the first local user in the app.
 
-2. Confirm the Outlook store display name. In classic Outlook, this is usually the mailbox/account name shown in the left folder pane, for example `Mailbox - bened@example.com` or `bened@example.com`.
+2. Confirm the Outlook store display name. In classic Outlook, this is usually the mailbox/account name shown in the left folder pane, for example `Mailbox - user.fixture@example.test` or `user.fixture@example.test`.
 
 3. Add the Outlook settings to the repository-root `.env` file:
 
 ```dotenv
 GOLDENAGE_OUTLOOK_SYNC_ENABLED=1
-GOLDENAGE_OUTLOOK_ACCOUNT=Mailbox - bened@example.com
+GOLDENAGE_OUTLOOK_ACCOUNT=Mailbox - user.fixture@example.test
 GOLDENAGE_OUTLOOK_POLL_SECONDS=15
 ```
 

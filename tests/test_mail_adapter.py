@@ -34,8 +34,8 @@ def test_rfc822_extractor_handles_headers_body_and_invalid_dates() -> None:
         "fallback.eml",
         "message/rfc822",
         (
-            b"From: Max Mustermann <max@acme.example>\n"
-            b"To: Alex <alex@example.com>, team@example.com\n"
+            b"From: Sender Fixture <sender.fixture@vendor.example.test>\n"
+            b"To: Fixture User <user.fixture@example.test>, team@example.com\n"
             b"Date: not-a-date\n"
             b"Message-ID: <msg-1@example.com>\n"
             b"\n"
@@ -45,9 +45,9 @@ def test_rfc822_extractor_handles_headers_body_and_invalid_dates() -> None:
 
     assert extracted.subject == "fallback.eml"
     assert extracted.sender is not None
-    assert extracted.sender.email == "max@acme.example"
+    assert extracted.sender.email == "sender.fixture@vendor.example.test"
     assert [recipient.email for recipient in extracted.recipients] == [
-        "alex@example.com",
+        "user.fixture@example.test",
         "team@example.com",
     ]
     assert extracted.sent_at is None
@@ -64,8 +64,8 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
                     "account_name": "iCloud",
                     "mailbox_name": "Inbox",
                     "subject": "Other",
-                    "sender_name": "Max",
-                    "sender_email": "max@example.com",
+                    "sender_name": "Sender",
+                    "sender_email": "sender.fixture@example.test",
                     "sent_at": "2026-04-10T09:00:00+00:00",
                     "preview_text": "old",
                     "unread": False,
@@ -76,8 +76,8 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
                     "account_name": "iCloud",
                     "mailbox_name": "Inbox",
                     "subject": "Nürnberg renewal",
-                    "sender_name": "Max",
-                    "sender_email": "max@example.com",
+                    "sender_name": "Sender",
+                    "sender_email": "sender.fixture@example.test",
                     "sent_at": "2026-04-12T09:00:00+00:00",
                     "preview_text": "new",
                     "unread": True,
@@ -95,7 +95,7 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
             account_name="icloud",
             mailbox_name="inbox",
             unread_only=True,
-            sender_filter="max@example.com",
+            sender_filter="sender.fixture@example.test",
             subject_filter="Nuernberg",
             sent_after=datetime(2026, 4, 11, tzinfo=UTC),
             result_limit=5,
@@ -127,8 +127,8 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
                     "account_name": "Other",
                     "mailbox_name": "Inbox",
                     "subject": "Renewal",
-                    "sender_name": "Max",
-                    "sender_email": "max@example.com",
+                    "sender_name": "Sender",
+                    "sender_email": "sender.fixture@example.test",
                     "sent_at": "2026-04-12T09:00:00+00:00",
                     "preview_text": "",
                     "unread": True,
@@ -139,8 +139,8 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
                     "account_name": "iCloud",
                     "mailbox_name": "Archive",
                     "subject": "Renewal",
-                    "sender_name": "Max",
-                    "sender_email": "max@example.com",
+                    "sender_name": "Sender",
+                    "sender_email": "sender.fixture@example.test",
                     "sent_at": "2026-04-12T09:00:00+00:00",
                     "preview_text": "",
                     "unread": True,
@@ -163,8 +163,8 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
                     "account_name": "iCloud",
                     "mailbox_name": "Inbox",
                     "subject": "Other",
-                    "sender_name": "Max",
-                    "sender_email": "max@example.com",
+                    "sender_name": "Sender",
+                    "sender_email": "sender.fixture@example.test",
                     "sent_at": "2026-04-12T09:00:00+00:00",
                     "preview_text": "",
                     "unread": True,
@@ -175,8 +175,8 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
                     "account_name": "iCloud",
                     "mailbox_name": "Inbox",
                     "subject": "Renewal",
-                    "sender_name": "Max",
-                    "sender_email": "max@example.com",
+                    "sender_name": "Sender",
+                    "sender_email": "sender.fixture@example.test",
                     "sent_at": None,
                     "preview_text": "",
                     "unread": True,
@@ -191,7 +191,7 @@ def test_fixture_client_filters_sorts_fetches_and_reports_invalid_fixtures(tmp_p
             MailSelector(
                 account_name="iCloud",
                 mailbox_name="Inbox",
-                sender_filter="Max",
+                sender_filter="Sender",
                 subject_filter="Renewal",
                 sent_after=datetime(2026, 4, 11, tzinfo=UTC),
             )
@@ -236,7 +236,7 @@ def test_osascript_client_filters_results_fetches_payload_and_reports_errors(mon
                     {
                         "candidateId": "skip-read",
                         "subject": "Renewal",
-                        "sender": "Max <max@example.com>",
+                        "sender": "Sender <sender.fixture@example.test>",
                         "sentAt": "2026-04-12T08:00:00+00:00",
                         "previewText": "read",
                         "unread": False,
@@ -246,7 +246,7 @@ def test_osascript_client_filters_results_fetches_payload_and_reports_errors(mon
                         "accountName": "iCloud",
                         "mailboxName": "Inbox",
                         "subject": "Renewal",
-                        "sender": "Max <max@example.com>",
+                        "sender": "Sender <sender.fixture@example.test>",
                         "sentAt": "2026-04-12T09:00:00+00:00",
                         "previewText": "unread",
                         "unread": True,
@@ -263,7 +263,7 @@ def test_osascript_client_filters_results_fetches_payload_and_reports_errors(mon
     candidates = client.search_candidates(
         MailSelector(
             unread_only=True,
-            sender_filter="max",
+            sender_filter="sender",
             subject_filter="renewal",
             sent_after=datetime(2026, 4, 12, 8, 30, tzinfo=UTC),
         )
@@ -369,8 +369,8 @@ def test_outlook_helpers_encode_decode_filter_and_handle_com_edge_cases() -> Non
         account_name="Account",
         mailbox_name="Inbox",
         subject="Nürnberg renewal",
-        sender_name="Max",
-        sender_email="max@example.com",
+        sender_name="Sender",
+        sender_email="sender.fixture@example.test",
         sent_at=datetime(2026, 4, 12, tzinfo=UTC),
         preview_text="preview",
         unread=True,
@@ -379,7 +379,7 @@ def test_outlook_helpers_encode_decode_filter_and_handle_com_edge_cases() -> Non
         candidate,
         MailSelector(
             unread_only=True,
-            sender_filter="max",
+            sender_filter="sender",
             subject_filter="Nuernberg",
             sent_after=datetime(2026, 4, 11, tzinfo=UTC),
         ),

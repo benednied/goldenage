@@ -103,8 +103,8 @@ def test_case_visible_handles_missing_public_and_group_visible_rows(monkeypatch)
     monkeypatch.setattr(repo, "_connect", lambda: connection)
     user = UserContext(
         id=uuid4(),
-        email="alex@example.com",
-        display_name="Alex",
+        email="user.fixture@example.test",
+        display_name="Fixture User",
         visible_group_ids=frozenset({group_id}),
     )
 
@@ -116,7 +116,7 @@ def test_case_visible_handles_missing_public_and_group_visible_rows(monkeypatch)
 
 def test_case_repository_maps_reads_and_commits_writes(monkeypatch) -> None:
     case_id = uuid4()
-    user = UserContext(id=uuid4(), email="alex@example.com", display_name="Alex")
+    user = UserContext(id=uuid4(), email="user.fixture@example.test", display_name="Fixture User")
     row = _case_row(case_id)
     cursor = FakeCursor(fetchone_rows=[row], fetchall_rows=[row])
     connection = FakeConnection(cursor)
@@ -136,8 +136,8 @@ def test_activity_repository_visibility_and_completion_branches(monkeypatch) -> 
     group_id = uuid4()
     user = UserContext(
         id=uuid4(),
-        email="alex@example.com",
-        display_name="Alex",
+        email="user.fixture@example.test",
+        display_name="Fixture User",
         visible_group_ids=frozenset({group_id}),
     )
     visible_row = _activity_row(activity_id, visible_group_id=group_id)
@@ -171,8 +171,8 @@ def test_artifact_repository_maps_mail_and_visibility_branches(monkeypatch) -> N
     conversation_id = uuid4()
     user = UserContext(
         id=uuid4(),
-        email="alex@example.com",
-        display_name="Alex",
+        email="user.fixture@example.test",
+        display_name="Fixture User",
         visible_group_ids=frozenset({group_id}),
     )
     hidden_artifact = _artifact_row(artifact_id, visible_group_id=uuid4())
@@ -213,7 +213,7 @@ def test_artifact_repository_maps_mail_and_visibility_branches(monkeypatch) -> N
 
 
 def test_artifact_repository_hidden_and_missing_early_returns(monkeypatch) -> None:
-    user = UserContext(id=uuid4(), email="alex@example.com", display_name="Alex")
+    user = UserContext(id=uuid4(), email="user.fixture@example.test", display_name="Fixture User")
     cursor = FakeCursor(fetchone_rows=[None, None, None, None])
     connection = FakeConnection(cursor)
     repo = postgres.PostgresArtifactRepository("postgresql://example")
@@ -233,7 +233,7 @@ def test_postgres_row_mappers_cover_json_and_numeric_conversions() -> None:
     account_id = uuid4()
 
     assert postgres._row_to_mail_metadata(_mail_metadata_row(artifact_id)).recipients == (
-        MailParticipant(name="Alex", email="alex@example.com"),
+        MailParticipant(name="Fixture User", email="user.fixture@example.test"),
     )
     assert (
         postgres._row_to_mail_conversation(
@@ -280,7 +280,7 @@ def test_artifact_repository_save_find_and_mailbox_methods(monkeypatch) -> None:
     artifact_id = uuid4()
     conversation_id = uuid4()
     account_id = uuid4()
-    user = UserContext(id=uuid4(), email="alex@example.com", display_name="Alex")
+    user = UserContext(id=uuid4(), email="user.fixture@example.test", display_name="Fixture User")
     artifact_row = _artifact_row(artifact_id)
     mail_message_row = _mail_message_row(artifact_id, conversation_id)
     mailbox_account_row = _mailbox_account_row(account_id)
@@ -370,7 +370,7 @@ def _case_row(case_id: UUID) -> dict[str, object]:
         "id": case_id,
         "title": "Renewal",
         "company": "Acme",
-        "primary_contact": "Alex",
+        "primary_contact": "Fixture User",
         "status": "open",
         "last_activity_at": NOW,
         "visible_group_id": None,
@@ -431,10 +431,10 @@ def _mail_metadata_row(artifact_id: UUID) -> dict[str, object]:
         "source_account": "Mailbox",
         "source_mailbox": "Inbox",
         "subject": "Renewal",
-        "sender_name": "Max",
-        "sender_email": "max@example.com",
+        "sender_name": "Sender",
+        "sender_email": "sender.fixture@example.test",
         "sender_domain": "example.com",
-        "recipients_json": [{"name": "Alex", "email": "alex@example.com"}],
+        "recipients_json": [{"name": "Fixture User", "email": "user.fixture@example.test"}],
         "sent_at": NOW,
         "created_at": NOW,
     }
@@ -448,7 +448,7 @@ def _mail_conversation_row(conversation_id: UUID, artifact_id: UUID) -> dict[str
         "normalized_subject": "renewal",
         "latest_subject": "RE: Renewal",
         "latest_message_at": NOW,
-        "participants_json": [{"name": "Alex", "email": "alex@example.com"}],
+        "participants_json": [{"name": "Fixture User", "email": "user.fixture@example.test"}],
         "message_count": "2",
         "latest_artifact_id": artifact_id,
         "created_at": NOW,

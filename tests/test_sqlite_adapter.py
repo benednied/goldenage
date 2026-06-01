@@ -37,7 +37,7 @@ NOW = datetime(2026, 4, 12, 9, 30, tzinfo=UTC)
 def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path) -> None:
     database_path = tmp_path / "goldenage.sqlite3"
     ensure_sqlite_bootstrapped(database_path)
-    user = UserContext(id=uuid4(), email="alex@example.com", display_name="Alex")
+    user = UserContext(id=uuid4(), email="user.fixture@example.test", display_name="Fixture User")
     hidden_user = UserContext(
         id=uuid4(),
         email="hidden@example.com",
@@ -79,7 +79,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         id=case_id,
         title="Acme renewal",
         company="Acme",
-        primary_contact="Max",
+        primary_contact="Sender",
         status="open",
         last_activity_at=NOW,
     )
@@ -97,7 +97,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
     activity = Activity(
         id=activity_id,
         case_id=case_id,
-        description="Call Max",
+        description="Contact Sender",
         kind="follow_up",
         due_at=NOW,
         created_at=NOW,
@@ -146,10 +146,10 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         source_account="Mailbox",
         source_mailbox="Inbox",
         subject="Acme renewal",
-        sender_name="Max",
-        sender_email="max@acme.example",
-        sender_domain="acme.example",
-        recipients=(MailParticipant(name="Alex", email="alex@example.com"),),
+        sender_name="Sender",
+        sender_email="sender.fixture@vendor.example.test",
+        sender_domain="vendor.example.test",
+        recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
         sent_at=NOW,
         created_at=NOW,
     )
@@ -161,7 +161,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         normalized_subject="acme renewal",
         latest_subject="Acme renewal",
         latest_message_at=NOW,
-        participants=(MailParticipant(name="Max", email="max@acme.example"),),
+        participants=(MailParticipant(name="Sender", email="sender.fixture@vendor.example.test"),),
         message_count=1,
         latest_artifact_id=artifact_id,
         created_at=NOW,
@@ -252,7 +252,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
 
     account = user_repo.get_first_user()
     assert user_repo.get_first_user() == account
-    assert user_repo.get_user_by_email(" ALEX@example.com ") == account
+    assert user_repo.get_user_by_email(" USER.FIXTURE@example.test ") == account
     with pytest.raises(SQLiteRepositoryError, match="already exists"):
         user_repo.create_user(
             account_id=uuid4(),
@@ -270,7 +270,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         account_name="Mailbox",
         mailbox_name="Inbox",
         unread_only=True,
-        sender_filter="Max",
+        sender_filter="Sender",
         subject_filter="Acme",
         sent_after=NOW,
         result_limit=7,
@@ -281,8 +281,8 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         account_name="Mailbox",
         mailbox_name="Inbox",
         subject="Acme renewal",
-        sender_name="Max",
-        sender_email="max@acme.example",
+        sender_name="Sender",
+        sender_email="sender.fixture@vendor.example.test",
         sent_at=NOW,
         preview_text="Preview",
         unread=True,

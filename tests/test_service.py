@@ -124,7 +124,7 @@ def build_service(
     activity_repository = InMemoryActivityRepository(state, case_repository)
     artifact_repository = InMemoryArtifactRepository(state, case_repository)
     extractor = StubContentExtractor(
-        extracted or _sample_extracted_data(subject="Acme contract renewal")
+        extracted or _sample_extracted_data(subject="Vendor contract renewal")
     )
     service = GoldenAgeService(
         case_repository=case_repository,
@@ -149,7 +149,7 @@ def test_today_worklist_contains_overdue_and_later_today_but_not_tomorrow(tmp_pa
     items = service.get_today_worklist(user=user, now=end_of_day)
 
     descriptions = [item.activity.description for item in items]
-    assert "Call Max about the amended pricing appendix." in descriptions
+    assert "Contact Sender about the amended pricing appendix." in descriptions
     assert "Review the outstanding compliance questionnaire." in descriptions
     assert "Prepare the response to the disputed invoice." not in descriptions
 
@@ -157,7 +157,7 @@ def test_today_worklist_contains_overdue_and_later_today_but_not_tomorrow(tmp_pa
 def test_upload_subject_match_proposes_case(tmp_path) -> None:
     service, user, state = build_service(
         tmp_path,
-        extracted=_sample_extracted_data(subject="RE: Acme contract renewal draft"),
+        extracted=_sample_extracted_data(subject="RE: Vendor contract renewal draft"),
     )
 
     intake = service.upload_artifact(
@@ -173,8 +173,8 @@ def test_upload_subject_match_proposes_case(tmp_path) -> None:
     assert intake.search_mode is False
     assert intake.suggestion.suggested_case_id is not None
     mail_metadata = state.artifact_mail_metadata[intake.artifact.id]
-    assert mail_metadata.subject == "RE: Acme contract renewal draft"
-    assert mail_metadata.sender_domain == "acme.example"
+    assert mail_metadata.subject == "RE: Vendor contract renewal draft"
+    assert mail_metadata.sender_domain == "vendor.example.test"
 
 
 def test_upload_sets_new_case_title_suggestion_from_cleaned_subject(tmp_path) -> None:
@@ -242,9 +242,9 @@ def test_search_and_import_apple_mail_candidate_uses_shared_intake_flow(tmp_path
         source_system="desktop_mail_client",
         account_name="iCloud",
         mailbox_name="Inbox",
-        subject="Acme contract renewal",
-        sender_name="Max Mustermann",
-        sender_email="max@acme.example",
+        subject="Vendor contract renewal",
+        sender_name="Sender Fixture",
+        sender_email="sender.fixture@vendor.example.test",
         sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
         preview_text="Please review the latest renewal draft.",
         unread=True,
@@ -259,9 +259,9 @@ def test_search_and_import_apple_mail_candidate_uses_shared_intake_flow(tmp_path
         file_name="acme-contract-renewal.eml",
         media_type="message/rfc822",
         content=(
-            b"From: Max Mustermann <max@acme.example>\n"
-            b"To: Alex Example <alex@example.com>\n"
-            b"Subject: Acme contract renewal\n"
+            b"From: Sender Fixture <sender.fixture@vendor.example.test>\n"
+            b"To: Fixture User <user.fixture@example.test>\n"
+            b"Subject: Vendor contract renewal\n"
             b"Date: Sun, 12 Apr 2026 09:30:00 +0000\n"
             b"Message-ID: <apple-1@example.com>\n"
             b"\n"
@@ -273,7 +273,7 @@ def test_search_and_import_apple_mail_candidate_uses_shared_intake_flow(tmp_path
     client = StubMailImportClient((candidate,), {"apple-1": payload})
     service, user, state = build_service(
         tmp_path,
-        extracted=_sample_rfc822_data(subject="Acme contract renewal"),
+        extracted=_sample_rfc822_data(subject="Vendor contract renewal"),
         mail_import_client=client,
         mail_import_repository=repository,
     )
@@ -411,9 +411,9 @@ def test_service_mail_selector_persistence_and_duplicate_import_errors(tmp_path)
         source_system="desktop_mail_client",
         account_name="iCloud",
         mailbox_name="Inbox",
-        subject="Acme contract renewal",
-        sender_name="Max",
-        sender_email="max@example.com",
+        subject="Vendor contract renewal",
+        sender_name="Sender",
+        sender_email="sender.fixture@example.test",
         sent_at=datetime(2026, 4, 12, 9, 0, tzinfo=UTC),
         preview_text="Preview",
         unread=True,
@@ -427,14 +427,14 @@ def test_service_mail_selector_persistence_and_duplicate_import_errors(tmp_path)
         mailbox_name="Inbox",
         file_name="renewal.eml",
         media_type="message/rfc822",
-        content=b"Subject: Acme contract renewal\n\nBody",
+        content=b"Subject: Vendor contract renewal\n\nBody",
         unread=True,
     )
     repository = StubMailImportRepository()
     client = StubMailImportClient((candidate,), {"apple-1": payload})
     service, user, _ = build_service(
         tmp_path,
-        extracted=_sample_rfc822_data(subject="Acme contract renewal"),
+        extracted=_sample_rfc822_data(subject="Vendor contract renewal"),
         mail_import_client=client,
         mail_import_repository=repository,
     )
@@ -490,7 +490,7 @@ def test_service_artifact_assignment_and_new_case_validation_paths(tmp_path) -> 
         service.assign_artifact_to_case(
             artifact_id=UUID("cccccccc-cccc-cccc-cccc-ccccccccffff"),
             case_id=case_id,
-            next_step="Call Max",
+            next_step="Contact Sender",
             next_due_at=datetime(2026, 4, 13, 10, 0, tzinfo=UTC),
             user=user,
             now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
@@ -501,7 +501,7 @@ def test_service_artifact_assignment_and_new_case_validation_paths(tmp_path) -> 
             title="Fresh matter",
             company="",
             primary_contact="",
-            next_step="Call Max",
+            next_step="Contact Sender",
             next_due_at=datetime(2026, 4, 13, 10, 0, tzinfo=UTC),
             user=user,
             now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
@@ -510,7 +510,7 @@ def test_service_artifact_assignment_and_new_case_validation_paths(tmp_path) -> 
         service.assign_artifact_to_case(
             artifact_id=artifact_id,
             case_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaffff"),
-            next_step="Call Max",
+            next_step="Contact Sender",
             next_due_at=datetime(2026, 4, 13, 10, 0, tzinfo=UTC),
             user=user,
             now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
@@ -530,7 +530,7 @@ def test_service_artifact_assignment_and_new_case_validation_paths(tmp_path) -> 
             title=" ",
             company="",
             primary_contact="",
-            next_step="Call Max",
+            next_step="Contact Sender",
             next_due_at=datetime(2026, 4, 13, 10, 0, tzinfo=UTC),
             user=user,
             now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
@@ -551,8 +551,8 @@ def test_service_artifact_assignment_and_new_case_validation_paths(tmp_path) -> 
         artifact_id=artifact_id,
         title=" Fresh matter ",
         company=" Acme ",
-        primary_contact=" Alex ",
-        next_step=" Call Max ",
+        primary_contact=" Fixture User ",
+        next_step=" Contact Sender ",
         next_due_at=datetime(2026, 4, 13, 10, 0, tzinfo=UTC),
         user=user,
         now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
@@ -661,9 +661,9 @@ def test_service_import_mail_defensive_empty_artifact_path(tmp_path, monkeypatch
         source_system="desktop_mail_client",
         account_name="iCloud",
         mailbox_name="Inbox",
-        subject="Acme contract renewal",
-        sender_name="Max",
-        sender_email="max@example.com",
+        subject="Vendor contract renewal",
+        sender_name="Sender",
+        sender_email="sender.fixture@example.test",
         sent_at=datetime(2026, 4, 12, 9, 0, tzinfo=UTC),
         preview_text="Preview",
         unread=True,
@@ -677,7 +677,7 @@ def test_service_import_mail_defensive_empty_artifact_path(tmp_path, monkeypatch
         mailbox_name="Inbox",
         file_name="renewal.eml",
         media_type="message/rfc822",
-        content=b"Subject: Acme contract renewal\n\nBody",
+        content=b"Subject: Vendor contract renewal\n\nBody",
         unread=True,
     )
     repository = StubMailImportRepository()
@@ -709,9 +709,9 @@ def test_service_import_mail_defensive_empty_artifact_path(tmp_path, monkeypatch
 def test_service_conversation_merge_and_existing_dedupe_paths(tmp_path) -> None:
     service, user, _ = build_service(
         tmp_path,
-        extracted=_sample_extracted_data(subject="RE: Acme contract renewal"),
+        extracted=_sample_extracted_data(subject="RE: Vendor contract renewal"),
     )
-    first_extracted = _sample_extracted_data(subject="RE: Acme contract renewal")
+    first_extracted = _sample_extracted_data(subject="RE: Vendor contract renewal")
     first = service.ingest_mail(
         file_name="first.msg",
         media_type="application/vnd.ms-outlook",
@@ -720,7 +720,7 @@ def test_service_conversation_merge_and_existing_dedupe_paths(tmp_path) -> None:
         user=user,
         now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
     )
-    second_extracted = _sample_extracted_data(subject="RE: Acme contract renewal")
+    second_extracted = _sample_extracted_data(subject="RE: Vendor contract renewal")
     second_extracted = ExtractedArtifactData(
         source_kind=second_extracted.source_kind,
         parse_status=second_extracted.parse_status,
@@ -750,13 +750,13 @@ def test_service_conversation_merge_and_existing_dedupe_paths(tmp_path) -> None:
     assert second.conversation is not None
     assert first.conversation.id == second.conversation.id
     assert second.conversation.message_count == 2
-    assert second.conversation.latest_subject == "RE: Acme contract renewal"
+    assert second.conversation.latest_subject == "RE: Vendor contract renewal"
 
     duplicate = service.ingest_mail(
         file_name="duplicate.msg",
         media_type="application/vnd.ms-outlook",
         content=b"duplicate",
-        extracted=_sample_extracted_data(subject="RE: Acme contract renewal"),
+        extracted=_sample_extracted_data(subject="RE: Vendor contract renewal"),
         user=user,
         now=datetime(2026, 4, 12, 12, 0, tzinfo=UTC),
     )
@@ -771,8 +771,8 @@ def test_service_search_candidate_messages_for_no_matches_and_partial_imports(tm
         account_name="iCloud",
         mailbox_name="Inbox",
         subject="Imported",
-        sender_name="Max",
-        sender_email="max@example.com",
+        sender_name="Sender",
+        sender_email="sender.fixture@example.test",
         sent_at=datetime(2026, 4, 12, 9, 0, tzinfo=UTC),
         preview_text="Imported",
         unread=True,
@@ -784,8 +784,8 @@ def test_service_search_candidate_messages_for_no_matches_and_partial_imports(tm
         account_name="iCloud",
         mailbox_name="Inbox",
         subject="Fresh",
-        sender_name="Max",
-        sender_email="max@example.com",
+        sender_name="Sender",
+        sender_email="sender.fixture@example.test",
         sent_at=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
         preview_text="Fresh",
         unread=True,
@@ -853,14 +853,14 @@ def test_service_pure_helpers_cover_edge_cases() -> None:
     assert _normalize_subject(None) is None
     assert _normalize_subject(" RE: FW: Renewal  ") == "renewal"
     assert _merge_participants(
-        (MailParticipant(name="Max", email="max@example.com"),),
+        (MailParticipant(name="Sender", email="sender.fixture@example.test"),),
         (
-            MailParticipant(name="MAX", email="MAX@example.com"),
-            MailParticipant(name="Alex", email=None),
+            MailParticipant(name="SENDER", email="SENDER.FIXTURE@example.test"),
+            MailParticipant(name="Fixture User", email=None),
         ),
     ) == (
-        MailParticipant(name="Max", email="max@example.com"),
-        MailParticipant(name="Alex", email=None),
+        MailParticipant(name="Sender", email="sender.fixture@example.test"),
+        MailParticipant(name="Fixture User", email=None),
     )
     assert _dedupe_fingerprint(
         source_kind="kind",
@@ -881,8 +881,8 @@ def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
         rfc_message_id=None,
         content_text="body text",
         subject=subject,
-        sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
-        recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+        sender=MailParticipant(name="Sender Fixture", email="sender.fixture@vendor.example.test"),
+        recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
         sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
     )
 
@@ -894,7 +894,7 @@ def _sample_rfc822_data(subject: str) -> ExtractedArtifactData:
         rfc_message_id="<apple-1@example.com>",
         content_text="body text",
         subject=subject,
-        sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
-        recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+        sender=MailParticipant(name="Sender Fixture", email="sender.fixture@vendor.example.test"),
+        recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
         sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
     )

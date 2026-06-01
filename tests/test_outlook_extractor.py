@@ -12,9 +12,9 @@ def test_outlook_msg_extractor_maps_subject_sender_and_recipients(monkeypatch) -
             self.email_address = email_address
 
     class FakeMessage:
-        subject = "RE: Acme contract renewal"
-        sender = '"Max Mustermann" <max@acme.example>'
-        recipients = (FakeRecipient("Alex Example", "alex@example.com"),)
+        subject = "RE: Vendor contract renewal"
+        sender = '"Sender Fixture" <sender.fixture@vendor.example.test>'
+        recipients = (FakeRecipient("Fixture User", "user.fixture@example.test"),)
         body = "Please review the discount request."
         html_body = None
         sent_date = datetime(2026, 4, 12, 9, 30, tzinfo=UTC)
@@ -33,9 +33,9 @@ def test_outlook_msg_extractor_maps_subject_sender_and_recipients(monkeypatch) -
     )
 
     assert extracted.message_format == "outlook_msg"
-    assert extracted.subject == "RE: Acme contract renewal"
+    assert extracted.subject == "RE: Vendor contract renewal"
     assert extracted.sender is not None
-    assert extracted.sender.name == "Max Mustermann"
-    assert extracted.sender.email == "max@acme.example"
-    assert extracted.recipients[0].email == "alex@example.com"
+    assert extracted.sender.name == "Sender Fixture"
+    assert extracted.sender.email == "sender.fixture@vendor.example.test"
+    assert extracted.recipients[0].email == "user.fixture@example.test"
     assert extracted.content_text == "Please review the discount request."

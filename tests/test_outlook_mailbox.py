@@ -28,15 +28,15 @@ from goldenage.domain.models import MailParticipant
 def test_normalize_outlook_mailbox_message_maps_threading_fields() -> None:
     normalized = normalize_outlook_message(
         OutlookMailboxMessage(
-            account_name="Mailbox - bened@example.com",
+            account_name="Mailbox - user.fixture@example.test",
             folder_key="Inbox",
             message_key="abc123",
             conversation_key="conv-42",
             internet_message_id="<abc123@example.com>",
-            subject="RE: Acme contract renewal",
-            sender_name="Max Mustermann",
-            sender_email="max@acme.example",
-            recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+            subject="RE: Vendor contract renewal",
+            sender_name="Sender Fixture",
+            sender_email="sender.fixture@vendor.example.test",
+            recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
             body_text="Please review the renewal changes.",
             sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
             received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
@@ -45,13 +45,13 @@ def test_normalize_outlook_mailbox_message_maps_threading_fields() -> None:
     )
 
     assert normalized.source_kind == "outlook_mailbox_message"
-    assert normalized.source_account_id == "Mailbox - bened@example.com"
+    assert normalized.source_account_id == "Mailbox - user.fixture@example.test"
     assert normalized.source_folder_id == "Inbox"
     assert normalized.source_message_id == "abc123"
     assert normalized.conversation_id == "conv-42"
     assert normalized.internet_message_id == "<abc123@example.com>"
     assert normalized.sender is not None
-    assert normalized.sender.email == "max@acme.example"
+    assert normalized.sender.email == "sender.fixture@vendor.example.test"
 
 
 def test_normalize_com_message_reads_outlook_mail_fields() -> None:
@@ -71,14 +71,16 @@ def test_normalize_com_message_reads_outlook_mail_fields() -> None:
     message = SimpleNamespace(
         EntryID="message-entry",
         ConversationID="conversation-entry",
-        Subject="RE: Acme contract renewal",
-        SenderName="Max Mustermann",
+        Subject="RE: Vendor contract renewal",
+        SenderName="Sender Fixture",
         SenderEmailAddress="/O=EXAMPLE/OU=EXCHANGE/CN=MAX",
         Sender=SimpleNamespace(
-            GetExchangeUser=lambda: SimpleNamespace(PrimarySmtpAddress="max@acme.example")
+            GetExchangeUser=lambda: SimpleNamespace(
+                PrimarySmtpAddress="sender.fixture@vendor.example.test"
+            )
         ),
         Recipients=FakeCollection(
-            (SimpleNamespace(Name="Alex Example", Address="alex@example.com"),)
+            (SimpleNamespace(Name="Fixture User", Address="user.fixture@example.test"),)
         ),
         Body="Please review the renewal changes.",
         SentOn=datetime(2026, 4, 12, 9, 30),
@@ -88,7 +90,7 @@ def test_normalize_com_message_reads_outlook_mail_fields() -> None:
 
     normalized = _normalize_com_message(
         message,
-        account_name="Mailbox - bened@example.com",
+        account_name="Mailbox - user.fixture@example.test",
         folder_key="inbox-entry",
         direction="inbound",
     )
@@ -97,9 +99,9 @@ def test_normalize_com_message_reads_outlook_mail_fields() -> None:
     assert normalized.message_key == "message-entry"
     assert normalized.conversation_key == "conversation-entry"
     assert normalized.internet_message_id == "<abc123@example.com>"
-    assert normalized.sender_email == "max@acme.example"
+    assert normalized.sender_email == "sender.fixture@vendor.example.test"
     assert normalized.recipients == (
-        MailParticipant(name="Alex Example", email="alex@example.com"),
+        MailParticipant(name="Fixture User", email="user.fixture@example.test"),
     )
     assert normalized.sent_at == datetime(2026, 4, 12, 9, 30, tzinfo=UTC)
     assert normalized.received_at == datetime(2026, 4, 12, 9, 31, tzinfo=UTC)
@@ -145,8 +147,8 @@ def test_outlook_mailbox_source_runs_one_poll_and_stops(monkeypatch) -> None:
         EntryID="message",
         ConversationID="conversation",
         Subject="Subject",
-        SenderName="Max",
-        SenderEmailAddress="max@example.com",
+        SenderName="Sender",
+        SenderEmailAddress="sender.fixture@example.test",
         Recipients=FakeCollection(()),
         Body="Body",
         SentOn=datetime(2026, 4, 12, 9, 30),
@@ -228,12 +230,12 @@ def test_outlook_mailbox_helpers_cover_missing_and_fallback_values() -> None:
     )
     assert _folder_key(SimpleNamespace(EntryID="", Name="Inbox")) == "Inbox"
     assert _folder_key(SimpleNamespace(EntryID="", Name="")) == "unknown"
-    assert _sender_email(SimpleNamespace(SenderEmailAddress='"Max" <max@example.com>')) == (
-        "max@example.com"
-    )
+    assert _sender_email(
+        SimpleNamespace(SenderEmailAddress='"Sender" <sender.fixture@example.test>')
+    ) == ("sender.fixture@example.test")
     assert _sender_email(SimpleNamespace(SenderEmailAddress="foo @")) == "foo @"
-    assert _sender_email(SimpleNamespace(SenderEmailAddress="max@example.com")) == (
-        "max@example.com"
+    assert _sender_email(SimpleNamespace(SenderEmailAddress="sender.fixture@example.test")) == (
+        "sender.fixture@example.test"
     )
     assert _sender_email(SimpleNamespace(SenderEmailAddress="exchange", Sender=None)) is None
     assert _internet_message_id(SimpleNamespace(PropertyAccessor=None)) is None

@@ -527,8 +527,8 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
     """Create seeded demo data so the app is usable immediately."""
     user = UserContext(
         id=UUID("11111111-1111-1111-1111-111111111111"),
-        email="alex@example.com",
-        display_name="Alex Example",
+        email="user.fixture@example.test",
+        display_name="Fixture User",
         visible_group_ids=frozenset(),
     )
     now = datetime.now(UTC)
@@ -536,17 +536,17 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
     cases = [
         CaseFile(
             id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"),
-            title="Acme contract renewal",
-            company="Acme Inc.",
-            primary_contact="Max Mustermann",
+            title="Vendor contract renewal",
+            company="Vendor Example Inc.",
+            primary_contact="Sender Fixture",
             status="open",
             last_activity_at=now - timedelta(days=1),
         ),
         CaseFile(
             id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"),
-            title="Northwind compliance follow-up",
-            company="Northwind GmbH",
-            primary_contact="Sabine Keller",
+            title="Compliance Example compliance follow-up",
+            company="Compliance Example GmbH",
+            primary_contact="Compliance Fixture",
             status="open",
             last_activity_at=now - timedelta(hours=8),
         ),
@@ -554,7 +554,7 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
             id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"),
             title="Bluebird invoice dispute",
             company="Bluebird AG",
-            primary_contact="Jonas Adler",
+            primary_contact="Operations Fixture",
             status="open",
             last_activity_at=now - timedelta(days=3),
         ),
@@ -564,7 +564,7 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
         Activity(
             id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1"),
             case_id=cases[0].id,
-            description="Call Max about the amended pricing appendix.",
+            description="Contact Sender about the amended pricing appendix.",
             kind="follow_up",
             due_at=now - timedelta(hours=3),
             created_at=now - timedelta(days=2),

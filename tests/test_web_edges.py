@@ -54,8 +54,8 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     bad_picture = local_client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
         files={"profile_picture": ("profile.txt", b"text", "text/plain")},
@@ -124,8 +124,8 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -179,8 +179,8 @@ def test_protected_routes_redirect_when_local_user_is_not_authenticated(
     setup_client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -250,8 +250,8 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -285,8 +285,8 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
         broken_client.post(
             "/onboarding",
             data={
-                "display_name": "Bened",
-                "email": "bened@example.com",
+                "display_name": "Fixture User",
+                "email": "user.fixture@example.test",
                 "password": "secret-passphrase",
             },
         ).status_code
@@ -301,8 +301,8 @@ def test_password_change_error_messages(tmp_path, monkeypatch) -> None:
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -344,8 +344,8 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )

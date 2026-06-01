@@ -122,7 +122,7 @@
           <input type="hidden" name="artifact_id" value="{{ intake_state.artifact.id }}" />
           <label>
             Search description
-            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Email from Acme to Alex Morgan about renewal" required />
+            <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Email from Acme to Fixture Contact about renewal" required />
           </label>
           <div class="button-row">
             <button type="submit">Search cases</button>
@@ -186,18 +186,18 @@
               <input
                 type="text"
                 name="title"
-                placeholder="Acme contract renewal"
+                placeholder="Vendor contract renewal"
                 value="{{ intake_state.new_case_title_suggestion }}"
                 required
               />
             </label>
             <label>
               Company
-              <input type="text" name="company" placeholder="Acme Inc." />
+              <input type="text" name="company" placeholder="Vendor Example Inc." />
             </label>
             <label>
               Primary contact
-              <input type="text" name="primary_contact" placeholder="Alex Morgan" />
+              <input type="text" name="primary_contact" placeholder="Fixture Contact" />
             </label>
             <label>
               Next step

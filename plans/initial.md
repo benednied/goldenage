@@ -93,12 +93,12 @@ Wenn der Einervorschlag nicht passt, soll die Anwendung in einen zweiten Modus �
 Diese Suche soll nicht nur über einfache Textsuche laufen, sondern über ein KI-Modell mit Tool Use. Das Modell darf strukturierte Suchwerkzeuge aufrufen, um aus einer Beschreibung den wahrscheinlich richtigen Vorgang zu finden.
 
 Beispiel:
-„Mail vom x.x.x an Herrn Mustermann von Acme Inc.“
+„Mail vom x.x.x an Fixture-Kontakt von Vendor Example Inc.“
 
 Daraus soll das Modell gezielt Abfragen auslösen können wie:
 
-* Suche nach Vorgängen mit Beteiligung von Acme Inc.
-* Suche nach Vorgängen mit Herrn Mustermann
+* Suche nach Vorgängen mit Beteiligung von Vendor Example Inc.
+* Suche nach Vorgängen mit Fixture-Kontakt
 * Suche nach früheren Kommunikationsartefakten mit passender Absender- oder Empfängerkonstellation
 * Suche nach ähnlichen Betreffmustern oder Dokumentarten
 

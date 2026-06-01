@@ -87,7 +87,7 @@ def test_windows_outlook_callback_ingests_mailbox_message(tmp_path, monkeypatch)
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
     monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "1")
-    monkeypatch.setenv("GOLDENAGE_OUTLOOK_ACCOUNT", "Mailbox - bened@example.com")
+    monkeypatch.setenv("GOLDENAGE_OUTLOOK_ACCOUNT", "Mailbox - user.fixture@example.test")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_MODE", raising=False)
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
@@ -96,15 +96,15 @@ def test_windows_outlook_callback_ingests_mailbox_message(tmp_path, monkeypatch)
 
     captured["on_message"](
         OutlookMailboxMessage(
-            account_name="Mailbox - bened@example.com",
+            account_name="Mailbox - user.fixture@example.test",
             folder_key="Inbox",
             message_key="abc123",
             conversation_key="conv-42",
             internet_message_id="<abc123@example.com>",
-            subject="RE: Acme contract renewal",
-            sender_name="Max Mustermann",
-            sender_email="max@acme.example",
-            recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+            subject="RE: Vendor contract renewal",
+            sender_name="Sender Fixture",
+            sender_email="sender.fixture@vendor.example.test",
+            recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
             body_text="Please review the renewal changes.",
             sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
             received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
@@ -116,7 +116,7 @@ def test_windows_outlook_callback_ingests_mailbox_message(tmp_path, monkeypatch)
     user = context.default_user
     assert user is not None
     recent = context.service.get_recent_intake(user=user, limit=1)
-    assert recent.recent_conversations[0].latest_subject == "RE: Acme contract renewal"
+    assert recent.recent_conversations[0].latest_subject == "RE: Vendor contract renewal"
 
 
 def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
@@ -124,7 +124,7 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
         OutlookMsgExtractor,
         "extract",
         lambda self, file_name, media_type, content: _sample_extracted_data(
-            subject="Acme contract renewal"
+            subject="Vendor contract renewal"
         ),
     )
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
@@ -155,7 +155,7 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
         "/cases/search",
         data={
             "artifact_id": artifact_id,
-            "query": "Acme contract Mustermann",
+            "query": "Vendor contract Fixture",
         },
     )
     assert search_response.status_code == 200
@@ -171,9 +171,11 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
             source_kind="outlook_msg",
             parse_status="parsed",
             content_text=long_body,
-            subject="Acme contract renewal",
-            sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
-            recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+            subject="Vendor contract renewal",
+            sender=MailParticipant(
+                name="Sender Fixture", email="sender.fixture@vendor.example.test"
+            ),
+            recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
             sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
             received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
             direction="inbound",
@@ -218,8 +220,8 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
     assert detail_response.status_code == 200
     assert "Message content" in detail_response.text
     assert "Conversation:" in detail_response.text
-    assert "Acme contract renewal" in detail_response.text
-    assert "Max Mustermann" in detail_response.text
+    assert "Vendor contract renewal" in detail_response.text
+    assert "Sender Fixture" in detail_response.text
     assert '<pre class="mail-body">' in detail_response.text
     assert long_body in detail_response.text
 
@@ -236,7 +238,7 @@ def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypat
         OutlookMsgExtractor,
         "extract",
         lambda self, file_name, media_type, content: _sample_extracted_data(
-            subject="Acme contract renewal"
+            subject="Vendor contract renewal"
         ),
     )
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(tmp_path))
@@ -347,17 +349,17 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
     onboard_response = client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
         files={"profile_picture": ("profile.png", b"fake-image", "image/png")},
     )
     assert onboard_response.status_code == 200
     assert "Local workspace" in onboard_response.text
-    assert "Bened Example" in onboard_response.text
-    assert "bened@example.com" in onboard_response.text
-    assert "Alex Example" not in onboard_response.text
+    assert "Fixture User" in onboard_response.text
+    assert "user.fixture@example.test" in onboard_response.text
+    assert "Demo User" not in onboard_response.text
     assert "/profiles/" in onboard_response.text
 
     with sqlite3.connect(sqlite_path) as connection:
@@ -366,8 +368,8 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
         ).fetchone()
 
     assert row is not None
-    assert row[0] == "bened@example.com"
-    assert row[1] == "Bened Example"
+    assert row[0] == "user.fixture@example.test"
+    assert row[1] == "Fixture User"
     assert row[2] is not None
     assert (artifact_dir / "profiles" / row[2]).exists()
 
@@ -384,8 +386,8 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -398,9 +400,9 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     mail_response = client.post(
         "/settings/mail",
         data={
-            "account_name": "bened@example.com",
+            "account_name": "user.fixture@example.test",
             "mailbox_name": "Inbox",
-            "sender_filter": "acme.example",
+            "sender_filter": "vendor.example.test",
             "subject_filter": "Renewal",
             "sent_after": "2026-04-12T09:30",
             "result_limit": "7",
@@ -409,7 +411,7 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     )
     assert mail_response.status_code == 200
     assert "Mail defaults saved." in mail_response.text
-    assert 'value="bened@example.com"' in mail_response.text
+    assert 'value="user.fixture@example.test"' in mail_response.text
     assert 'value="Inbox"' in mail_response.text
     assert 'value="2026-04-12T09:30"' in mail_response.text
 
@@ -423,10 +425,10 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
 
     login_response = client.post(
         "/login/local",
-        data={"email": "bened@example.com", "password": "secret-passphrase"},
+        data={"email": "user.fixture@example.test", "password": "secret-passphrase"},
     )
     assert login_response.status_code == 200
-    assert "Bened Example" in login_response.text
+    assert "Fixture User" in login_response.text
 
 
 def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) -> None:
@@ -438,19 +440,19 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
             [
                 {
                     "candidate_id": "mail-1",
-                    "account_name": "bened@example.com",
+                    "account_name": "user.fixture@example.test",
                     "mailbox_name": "Inbox",
-                    "subject": "Acme contract renewal",
-                    "sender_name": "Max Mustermann",
-                    "sender_email": "max@acme.example",
+                    "subject": "Vendor contract renewal",
+                    "sender_name": "Sender Fixture",
+                    "sender_email": "sender.fixture@vendor.example.test",
                     "sent_at": "2026-04-12T09:30:00+00:00",
                     "preview_text": "Please review the latest renewal draft.",
                     "unread": True,
                     "rfc_message_id": "<mail-1@example.com>",
                     "raw_source": (
-                        "From: Max Mustermann <max@acme.example>\n"
-                        "To: Bened Example <bened@example.com>\n"
-                        "Subject: Acme contract renewal\n"
+                        "From: Sender Fixture <sender.fixture@vendor.example.test>\n"
+                        "To: Fixture User <user.fixture@example.test>\n"
+                        "Subject: Vendor contract renewal\n"
                         "Date: Sun, 12 Apr 2026 09:30:00 +0000\n"
                         "Message-ID: <mail-1@example.com>\n"
                         "\n"
@@ -471,8 +473,8 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -480,9 +482,9 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     search_response = client.post(
         "/mail/desktop-mail/search",
         data={
-            "account_name": "bened@example.com",
+            "account_name": "user.fixture@example.test",
             "mailbox_name": "Inbox",
-            "sender_filter": "max@acme.example",
+            "sender_filter": "sender.fixture@vendor.example.test",
             "subject_filter": "renewal",
             "result_limit": "10",
             "unread_only": "on",
@@ -492,7 +494,7 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     assert search_response.status_code == 200
     assert "Mail candidates loaded" in search_response.text
     assert "Import into intake" in search_response.text
-    assert "Acme contract renewal" in search_response.text
+    assert "Vendor contract renewal" in search_response.text
     assert 'hx-indicator="find .busy-indicator"' in search_response.text
     assert 'role="status" aria-live="polite">Importing' in search_response.text
 
@@ -504,7 +506,7 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     assert import_response.status_code == 200
     assert "Mail message imported" in import_response.text
     assert "Create new case" in import_response.text
-    assert "Acme contract renewal" in import_response.text
+    assert "Vendor contract renewal" in import_response.text
     assert "Import into intake" not in import_response.text
     assert import_response.text.index("intake-active") < import_response.text.index(
         "intake-dropzone"
@@ -519,17 +521,17 @@ def test_demo_mode_enables_desktop_mail_import_with_fixture(tmp_path, monkeypatc
             [
                 {
                     "candidate_id": "mail-1",
-                    "account_name": "alex@example.com",
+                    "account_name": "user.fixture@example.test",
                     "mailbox_name": "Inbox",
-                    "subject": "Acme contract renewal",
-                    "sender_email": "max@acme.example",
+                    "subject": "Vendor contract renewal",
+                    "sender_email": "sender.fixture@vendor.example.test",
                     "sent_at": "2026-04-12T09:30:00+00:00",
                     "preview_text": "Please review the latest renewal draft.",
                     "unread": True,
                     "raw_source": (
-                        "From: Max Mustermann <max@acme.example>\n"
-                        "To: Alex Example <alex@example.com>\n"
-                        "Subject: Acme contract renewal\n"
+                        "From: Sender Fixture <sender.fixture@vendor.example.test>\n"
+                        "To: Fixture User <user.fixture@example.test>\n"
+                        "Subject: Vendor contract renewal\n"
                         "\n"
                         "Please review the latest renewal draft.\n"
                     ),
@@ -551,7 +553,7 @@ def test_demo_mode_enables_desktop_mail_import_with_fixture(tmp_path, monkeypatc
     search_response = client.post(
         "/mail/desktop-mail/search",
         data={
-            "account_name": "alex@example.com",
+            "account_name": "user.fixture@example.test",
             "subject_filter": "renewal",
             "result_limit": "10",
             "unread_only": "on",
@@ -577,8 +579,8 @@ def test_local_first_password_change_updates_login_credentials(tmp_path, monkeyp
     client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -597,17 +599,17 @@ def test_local_first_password_change_updates_login_credentials(tmp_path, monkeyp
     client.post("/logout")
     old_login_response = client.post(
         "/login/local",
-        data={"email": "bened@example.com", "password": "secret-passphrase"},
+        data={"email": "user.fixture@example.test", "password": "secret-passphrase"},
     )
     assert old_login_response.status_code == 401
     assert "Invalid email or password." in old_login_response.text
 
     new_login_response = client.post(
         "/login/local",
-        data={"email": "bened@example.com", "password": "new-passphrase"},
+        data={"email": "user.fixture@example.test", "password": "new-passphrase"},
     )
     assert new_login_response.status_code == 200
-    assert "Bened Example" in new_login_response.text
+    assert "Fixture User" in new_login_response.text
 
 
 def test_local_first_intake_can_create_new_case_when_search_has_no_results(
@@ -633,8 +635,8 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
     onboard_response = client.post(
         "/onboarding",
         data={
-            "display_name": "Bened Example",
-            "email": "bened@example.com",
+            "display_name": "Fixture User",
+            "email": "user.fixture@example.test",
             "password": "secret-passphrase",
         },
     )
@@ -660,8 +662,8 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
         f"/artifacts/{artifact_id}/create-case",
         data={
             "title": "Fresh intake matter",
-            "company": "Acme GmbH",
-            "primary_contact": "Max Mustermann",
+            "company": "Vendor Example GmbH",
+            "primary_contact": "Sender Fixture",
             "next_step": "Review the new matter and respond",
             "next_due_at": "2026-04-13T09:00",
         },
@@ -677,8 +679,8 @@ def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
         parse_status="parsed",
         content_text="body text",
         subject=subject,
-        sender=MailParticipant(name="Max Mustermann", email="max@acme.example"),
-        recipients=(MailParticipant(name="Alex Example", email="alex@example.com"),),
+        sender=MailParticipant(name="Sender Fixture", email="sender.fixture@vendor.example.test"),
+        recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
         sent_at=datetime(2026, 4, 12, 9, 30, tzinfo=UTC),
         received_at=datetime(2026, 4, 12, 9, 31, tzinfo=UTC),
         direction="inbound",

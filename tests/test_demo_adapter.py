@@ -66,10 +66,10 @@ def test_in_memory_repositories_apply_visibility_and_mail_lookup_edges(tmp_path)
         source_account=None,
         source_mailbox=None,
         subject="Acme renewal",
-        sender_name="Max",
-        sender_email="max@acme.example",
-        sender_domain="acme.example",
-        recipients=(MailParticipant(name="Alex", email="alex@example.com"),),
+        sender_name="Sender",
+        sender_email="sender.fixture@vendor.example.test",
+        sender_domain="vendor.example.test",
+        recipients=(MailParticipant(name="Fixture User", email="user.fixture@example.test"),),
         sent_at=NOW,
         created_at=NOW,
     )
@@ -80,7 +80,7 @@ def test_in_memory_repositories_apply_visibility_and_mail_lookup_edges(tmp_path)
         normalized_subject="acme renewal",
         latest_subject="Acme renewal",
         latest_message_at=NOW,
-        participants=(MailParticipant(name="Max", email="max@acme.example"),),
+        participants=(MailParticipant(name="Sender", email="sender.fixture@vendor.example.test"),),
         message_count=1,
         latest_artifact_id=artifact_id,
         created_at=NOW,
@@ -202,8 +202,8 @@ def test_in_memory_mail_import_repository_tracks_selectors_candidates_and_import
         account_name="iCloud",
         mailbox_name="Inbox",
         subject="Renewal",
-        sender_name="Max",
-        sender_email="max@example.com",
+        sender_name="Sender",
+        sender_email="sender.fixture@example.test",
         sent_at=NOW,
         preview_text="Preview",
         unread=True,
@@ -274,7 +274,7 @@ def test_heuristics_cover_subject_ambiguity_fallback_search_and_text_helpers() -
         file_name="fresh.msg",
         media_type="application/vnd.ms-outlook",
         size_bytes=4,
-        content_text="Northwind compliance questionnaire",
+        content_text="Compliance Example compliance questionnaire",
         storage_key="stored",
         uploaded_at=NOW,
         uploaded_by=user.id,
@@ -363,8 +363,8 @@ def test_heuristics_cover_subject_ambiguity_fallback_search_and_text_helpers() -
     assert demo._mail_metadata_search_text(None) == ""
     assert demo._rank_cases("Acme renewal", (replace(cases[0], company=None),))
     ambiguous_cases = (
-        replace(cases[0], id=uuid4(), title="Acme contract renewal"),
-        replace(cases[0], id=uuid4(), title="Acme contract renewals"),
+        replace(cases[0], id=uuid4(), title="Vendor contract renewal"),
+        replace(cases[0], id=uuid4(), title="Vendor contract renewals"),
     )
     assert (
         demo._subject_suggestion_for_cases(
@@ -377,7 +377,7 @@ def test_heuristics_cover_subject_ambiguity_fallback_search_and_text_helpers() -
                 rfc_message_id=None,
                 source_account=None,
                 source_mailbox=None,
-                subject="Acme contract renewal",
+                subject="Vendor contract renewal",
                 sender_name=None,
                 sender_email=None,
                 sender_domain=None,
@@ -392,7 +392,7 @@ def test_heuristics_cover_subject_ambiguity_fallback_search_and_text_helpers() -
     )
 
     results = demo.HeuristicElizabethanSearchClient().search_cases(
-        "Northwind",
+        "Compliance Example",
         artifact,
         None,
         cases,
