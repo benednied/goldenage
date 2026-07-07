@@ -10,6 +10,8 @@ from fastapi import HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 
+from goldenage.adapters.agent_http import HttpElizabethanSearchClient, HttpGiselaClient
+from goldenage.adapters.demo import HeuristicElizabethanSearchClient, HeuristicGiselaClient
 from goldenage.config import Settings
 from goldenage.domain.models import CaseFile, LocalUserAccount, UserContext
 from goldenage.domain.rules import ResolutionError
@@ -658,6 +660,25 @@ def test_build_context_postgres_and_required_sqlite_path(monkeypatch, tmp_path) 
         web_app._build_context(missing_sqlite_settings)
 
 
+def test_agent_clients_switch_to_http_when_urls_are_configured(tmp_path) -> None:
+    settings = replace(
+        _settings(tmp_path),
+        gisela_http_url="https://gisela.example.test",
+        elizabethan_http_url="https://elizabethan.example.test",
+        agent_http_timeout_seconds=3.0,
+    )
+
+    assert isinstance(web_app._build_gisela_client(settings), HttpGiselaClient)
+    assert isinstance(web_app._build_elizabethan_client(settings), HttpElizabethanSearchClient)
+
+    default_settings = _settings(tmp_path)
+    assert isinstance(web_app._build_gisela_client(default_settings), HeuristicGiselaClient)
+    assert isinstance(
+        web_app._build_elizabethan_client(default_settings),
+        HeuristicElizabethanSearchClient,
+    )
+
+
 def test_outlook_ingest_callback_skips_when_no_repository_user(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -711,6 +732,9 @@ def _settings(
         outlook_poll_seconds=30,
         apple_mail_client_mode=None,
         apple_mail_fixture_path=None,
+        gisela_http_url=None,
+        elizabethan_http_url=None,
+        agent_http_timeout_seconds=10.0,
         auth_secret="secret",
         auth_cookie_secure=auth_cookie_secure,
     )

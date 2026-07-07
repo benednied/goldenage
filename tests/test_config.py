@@ -16,6 +16,9 @@ def test_load_settings_reads_environment_aliases_and_typed_values(monkeypatch, t
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "yes")
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_ACCOUNT", "Mailbox")
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_POLL_SECONDS", "invalid")
+    monkeypatch.setenv("GOLDENAGE_GISELA_HTTP_URL", " https://gisela.example.test/ ")
+    monkeypatch.setenv("GOLDENAGE_ELIZABETHAN_HTTP_URL", "https://elizabethan.example.test")
+    monkeypatch.setenv("GOLDENAGE_AGENT_HTTP_TIMEOUT_SECONDS", "2.5")
     monkeypatch.setenv("GOLDENAGE_AUTH_SECRET", "secret")
     monkeypatch.setenv("GOLDENAGE_AUTH_COOKIE_SECURE", "on")
 
@@ -35,6 +38,9 @@ def test_load_settings_reads_environment_aliases_and_typed_values(monkeypatch, t
     assert settings.outlook_poll_seconds == 30
     assert settings.apple_mail_client_mode == "fixture"
     assert settings.apple_mail_fixture_path == tmp_path / "mail.json"
+    assert settings.gisela_http_url == "https://gisela.example.test"
+    assert settings.elizabethan_http_url == "https://elizabethan.example.test"
+    assert settings.agent_http_timeout_seconds == 2.5
     assert settings.auth_secret == "secret"
     assert settings.auth_cookie_secure is True
 
@@ -77,6 +83,7 @@ def test_env_helpers_handle_defaults_invalid_values_and_flags(monkeypatch) -> No
     assert config._env_int("MISSING_INT", 7) == 7
     assert config._env_int("INVALID_INT", 7) == 7
     assert config._env_int("NEGATIVE_INT", 7) == 1
+    assert config._env_float("MISSING_FLOAT", 7.5) == 7.5
     assert config._env_flag("TRUE_FLAG") is True
     assert config._env_flag("FALSE_FLAG") is False
     config._load_dotenv(Path("missing.env"))

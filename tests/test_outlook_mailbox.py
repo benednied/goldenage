@@ -287,6 +287,9 @@ def _settings(account_name: str | None) -> Settings:
         outlook_poll_seconds=1,
         apple_mail_client_mode=None,
         apple_mail_fixture_path=None,
+        gisela_http_url=None,
+        elizabethan_http_url=None,
+        agent_http_timeout_seconds=10.0,
         auth_secret="secret",
         auth_cookie_secure=False,
     )

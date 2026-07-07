@@ -11,8 +11,8 @@ CaseStatus = Literal["open", "closed"]
 ActivityKind = Literal["intake", "follow_up", "question", "escalation"]
 DueLabel = Literal["overdue", "today", "upcoming"]
 MailSourceSystem = Literal["outlook_upload", "apple_mail_client", "desktop_mail_client"]
-MailMessageFormat = Literal["outlook_msg", "rfc822_email"]
-ParseStatus = Literal["parsed"]
+MailMessageFormat = Literal["outlook_msg", "rfc822_email", "binary_document"]
+ParseStatus = Literal["parsed", "ocr_required", "unsupported"]
 MailDirection = Literal["inbound", "outbound"]
 
 

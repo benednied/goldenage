@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from goldenage.adapters.agent_http import HttpElizabethanSearchClient, HttpGiselaClient
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
     HeuristicGiselaClient,
@@ -827,8 +828,8 @@ def _build_context(settings: Settings) -> AppContext:
             outlook_extractor=OutlookMsgExtractor(),
             rfc822_extractor=Rfc822EmailExtractor(),
         ),
-        gisela_client=HeuristicGiselaClient(),
-        elizabethan_client=HeuristicElizabethanSearchClient(),
+        gisela_client=_build_gisela_client(settings),
+        elizabethan_client=_build_elizabethan_client(settings),
         mail_import_client=build_desktop_mail_import_client(
             fixture_path=settings.mail_fixture_path,
             client_mode=settings.mail_client_mode,
@@ -868,6 +869,28 @@ def _build_context(settings: Settings) -> AppContext:
         local_user_repository=local_user_repository,
         outlook_worker=outlook_worker,
     )
+
+
+def _build_gisela_client(settings: Settings) -> HttpGiselaClient | HeuristicGiselaClient:
+    """Return the configured assignment agent client."""
+    if settings.gisela_http_url:
+        return HttpGiselaClient(
+            base_url=settings.gisela_http_url,
+            timeout_seconds=settings.agent_http_timeout_seconds,
+        )
+    return HeuristicGiselaClient()
+
+
+def _build_elizabethan_client(
+    settings: Settings,
+) -> HttpElizabethanSearchClient | HeuristicElizabethanSearchClient:
+    """Return the configured fallback search client."""
+    if settings.elizabethan_http_url:
+        return HttpElizabethanSearchClient(
+            base_url=settings.elizabethan_http_url,
+            timeout_seconds=settings.agent_http_timeout_seconds,
+        )
+    return HeuristicElizabethanSearchClient()
 
 
 def _unsupported_upload_response(

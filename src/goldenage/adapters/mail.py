@@ -55,6 +55,17 @@ class MultiplexedArtifactExtractor(ArtifactContentExtractor):
         normalized_type = (media_type or "").lower()
         if normalized_name.endswith(".msg") or "ms-outlook" in normalized_type:
             return self._outlook_extractor.extract(file_name, media_type, content)
+        if _requires_ocr(normalized_name, normalized_type):
+            return ExtractedArtifactData(
+                message_format="binary_document",
+                parse_status="ocr_required",
+                rfc_message_id=None,
+                content_text="",
+                subject=file_name,
+                sender=None,
+                recipients=(),
+                sent_at=None,
+            )
         return self._rfc822_extractor.extract(file_name, media_type, content)
 
 
@@ -83,6 +94,16 @@ class Rfc822EmailExtractor(ArtifactContentExtractor):
             recipients=recipients,
             sent_at=sent_at,
         )
+
+
+def _requires_ocr(file_name: str, media_type: str) -> bool:
+    """Return whether a document should wait for a later OCR pipeline."""
+    return file_name.endswith((".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff")) or media_type in {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/tiff",
+    }
 
 
 class FixtureMailImportClient(MailImportClient):

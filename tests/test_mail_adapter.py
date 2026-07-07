@@ -29,6 +29,20 @@ def test_multiplexed_extractor_routes_outlook_and_rfc822_messages() -> None:
     assert extractor.extract("mail.bin", "application/vnd.ms-outlook", b"msg")[0] == "outlook"  # ty:ignore[not-subscriptable]
 
 
+def test_multiplexed_extractor_defers_pdf_and_images_to_ocr() -> None:
+    extractor = mail.MultiplexedArtifactExtractor(
+        outlook_extractor=StubExtractor("outlook"),
+        rfc822_extractor=StubExtractor("rfc822"),
+    )
+
+    extracted = extractor.extract("scan.pdf", "application/pdf", b"%PDF")
+
+    assert extracted.message_format == "binary_document"
+    assert extracted.parse_status == "ocr_required"
+    assert extracted.subject == "scan.pdf"
+    assert extracted.content_text == ""
+
+
 def test_rfc822_extractor_handles_headers_body_and_invalid_dates() -> None:
     extracted = mail.Rfc822EmailExtractor().extract(
         "fallback.eml",

@@ -28,6 +28,9 @@ class Settings:
     outlook_poll_seconds: int
     apple_mail_client_mode: str | None
     apple_mail_fixture_path: Path | None
+    gisela_http_url: str | None
+    elizabethan_http_url: str | None
+    agent_http_timeout_seconds: float
     auth_secret: str
     auth_cookie_secure: bool
 
@@ -69,6 +72,9 @@ def load_settings() -> Settings:
             if (raw_path := os.environ.get("GOLDENAGE_APPLE_MAIL_FIXTURE_PATH"))
             else None
         ),
+        gisela_http_url=_optional_url("GOLDENAGE_GISELA_HTTP_URL"),
+        elizabethan_http_url=_optional_url("GOLDENAGE_ELIZABETHAN_HTTP_URL"),
+        agent_http_timeout_seconds=_env_float("GOLDENAGE_AGENT_HTTP_TIMEOUT_SECONDS", 10.0),
         auth_secret=os.environ.get("GOLDENAGE_AUTH_SECRET", _GENERATED_AUTH_SECRET),
         auth_cookie_secure=_env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
     )
@@ -89,6 +95,27 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return max(value, 1)
+
+
+def _env_float(name: str, default: float) -> float:
+    """Return a positive float environment value."""
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return max(value, 0.1)
+
+
+def _optional_url(name: str) -> str | None:
+    """Return a normalized optional service URL."""
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    return normalized or None
 
 
 def _load_dotenv(path: Path) -> None:

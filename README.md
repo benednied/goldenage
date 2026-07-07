@@ -57,6 +57,18 @@ GOLDENAGE_OUTLOOK_SCAN_PER_FOLDER_LIMIT=250
 
 In `auto` mode, macOS uses Apple Mail automation when available and Windows uses classic Outlook desktop through COM. Set the mail address in Settings; leaving the folder field blank scans all mail folders under that configured address. The legacy `GOLDENAGE_APPLE_MAIL_*` env vars still work as fallbacks.
 
+## Extracted Agent Services
+
+By default, GoldenAge uses in-repo deterministic adapters for the `gisela` assignment suggestion and `elizabethan` fallback search ports. To route those ports to separately deployed HTTP services, configure:
+
+```bash
+GOLDENAGE_GISELA_HTTP_URL=https://gisela.example.test
+GOLDENAGE_ELIZABETHAN_HTTP_URL=https://elizabethan.example.test
+GOLDENAGE_AGENT_HTTP_TIMEOUT_SECONDS=10
+```
+
+The Gisela service receives `POST /analyze-artifact`. The Elizabethan service receives `POST /search-cases`. Both requests include the artifact, optional mail metadata, visible cases for the acting user, and the request timestamp; the application still performs visibility filtering before calling either service.
+
 ## Windows Outlook Mailbox Intake
 
 The mailbox integration only works on Windows with classic desktop Outlook installed and signed in. It uses Outlook COM/MAPI through `pywin32`, so it does not run on Linux, macOS, Outlook Web, or the new WebView-based Outlook app.
