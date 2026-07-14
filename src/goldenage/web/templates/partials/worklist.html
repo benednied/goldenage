@@ -3,18 +3,21 @@
     <p class="eyebrow">Today's Queue</p>
     <h2>Due activities</h2>
   </div>
-  <span class="count-badge">{{ worklist|length }}</span>
+  <span class="count-badge" aria-label="{{ worklist|length }} due activities">{{ worklist|length }}</span>
 </div>
 
 {% if worklist %}
   <div class="worklist">
     {% for item in worklist %}
       <a
-        class="work-item due-{{ item.due_status }}"
+        class="work-item due-{{ item.due_status }}{% if selected_case_id == item.case_file.id|string %} is-selected{% endif %}"
         href="/worklist?case_id={{ item.case_file.id }}"
         hx-get="/cases/{{ item.case_file.id }}/panel"
         hx-target="#detail-panel"
         hx-swap="innerHTML"
+        hx-push-url="/worklist?case_id={{ item.case_file.id }}"
+        data-work-item-case="{{ item.case_file.id }}"
+        {% if selected_case_id == item.case_file.id|string %}aria-current="true"{% endif %}
       >
         <div class="work-meta">
           <span class="status-dot status-{{ item.due_status }}"></span>

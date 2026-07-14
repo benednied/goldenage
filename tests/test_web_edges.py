@@ -51,12 +51,55 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     )
     assert bad_onboarding.status_code == 400
     assert "Display name, email, and password are required." in bad_onboarding.text
+
+    invalid_email = local_client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "not-an-email",
+            "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
+        },
+    )
+    assert invalid_email.status_code == 400
+    assert "Enter a valid email address." in invalid_email.text
+    assert 'value="Bened Example"' in invalid_email.text
+    assert 'value="not-an-email"' in invalid_email.text
+
+    short_password = local_client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "short",
+            "confirm_password": "short",
+        },
+    )
+    assert short_password.status_code == 400
+    assert "Password must be at least 8 characters." in short_password.text
+
+    password_mismatch = local_client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+            "confirm_password": "different-passphrase",
+        },
+    )
+    assert password_mismatch.status_code == 400
+    assert "Passwords do not match." in password_mismatch.text
+    assert 'value="bened@example.com"' in password_mismatch.text
+    assert 'name="password" value=' not in password_mismatch.text
+    assert 'name="confirm_password" value=' not in password_mismatch.text
+
     bad_picture = local_client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
         files={"profile_picture": ("profile.txt", b"text", "text/plain")},
     )
@@ -71,15 +114,37 @@ def test_static_ux_contracts_keep_focus_order_and_responsive_layout() -> None:
     style = Path("src/goldenage/web/static/style.css").read_text(encoding="utf-8")
     intake_script = Path("src/goldenage/web/static/intake.js").read_text(encoding="utf-8")
     login_template = Path("src/goldenage/web/templates/login.html").read_text(encoding="utf-8")
+    worklist_template = Path("src/goldenage/web/templates/partials/worklist.html").read_text(
+        encoding="utf-8"
+    )
+    workspace_template = Path("src/goldenage/web/templates/workspace.html").read_text(
+        encoding="utf-8"
+    )
+    detail_template = Path("src/goldenage/web/templates/partials/detail_panel.html").read_text(
+        encoding="utf-8"
+    )
 
     assert template.index("intake-active") < template.index("intake-dropzone")
     assert "panel-intake > .intake-active" not in style
     assert "requestSubmit" not in intake_script
     assert "Upload mail" in template
+    assert "data-file-name" in template
     assert ".busy-indicator" in style
     assert ".settings-layout {\n    grid-template-columns: 1fr;" in style
     assert 'role="button"' not in login_template
-    assert "login-sound-toggle" in login_template
+    assert "corporate-login" not in login_template
+    assert "LDAP" not in login_template
+    assert "prefers-reduced-motion" in style
+    assert ":focus-visible" in style
+    assert 'hx-push-url="/worklist?case_id=' in worklist_template
+    assert 'aria-current="true"' in worklist_template
+    assert "is-selected" in worklist_template
+    assert workspace_template.count('aria-live="polite"') == 2
+    assert 'role="alert"' in detail_template
+    assert 'type="radio" name="resolution_path"' in detail_template
+    assert "htmx-2.0.10.min.js" in Path("src/goldenage/web/templates/base.html").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_startup_and_shutdown_delegate_to_outlook_worker(monkeypatch) -> None:
@@ -127,6 +192,7 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
     unauthenticated = TestClient(web_app.create_app(), follow_redirects=False)
@@ -137,14 +203,27 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
         data={"sent_after": "not-a-date"},
     )
     assert settings_bad_date.status_code == 200
-    assert "Invalid isoformat string" in settings_bad_date.text
+    assert "Enter a valid date and time." in settings_bad_date.text
+    assert "Invalid isoformat string" not in settings_bad_date.text
 
     search_bad_date = client.post(
         "/mail/desktop-mail/search",
         data={"sent_after": "not-a-date"},
     )
     assert search_bad_date.status_code == 200
-    assert "Invalid isoformat string" in search_bad_date.text
+    assert "Enter a valid date and time." in search_bad_date.text
+    assert "Invalid isoformat string" not in search_bad_date.text
+
+    validation_error = client.post(
+        "/mail/desktop-mail/search",
+        data={"result_limit": "not-a-number"},
+        headers={"HX-Request": "true"},
+    )
+    assert validation_error.status_code == 422
+    assert validation_error.headers["HX-Retarget"] == "#intake-panel"
+    assert validation_error.headers["HX-Reswap"] == "innerHTML"
+    assert "Check the form fields and try again." in validation_error.text
+    assert 'role="alert"' in validation_error.text
 
     empty_upload = client.post(
         "/artifacts/upload",
@@ -154,13 +233,21 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
     assert "Select a file before uploading." in empty_upload.text
 
     assert client.get(f"/cases/{uuid4()}/artifacts/{uuid4()}/panel").status_code == 404
-    assert (
-        client.post(
-            f"/activities/{uuid4()}/resolve",
-            data={"skip_follow_up": "on"},
-        ).status_code
-        == 404
+    missing_activity_id = uuid4()
+    missing_activity = client.post(
+        f"/activities/{missing_activity_id}/resolve",
+        data={"skip_follow_up": "on"},
     )
+    assert missing_activity.status_code == 404
+    assert missing_activity.text.startswith("<!DOCTYPE html>")
+    missing_activity_htmx = client.post(
+        f"/activities/{missing_activity_id}/resolve",
+        data={"skip_follow_up": "on"},
+        headers={"HX-Request": "true"},
+    )
+    assert missing_activity_htmx.status_code == 404
+    assert missing_activity_htmx.headers["HX-Retarget"] == "#detail-panel"
+    assert 'role="alert"' in missing_activity_htmx.text
     assert (
         client.post(
             "/mail/desktop-mail/import",
@@ -182,6 +269,7 @@ def test_protected_routes_redirect_when_local_user_is_not_authenticated(
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
     client = TestClient(web_app.create_app(), follow_redirects=False)
@@ -189,6 +277,20 @@ def test_protected_routes_redirect_when_local_user_is_not_authenticated(
     artifact_id = uuid4()
     activity_id = uuid4()
     conversation_id = uuid4()
+
+    login_page = client.get("/login")
+    assert login_page.status_code == 200
+    assert "Workspace credentials" in login_page.text
+    assert "<video" not in login_page.text
+    assert "LDAP" not in login_page.text
+    assert "data/login" not in login_page.text
+    failed_login = client.post(
+        "/login/local",
+        data={"email": "bened@example.com", "password": "wrong"},
+    )
+    assert failed_login.status_code == 401
+    assert 'value="bened@example.com"' in failed_login.text
+    assert "Invalid email or password." in failed_login.text
 
     assert client.post("/settings/mail").headers["location"] == "/login"
     assert client.post("/mail/desktop-mail/search").headers["location"] == "/login"
@@ -253,6 +355,7 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
     assert client.get("/login").headers["location"] == "/worklist"
@@ -264,6 +367,7 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
                 "display_name": "Other",
                 "email": "other@example.com",
                 "password": "secret-passphrase",
+                "confirm_password": "secret-passphrase",
             },
         ).headers["location"]
         == "/worklist"
@@ -288,6 +392,7 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
                 "display_name": "Bened",
                 "email": "bened@example.com",
                 "password": "secret-passphrase",
+                "confirm_password": "secret-passphrase",
             },
         ).status_code
         == 500
@@ -304,6 +409,7 @@ def test_password_change_error_messages(tmp_path, monkeypatch) -> None:
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
 
@@ -347,6 +453,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
     context = client.app.state.context  # ty:ignore[unresolved-attribute]
@@ -375,9 +482,16 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     context.service.get_case_detail = lambda **kwargs: detail
     context.service.get_case_detail_for_activity = lambda **kwargs: detail
     context.service.get_today_worklist = lambda **kwargs: ()
+    context.service.list_unassigned_intake = lambda **kwargs: ()
     context.service.get_mail_import_state = lambda **kwargs: web_app.IntakeState()
     context.service.get_recent_intake = lambda **kwargs: web_app.IntakeState()
-    context.service.resolve_activity = lambda **kwargs: detail
+    resolution_calls: list[dict[str, object]] = []
+
+    def capture_resolution(**kwargs):
+        resolution_calls.append(kwargs)
+        return detail
+
+    context.service.resolve_activity = capture_resolution
     context.service.assign_artifact_to_case = lambda **kwargs: detail
     context.service.create_case_for_artifact = lambda **kwargs: detail
     context.service.import_mail_candidate = lambda **kwargs: (_ for _ in ()).throw(
@@ -397,6 +511,29 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
         ).status_code
         == 200
     )
+    assert resolution_calls[-1]["skip_follow_up"] is True
+    assert resolution_calls[-1]["close_case"] is False
+
+    close_response = client.post(
+        f"/activities/{activity_id}/resolve",
+        data={
+            "resolution_path": "close",
+            "next_step": "This must be ignored",
+            "next_due_at": "2026-04-12T09:30",
+        },
+    )
+    assert close_response.status_code == 200
+    assert resolution_calls[-1]["close_case"] is True
+    assert resolution_calls[-1]["next_step"] == ""
+
+    conflict_response = client.post(
+        f"/activities/{activity_id}/resolve",
+        data={"resolution_path": "close", "skip_follow_up": "on"},
+        headers={"HX-Request": "true"},
+    )
+    assert conflict_response.status_code == 400
+    assert conflict_response.headers["HX-Retarget"] == "#detail-panel"
+    assert "Choose one resolution path." in conflict_response.text
     assert (
         client.post(
             f"/artifacts/{artifact_id}/assign",
@@ -426,19 +563,25 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     context.service.resolve_activity = lambda **kwargs: (_ for _ in ()).throw(
         ResolutionError("next step required")
     )
-    assert (
-        client.post(
-            f"/activities/{activity_id}/resolve",
-            data={"skip_follow_up": "off"},
-        ).status_code
-        == 400
+    resolution_error = client.post(
+        f"/activities/{activity_id}/resolve",
+        data={
+            "resolution_path": "follow_up",
+            "next_step": "Call",
+            "next_due_at": "2026-04-12T09:30",
+        },
+        headers={"HX-Request": "true"},
     )
+    assert resolution_error.status_code == 400
+    assert resolution_error.headers["HX-Retarget"] == "#detail-panel"
+    assert "next step required" in resolution_error.text
     context.service.assign_artifact_to_case = lambda **kwargs: (_ for _ in ()).throw(
         ResolutionError("date required")
     )
     assign_error = client.post(
         f"/artifacts/{artifact_id}/assign",
         data={"case_id": str(case_id), "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+        headers={"HX-Request": "true"},
     )
     assert assign_error.status_code == 400
     assert assign_error.headers["HX-Retarget"] == "#intake-panel"
@@ -448,28 +591,31 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     create_error = client.post(
         f"/artifacts/{artifact_id}/create-case",
         data={"title": "Case", "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+        headers={"HX-Request": "true"},
     )
     assert create_error.status_code == 400
+    assert create_error.headers["HX-Retarget"] == "#intake-panel"
     context.service.assign_artifact_to_case = lambda **kwargs: (_ for _ in ()).throw(
         web_app.NotFoundError("Artifact not found.")
     )
-    assert (
-        client.post(
-            f"/artifacts/{artifact_id}/assign",
-            data={"case_id": str(case_id), "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
-        ).status_code
-        == 404
+    missing_assignment = client.post(
+        f"/artifacts/{artifact_id}/assign",
+        data={"case_id": str(case_id), "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+        headers={"HX-Request": "true"},
     )
+    assert missing_assignment.status_code == 404
+    assert missing_assignment.headers["HX-Retarget"] == "#intake-panel"
+    assert 'role="alert"' in missing_assignment.text
     context.service.create_case_for_artifact = lambda **kwargs: (_ for _ in ()).throw(
         web_app.NotFoundError("Artifact not found.")
     )
-    assert (
-        client.post(
-            f"/artifacts/{artifact_id}/create-case",
-            data={"title": "Case", "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
-        ).status_code
-        == 404
+    missing_create = client.post(
+        f"/artifacts/{artifact_id}/create-case",
+        data={"title": "Case", "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+        headers={"HX-Request": "true"},
     )
+    assert missing_create.status_code == 404
+    assert missing_create.headers["HX-Retarget"] == "#intake-panel"
 
     account = LocalUserAccount(
         id=user_id,

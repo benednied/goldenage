@@ -34,7 +34,7 @@
       </div>
 
       {% if mail_message %}
-        <div class="message{% if mail_message_kind == 'error' %} message-error{% endif %}">
+        <div class="message{% if mail_message_kind == 'error' %} message-error{% endif %}" {% if mail_message_kind == 'error' %}role="alert"{% else %}role="status"{% endif %}>
           {{ mail_message }}
         </div>
       {% endif %}
@@ -87,7 +87,7 @@
       </div>
 
       {% if password_message %}
-        <div class="message{% if password_message_kind == 'error' %} message-error{% endif %}">
+        <div class="message{% if password_message_kind == 'error' %} message-error{% endif %}" {% if password_message_kind == 'error' %}role="alert"{% else %}role="status"{% endif %}>
           {{ password_message }}
         </div>
       {% endif %}

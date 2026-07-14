@@ -2,8 +2,8 @@
 
 {% block body %}
   <main class="onboarding-page">
-    <div class="wave wave-a onboarding-wave"></div>
-    <div class="wave wave-b onboarding-wave onboarding-wave-b"></div>
+    <div class="wave wave-a onboarding-wave" aria-hidden="true"></div>
+    <div class="wave wave-b onboarding-wave onboarding-wave-b" aria-hidden="true"></div>
 
     <section class="onboarding-card">
       <p class="eyebrow">Local-First Setup</p>
@@ -11,21 +11,25 @@
       <p class="subhead">Create the first local account for this SQLite workspace before the case queue becomes available.</p>
 
       {% if message %}
-        <div class="message message-error">{{ message }}</div>
+        <div class="message message-error" role="alert">{{ message }}</div>
       {% endif %}
 
       <form class="workflow-form onboarding-form" method="post" action="/onboarding" enctype="multipart/form-data">
         <label>
           Display name
-          <input type="text" name="display_name" placeholder="Your name" required />
+          <input type="text" name="display_name" value="{{ display_name }}" placeholder="Your name" autocomplete="name" required />
         </label>
         <label>
           Email
-          <input type="text" name="email" placeholder="name@example.com" required />
+          <input type="email" name="email" value="{{ email }}" placeholder="name@example.com" autocomplete="email" required />
         </label>
         <label>
           Password
-          <input type="password" name="password" placeholder="Create a local password" required />
+          <input type="password" name="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required />
+        </label>
+        <label>
+          Confirm password
+          <input type="password" name="confirm_password" placeholder="Repeat your password" autocomplete="new-password" minlength="8" required />
         </label>
         <label>
           Profile picture

@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from datetime import UTC, datetime
 
@@ -35,6 +36,18 @@ def test_worklist_page_renders(monkeypatch) -> None:
     assert 'rel="icon"' in response.text
     assert "golden_age_favicon_48.ico" in response.text
     assert "Mail Import" not in response.text
+
+    case_id = re.search(r'href="/worklist\?case_id=([0-9a-f-]+)"', response.text).group(1)
+    direct_panel = client.get(f"/cases/{case_id}/panel")
+    htmx_panel = client.get(
+        f"/cases/{case_id}/panel",
+        headers={"HX-Request": "true"},
+    )
+
+    assert direct_panel.text.startswith("<!DOCTYPE html>")
+    assert '<main id="workspace"' in direct_panel.text
+    assert not htmx_panel.text.startswith("<!DOCTYPE html>")
+    assert "Case Detail" in htmx_panel.text
 
 
 def test_demo_mail_import_requires_explicit_fixture_or_mode(monkeypatch) -> None:
@@ -143,9 +156,19 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
     assert "Confirm suggestion" in upload_response.text
     assert "Recent conversations" in upload_response.text
 
-    import re
-
     artifact_id = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text).group(1)
+
+    assert "Unassigned Intake" in upload_response.text
+    assert f"/artifacts/{artifact_id}/intake" in upload_response.text
+    direct_intake = client.get(f"/artifacts/{artifact_id}/intake")
+    htmx_intake = client.get(
+        f"/artifacts/{artifact_id}/intake",
+        headers={"HX-Request": "true"},
+    )
+    assert direct_intake.text.startswith("<!DOCTYPE html>")
+    assert "Confirm suggestion" in direct_intake.text
+    assert not htmx_intake.text.startswith("<!DOCTYPE html>")
+    assert "Confirm suggestion" in htmx_intake.text
 
     reject_response = client.post(f"/artifacts/{artifact_id}/suggestion/reject")
     assert reject_response.status_code == 200
@@ -197,8 +220,6 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
         files={"file": ("acme.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
-
-    import re
 
     artifact_id = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text).group(1)
     case_id = re.search(r'name="case_id" value="([0-9a-f-]+)"', upload_response.text).group(1)
@@ -253,8 +274,6 @@ def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypat
     )
     assert upload_response.status_code == 200
 
-    import re
-
     conversation_id = re.search(
         r"/intake/conversations/([0-9a-f-]+)",
         upload_response.text,
@@ -288,8 +307,6 @@ def test_recent_conversation_opens_fallback_triage_when_no_suggestion(
         "/artifacts/upload",
         files={"file": ("unmatched.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
     )
-
-    import re
 
     conversation_id = re.search(
         r"/intake/conversations/([0-9a-f-]+)",
@@ -350,6 +367,7 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
         files={"profile_picture": ("profile.png", b"fake-image", "image/png")},
     )
@@ -387,6 +405,7 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
 
@@ -474,6 +493,7 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
 
@@ -580,6 +600,7 @@ def test_local_first_password_change_updates_login_credentials(tmp_path, monkeyp
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
 
@@ -636,6 +657,7 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            "confirm_password": "secret-passphrase",
         },
     )
     assert onboard_response.status_code == 200

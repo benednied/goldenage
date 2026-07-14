@@ -6,7 +6,7 @@
 </div>
 
 {% if detail_error %}
-  <div class="message message-error">{{ detail_error }}</div>
+  <div class="message message-error" role="alert">{{ detail_error }}</div>
 {% endif %}
 
 {% if detail %}
@@ -30,25 +30,40 @@
         hx-post="/activities/{{ detail.active_activity.id }}/resolve"
         hx-target="#workspace"
         hx-swap="innerHTML"
+        hx-push-url="/worklist?case_id={{ detail.case_file.id }}"
+        hx-indicator="find .busy-indicator"
         class="workflow-form"
+        data-resolution-form
       >
-        <label>
-          What happens next?
-          <input type="text" name="next_step" placeholder="Call back with revised clause wording" />
-        </label>
-        <label>
-          Follow-up due
-          <input type="datetime-local" name="next_due_at" />
-        </label>
-        <label class="checkbox-row">
-          <input type="checkbox" name="close_case" />
-          <span>Close the case instead of scheduling follow-up.</span>
-        </label>
-        <label class="checkbox-row">
-          <input type="checkbox" name="skip_follow_up" />
-          <span>Record that no follow-up is needed.</span>
-        </label>
-        <button type="submit">Resolve with a clear next state</button>
+        <fieldset class="resolution-options">
+          <legend>Resolution</legend>
+          <label class="choice-row">
+            <input type="radio" name="resolution_path" value="follow_up" {% if resolution_path == "follow_up" %}checked{% endif %} required />
+            <span>Schedule a follow-up</span>
+          </label>
+          <label class="choice-row">
+            <input type="radio" name="resolution_path" value="close" {% if resolution_path == "close" %}checked{% endif %} />
+            <span>Close the case</span>
+          </label>
+          <label class="choice-row">
+            <input type="radio" name="resolution_path" value="skip" {% if resolution_path == "skip" %}checked{% endif %} />
+            <span>Record no follow-up needed</span>
+          </label>
+        </fieldset>
+        <div class="resolution-follow-up" data-resolution-follow-up>
+          <label>
+            What happens next?
+            <input type="text" name="next_step" value="{{ resolution_next_step }}" placeholder="Call back with revised clause wording" />
+          </label>
+          <label>
+            Follow-up due
+            <input type="datetime-local" name="next_due_at" value="{{ resolution_next_due_at }}" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="submit">Resolve activity</button>
+          <span class="busy-indicator" role="status" aria-live="polite">Resolving…</span>
+        </div>
       </form>
     </section>
   {% endif %}
@@ -81,6 +96,8 @@
               hx-get="/cases/{{ detail.case_file.id }}/artifacts/{{ artifact.id }}/panel"
               hx-target="#detail-panel"
               hx-swap="innerHTML"
+              hx-push-url="/worklist?case_id={{ detail.case_file.id }}&artifact_id={{ artifact.id }}"
+              {% if selected_artifact_id == artifact.id|string %}aria-current="true"{% endif %}
             >
               <strong>{{ artifact.file_name }}</strong>
             </a>

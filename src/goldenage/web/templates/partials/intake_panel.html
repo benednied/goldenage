@@ -16,6 +16,7 @@
             hx-get="/intake/conversations/{{ conversation.id }}"
             hx-target="#intake-panel"
             hx-swap="innerHTML"
+            hx-push-url="true"
           >
             <strong>{{ conversation.latest_subject or "No subject" }}</strong>
           </a>
@@ -27,7 +28,7 @@
 {% endif %}
 
 {% if intake_state.message %}
-  <div class="message{% if intake_state.message_kind == 'error' %} message-error{% endif %}">
+  <div class="message{% if intake_state.message_kind == 'error' %} message-error{% endif %}" {% if intake_state.message_kind == 'error' %}role="alert"{% else %}role="status"{% endif %}>
     {{ intake_state.message }}
   </div>
 {% endif %}
@@ -97,7 +98,7 @@
               hx-post="/artifacts/{{ intake_state.artifact.id }}/suggestion/reject"
               hx-target="#intake-panel"
               hx-swap="innerHTML"
-              hx-indicator="find .busy-indicator"
+              hx-indicator="closest form"
               class="button-secondary"
             >
               Reject suggestion
@@ -229,15 +230,16 @@
   hx-swap="innerHTML"
   hx-indicator="find .busy-indicator"
 >
-  <div class="wave wave-a"></div>
-  <div class="wave wave-b"></div>
+  <div class="wave wave-a" aria-hidden="true"></div>
+  <div class="wave wave-b" aria-hidden="true"></div>
   <div class="dropzone-copy">
     <h3>Add a document</h3>
     <p>Drop an Outlook <code>.msg</code> email here to check for a likely case match before searching manually.</p>
     <label class="file-picker">
-      <span>Select Outlook mail</span>
-      <input type="file" name="file" accept=".msg" required />
+      <span class="file-picker-button">Select Outlook mail</span>
+      <input type="file" name="file" accept=".msg" aria-describedby="intake-file-feedback" required />
     </label>
+    <span id="intake-file-feedback" class="file-picker-name" data-file-name role="status" aria-live="polite">No file selected</span>
     <div class="button-row">
       <button type="submit">Upload mail</button>
       <span class="busy-indicator" role="status" aria-live="polite">Uploading…</span>
@@ -263,6 +265,7 @@
             hx-get="/artifacts/{{ item.id }}/intake"
             hx-target="#intake-panel"
             hx-swap="innerHTML show:top"
+            hx-push-url="true"
             class="result-card"
           >
             <div class="result-copy">
@@ -287,7 +290,7 @@
     </div>
 
     {% if mail_import_state.message %}
-      <div class="message{% if mail_import_state.message_kind == 'error' %} message-error{% endif %}">
+      <div class="message{% if mail_import_state.message_kind == 'error' %} message-error{% endif %}" {% if mail_import_state.message_kind == 'error' %}role="alert"{% else %}role="status"{% endif %}>
         {{ mail_import_state.message }}
       </div>
     {% endif %}

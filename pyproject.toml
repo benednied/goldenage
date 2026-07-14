@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28.1,<1.0.0",
+  "playwright>=1.52.0,<2.0.0",
   "pytest>=8.3.5,<9.0.0",
   "pytest-cov>=7.1.0",
   "ruff>=0.15.11",
@@ -31,6 +32,9 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "browser: real-browser tests that require a Playwright Chromium installation",
+]
 
 [tool.coverage.report]
 fail_under = 100

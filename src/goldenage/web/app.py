@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
@@ -12,6 +13,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -68,7 +70,9 @@ from goldenage.domain.rules import ResolutionError, due_label
 
 BASE_DIR = Path(__file__).resolve().parent
 UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
+DATETIME_INPUT_MESSAGE = "Enter a valid date and time."
 AUTH_COOKIE_NAME = "goldenage_session"
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+$")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
@@ -94,6 +98,14 @@ def create_app() -> FastAPI:
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(
+        request: Request,
+        error: RequestValidationError,
+    ) -> HTMLResponse | RedirectResponse:
+        del error
+        return _request_validation_error_response(request, context)
 
     @app.on_event("startup")
     async def startup_event() -> None:
@@ -150,7 +162,11 @@ def create_app() -> FastAPI:
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context=_login_context(request, message="Invalid email or password."),
+                context=_login_context(
+                    request,
+                    message="Invalid email or password.",
+                    email=email.strip(),
+                ),
                 status_code=401,
             )
         response = RedirectResponse(url="/worklist", status_code=303)
@@ -193,6 +209,7 @@ def create_app() -> FastAPI:
         display_name: str = Form(default=""),
         email: str = Form(default=""),
         password: str = Form(default=""),
+        confirm_password: str = Form(default=""),
         profile_picture: UploadFile | None = File(default=None),
     ) -> HTMLResponse:
         if not settings.use_local_first_sqlite:
@@ -209,6 +226,44 @@ def create_app() -> FastAPI:
                 context=_onboarding_context(
                     request,
                     message="Display name, email, and password are required.",
+                    display_name=normalized_name,
+                    email=normalized_email,
+                ),
+                status_code=400,
+            )
+        if not EMAIL_PATTERN.fullmatch(normalized_email):
+            return templates.TemplateResponse(
+                request=request,
+                name="onboarding.html",
+                context=_onboarding_context(
+                    request,
+                    message="Enter a valid email address.",
+                    display_name=normalized_name,
+                    email=normalized_email,
+                ),
+                status_code=400,
+            )
+        if len(password) < 8:
+            return templates.TemplateResponse(
+                request=request,
+                name="onboarding.html",
+                context=_onboarding_context(
+                    request,
+                    message="Password must be at least 8 characters.",
+                    display_name=normalized_name,
+                    email=normalized_email,
+                ),
+                status_code=400,
+            )
+        if password != confirm_password:
+            return templates.TemplateResponse(
+                request=request,
+                name="onboarding.html",
+                context=_onboarding_context(
+                    request,
+                    message="Passwords do not match.",
+                    display_name=normalized_name,
+                    email=normalized_email,
                 ),
                 status_code=400,
             )
@@ -217,13 +272,15 @@ def create_app() -> FastAPI:
             profile_picture=profile_picture,
             settings=settings,
         )
-        if profile_picture is not None and profile_image_path is None:
+        if profile_picture is not None and profile_picture.filename and profile_image_path is None:
             return templates.TemplateResponse(
                 request=request,
                 name="onboarding.html",
                 context=_onboarding_context(
                     request,
                     message="Profile picture uploads must be image files.",
+                    display_name=normalized_name,
+                    email=normalized_email,
                 ),
                 status_code=400,
             )
@@ -285,7 +342,7 @@ def create_app() -> FastAPI:
             message = "Mail defaults saved."
             message_kind = "info"
         except (NotFoundError, ValueError) as error:
-            message = str(error)
+            message = _form_error_message(error)
             message_kind = "error"
         return templates.TemplateResponse(
             request=request,
@@ -330,20 +387,17 @@ def create_app() -> FastAPI:
         except (MailImportClientError, ValueError) as error:
             mail_import_state = context.service.get_mail_import_state(
                 user=user,
-                message=str(error),
+                message=_form_error_message(error),
                 message_kind="error",
             )
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/intake_panel.html",
-            context=_page_context(
-                request,
-                context,
-                detail=None,
-                intake_state=IntakeState(),
-                mail_import_state=mail_import_state,
-                user=user,
-            ),
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=IntakeState(),
+            mail_import_state=mail_import_state,
+            user=user,
+            partial_name="partials/intake_panel.html",
         )
 
     @app.post("/mail/desktop-mail/import", response_class=HTMLResponse)
@@ -373,18 +427,21 @@ def create_app() -> FastAPI:
                 message_kind="error",
             )
         except NotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/intake_panel.html",
-            context=_page_context(
+            return _intake_error_response(
                 request,
                 context,
-                detail=None,
-                intake_state=intake_state,
-                mail_import_state=mail_import_state,
                 user=user,
-            ),
+                message=str(error),
+                status_code=404,
+            )
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=intake_state,
+            mail_import_state=mail_import_state,
+            user=user,
+            partial_name="partials/intake_panel.html",
         )
 
     @app.post("/settings/password", response_class=HTMLResponse)
@@ -459,10 +516,13 @@ def create_app() -> FastAPI:
             return redirect
         user = _require_current_user(context, request=request)
         detail = _load_case_detail(case_id=case_id, context=context, now=_now(context), user=user)
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/detail_panel.html",
-            context=_panel_context(request, context, detail=detail, detail_error=None, user=user),
+        return _workspace_template_response(
+            request,
+            context,
+            detail=detail,
+            intake_state=IntakeState(),
+            user=user,
+            partial_name="partials/detail_panel.html",
         )
 
     @app.get("/cases/{case_id}/artifacts/{artifact_id}/panel", response_class=HTMLResponse)
@@ -478,17 +538,27 @@ def create_app() -> FastAPI:
                 selected_artifact_id=_uuid(artifact_id),
             )
         except NotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/detail_panel.html",
-            context=_panel_context(request, context, detail=detail, detail_error=None, user=user),
+            return _detail_error_response(
+                request,
+                context,
+                user=user,
+                message=str(error),
+                status_code=404,
+            )
+        return _workspace_template_response(
+            request,
+            context,
+            detail=detail,
+            intake_state=IntakeState(),
+            user=user,
+            partial_name="partials/detail_panel.html",
         )
 
     @app.post("/activities/{activity_id}/resolve", response_class=HTMLResponse)
     async def resolve_activity(
         request: Request,
         activity_id: str,
+        resolution_path: str = Form(default=""),
         next_step: str = Form(default=""),
         next_due_at: str = Form(default=""),
         close_case: str | None = Form(default=None),
@@ -497,77 +567,96 @@ def create_app() -> FastAPI:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
+        selected_path = _selected_resolution_path(
+            resolution_path=resolution_path,
+            close_case=close_case,
+            skip_follow_up=skip_follow_up,
+            next_step=next_step,
+            next_due_at=next_due_at,
+        )
         try:
+            if selected_path not in {"follow_up", "close", "skip"}:
+                raise ResolutionError("Choose one resolution path.")
             detail = context.service.resolve_activity(
                 activity_id=_uuid(activity_id),
                 user=user,
                 now=_now(context),
-                next_step=next_step,
-                next_due_at=_parse_form_datetime(next_due_at, context.settings.local_timezone),
-                close_case=close_case == "on",
-                skip_follow_up=skip_follow_up == "on",
+                next_step=next_step if selected_path == "follow_up" else "",
+                next_due_at=(
+                    _parse_form_datetime(next_due_at, context.settings.local_timezone)
+                    if selected_path == "follow_up"
+                    else None
+                ),
+                close_case=selected_path == "close",
+                skip_follow_up=selected_path == "skip",
             )
-        except ResolutionError as error:
+        except (ResolutionError, ValueError) as error:
             current = context.service.get_case_detail_for_activity(
                 activity_id=_uuid(activity_id),
                 user=user,
                 now=_now(context),
             )
-            response = templates.TemplateResponse(
-                request=request,
-                name="partials/detail_panel.html",
-                context=_panel_context(
-                    request,
-                    context,
-                    detail=current,
-                    detail_error=str(error),
-                    user=user,
-                ),
-                status_code=400,
-            )
-            return response
-        except NotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-
-        return templates.TemplateResponse(
-            request=request,
-            name="workspace.html",
-            context=_page_context(
+            return _workspace_template_response(
                 request,
                 context,
-                detail=detail,
-                intake_state=IntakeState(
-                    message="Activity resolved. The worklist has been updated."
-                ),
+                detail=current,
+                intake_state=IntakeState(),
                 user=user,
-            ),
+                partial_name="partials/detail_panel.html",
+                detail_error=_form_error_message(error),
+                status_code=400,
+                htmx_target="#detail-panel",
+                resolution_path=(
+                    selected_path
+                    if selected_path in {"follow_up", "close", "skip"}
+                    else "follow_up"
+                ),
+                resolution_next_step=next_step,
+                resolution_next_due_at=next_due_at,
+            )
+        except NotFoundError as error:
+            return _detail_error_response(
+                request,
+                context,
+                user=user,
+                message=str(error),
+                status_code=404,
+            )
+
+        return _workspace_template_response(
+            request,
+            context,
+            detail=detail,
+            intake_state=IntakeState(message="Activity resolved. The worklist has been updated."),
+            user=user,
+            partial_name="workspace.html",
         )
 
     @app.post("/artifacts/upload", response_class=HTMLResponse)
     async def upload_artifact(
         request: Request,
-        file: UploadFile = File(...),
+        file: UploadFile | None = File(default=None),
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        content = await file.read()
+        content = await file.read() if file is not None else b""
         if not content:
-            response = templates.TemplateResponse(
-                request=request,
-                name="partials/intake_panel.html",
-                context=_page_context(
-                    request,
-                    context,
-                    detail=None,
-                    intake_state=IntakeState(message="Select a file before uploading."),
-                    user=user,
+            return _workspace_template_response(
+                request,
+                context,
+                detail=None,
+                intake_state=IntakeState(
+                    message="Select a file before uploading.",
+                    message_kind="error",
                 ),
+                user=user,
+                partial_name="partials/intake_panel.html",
                 status_code=400,
+                htmx_target="#intake-panel",
             )
-            return response
 
-        if not (file.filename or "").lower().endswith(".msg"):
+        if file is None or not (file.filename or "").lower().endswith(".msg"):
             return _unsupported_upload_response(request, context, user=user)
 
         intake_state = context.service.upload_artifact(
@@ -577,12 +666,13 @@ def create_app() -> FastAPI:
             user=user,
             now=_now(context),
         )
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/intake_panel.html",
-            context=_page_context(
-                request, context, detail=None, intake_state=intake_state, user=user
-            ),
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=intake_state,
+            user=user,
+            partial_name="partials/intake_panel.html",
         )
 
     @app.post("/artifacts/{artifact_id}/suggestion/reject", response_class=HTMLResponse)
@@ -590,10 +680,21 @@ def create_app() -> FastAPI:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        intake_state = context.service.get_intake_state(
-            artifact_id=_uuid(artifact_id),
-            user=user,
-        )
+        try:
+            intake_state = context.service.get_intake_state(
+                artifact_id=_uuid(artifact_id),
+                user=user,
+            )
+        except (NotFoundError, ValueError) as error:
+            return _intake_error_response(
+                request,
+                context,
+                user=user,
+                message=(
+                    str(error) if isinstance(error, NotFoundError) else "Intake item not found."
+                ),
+                status_code=404,
+            )
         intake_state = IntakeState(
             artifact=intake_state.artifact,
             suggestion=intake_state.suggestion,
@@ -601,12 +702,13 @@ def create_app() -> FastAPI:
             message="Suggestion rejected. Describe the case to search for it.",
             new_case_title_suggestion=intake_state.new_case_title_suggestion,
         )
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/intake_panel.html",
-            context=_page_context(
-                request, context, detail=None, intake_state=intake_state, user=user
-            ),
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=intake_state,
+            user=user,
+            partial_name="partials/intake_panel.html",
         )
 
     @app.get("/intake/conversations/{conversation_id}", response_class=HTMLResponse)
@@ -614,48 +716,104 @@ def create_app() -> FastAPI:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        intake_state = context.service.get_intake_state_for_conversation(
-            conversation_id=_uuid(conversation_id),
+        try:
+            intake_state = context.service.get_intake_state_for_conversation(
+                conversation_id=_uuid(conversation_id),
+                user=user,
+            )
+        except (NotFoundError, ValueError) as error:
+            return _intake_error_response(
+                request,
+                context,
+                user=user,
+                message=(
+                    str(error) if isinstance(error, NotFoundError) else "Conversation not found."
+                ),
+                status_code=404,
+            )
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=intake_state,
             user=user,
+            partial_name="partials/intake_panel.html",
         )
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/intake_panel.html",
-            context=_page_context(
-                request, context, detail=None, intake_state=intake_state, user=user
-            ),
+
+    @app.get("/artifacts/{artifact_id}/intake", response_class=HTMLResponse)
+    async def artifact_intake_panel(request: Request, artifact_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            intake_state = context.service.get_intake_state(
+                artifact_id=_uuid(artifact_id),
+                user=user,
+            )
+        except (NotFoundError, ValueError) as error:
+            return _intake_error_response(
+                request,
+                context,
+                user=user,
+                message=(
+                    str(error) if isinstance(error, NotFoundError) else "Intake item not found."
+                ),
+                status_code=404,
+            )
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=intake_state,
+            user=user,
+            partial_name="partials/intake_panel.html",
         )
 
     @app.post("/cases/search", response_class=HTMLResponse)
     async def search_cases(
         request: Request,
-        artifact_id: str = Form(...),
-        query: str = Form(...),
+        artifact_id: str = Form(default=""),
+        query: str = Form(default=""),
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        intake_state = context.service.search_cases_for_artifact(
-            artifact_id=_uuid(artifact_id),
-            query=query,
+        try:
+            intake_state = context.service.search_cases_for_artifact(
+                artifact_id=_uuid(artifact_id),
+                query=query,
+                user=user,
+                now=_now(context),
+            )
+        except (NotFoundError, ValueError) as error:
+            if isinstance(error, NotFoundError):
+                return _intake_error_response(
+                    request,
+                    context,
+                    user=user,
+                    message=str(error),
+                    status_code=404,
+                )
+            intake_state = IntakeState(
+                message="Select an intake item and enter a search description.",
+                message_kind="error",
+            )
+        return _workspace_template_response(
+            request,
+            context,
+            detail=None,
+            intake_state=intake_state,
             user=user,
-            now=_now(context),
-        )
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/intake_panel.html",
-            context=_page_context(
-                request, context, detail=None, intake_state=intake_state, user=user
-            ),
+            partial_name="partials/intake_panel.html",
         )
 
     @app.post("/artifacts/{artifact_id}/assign", response_class=HTMLResponse)
     async def assign_artifact(
         request: Request,
         artifact_id: str,
-        case_id: str = Form(...),
-        next_step: str = Form(...),
-        next_due_at: str = Form(...),
+        case_id: str = Form(default=""),
+        next_step: str = Form(default=""),
+        next_due_at: str = Form(default=""),
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
@@ -669,7 +827,7 @@ def create_app() -> FastAPI:
                 user=user,
                 now=_now(context),
             )
-        except ResolutionError as error:
+        except (ResolutionError, ValueError) as error:
             intake_state = context.service.get_intake_state(
                 artifact_id=_uuid(artifact_id),
                 user=user,
@@ -678,48 +836,47 @@ def create_app() -> FastAPI:
                 artifact=intake_state.artifact,
                 suggestion=intake_state.suggestion,
                 search_mode=True,
-                message=str(error),
+                message=_form_error_message(error),
+                message_kind="error",
                 new_case_title_suggestion=intake_state.new_case_title_suggestion,
             )
-            response = templates.TemplateResponse(
-                request=request,
-                name="partials/intake_panel.html",
-                context=_page_context(
-                    request,
-                    context,
-                    detail=None,
-                    intake_state=intake_state,
-                    user=user,
-                ),
-                status_code=400,
-            )
-            response.headers["HX-Retarget"] = "#intake-panel"
-            response.headers["HX-Reswap"] = "innerHTML"
-            return response
-        except NotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-
-        return templates.TemplateResponse(
-            request=request,
-            name="workspace.html",
-            context=_page_context(
+            return _workspace_template_response(
                 request,
                 context,
-                detail=detail,
-                intake_state=IntakeState(message="Artifact assigned and next step scheduled."),
+                detail=None,
+                intake_state=intake_state,
                 user=user,
-            ),
+                partial_name="partials/intake_panel.html",
+                status_code=400,
+                htmx_target="#intake-panel",
+            )
+        except NotFoundError as error:
+            return _intake_error_response(
+                request,
+                context,
+                user=user,
+                message=str(error),
+                status_code=404,
+            )
+
+        return _workspace_template_response(
+            request,
+            context,
+            detail=detail,
+            intake_state=IntakeState(message="Artifact assigned and next step scheduled."),
+            user=user,
+            partial_name="workspace.html",
         )
 
     @app.post("/artifacts/{artifact_id}/create-case", response_class=HTMLResponse)
     async def create_case_from_artifact(
         request: Request,
         artifact_id: str,
-        title: str = Form(...),
+        title: str = Form(default=""),
         company: str = Form(default=""),
         primary_contact: str = Form(default=""),
-        next_step: str = Form(...),
-        next_due_at: str = Form(...),
+        next_step: str = Form(default=""),
+        next_due_at: str = Form(default=""),
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
@@ -735,7 +892,7 @@ def create_app() -> FastAPI:
                 user=user,
                 now=_now(context),
             )
-        except ResolutionError as error:
+        except (ResolutionError, ValueError) as error:
             intake_state = context.service.get_intake_state(
                 artifact_id=_uuid(artifact_id),
                 user=user,
@@ -746,37 +903,36 @@ def create_app() -> FastAPI:
                 search_mode=True,
                 search_query=intake_state.search_query,
                 search_results=intake_state.search_results,
-                message=str(error),
+                message=_form_error_message(error),
+                message_kind="error",
                 new_case_title_suggestion=intake_state.new_case_title_suggestion,
             )
-            response = templates.TemplateResponse(
-                request=request,
-                name="partials/intake_panel.html",
-                context=_page_context(
-                    request,
-                    context,
-                    detail=None,
-                    intake_state=intake_state,
-                    user=user,
-                ),
-                status_code=400,
-            )
-            response.headers["HX-Retarget"] = "#intake-panel"
-            response.headers["HX-Reswap"] = "innerHTML"
-            return response
-        except NotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-
-        return templates.TemplateResponse(
-            request=request,
-            name="workspace.html",
-            context=_page_context(
+            return _workspace_template_response(
                 request,
                 context,
-                detail=detail,
-                intake_state=IntakeState(message="New case created from intake."),
+                detail=None,
+                intake_state=intake_state,
                 user=user,
-            ),
+                partial_name="partials/intake_panel.html",
+                status_code=400,
+                htmx_target="#intake-panel",
+            )
+        except NotFoundError as error:
+            return _intake_error_response(
+                request,
+                context,
+                user=user,
+                message=str(error),
+                status_code=404,
+            )
+
+        return _workspace_template_response(
+            request,
+            context,
+            detail=detail,
+            intake_state=IntakeState(message="New case created from intake."),
+            user=user,
+            partial_name="workspace.html",
         )
 
     return app
@@ -877,18 +1033,204 @@ def _unsupported_upload_response(
     user: UserContext,
 ) -> HTMLResponse:
     print(UNSUPPORTED_INTAKE_MESSAGE, flush=True)
-    return templates.TemplateResponse(
+    return _workspace_template_response(
+        request,
+        context,
+        detail=None,
+        intake_state=IntakeState(message=UNSUPPORTED_INTAKE_MESSAGE, message_kind="error"),
+        user=user,
+        partial_name="partials/intake_panel.html",
+        status_code=400,
+        htmx_target="#intake-panel",
+    )
+
+
+def _workspace_template_response(
+    request: Request,
+    context: AppContext,
+    *,
+    detail: CaseDetail | None,
+    intake_state: IntakeState,
+    user: UserContext,
+    partial_name: str,
+    status_code: int = 200,
+    htmx_target: str | None = None,
+    detail_error: str | None = None,
+    mail_import_state: object | None = None,
+    resolution_path: str = "follow_up",
+    resolution_next_step: str = "",
+    resolution_next_due_at: str = "",
+) -> HTMLResponse:
+    payload = _page_context(
+        request,
+        context,
+        detail=detail,
+        intake_state=intake_state,
+        user=user,
+        mail_import_state=mail_import_state,
+    )
+    payload.update(
+        {
+            "detail_error": detail_error,
+            "resolution_path": resolution_path,
+            "resolution_next_step": resolution_next_step,
+            "resolution_next_due_at": resolution_next_due_at,
+        }
+    )
+    is_htmx = _is_htmx_request(request)
+    response = templates.TemplateResponse(
         request=request,
-        name="partials/intake_panel.html",
-        context=_page_context(
+        name=partial_name if is_htmx else "page.html",
+        context=payload,
+        status_code=status_code,
+    )
+    if is_htmx and htmx_target is not None:
+        response.headers["HX-Retarget"] = htmx_target
+        response.headers["HX-Reswap"] = "innerHTML"
+    return response
+
+
+def _detail_error_response(
+    request: Request,
+    context: AppContext,
+    *,
+    user: UserContext,
+    message: str,
+    status_code: int,
+) -> HTMLResponse:
+    return _workspace_template_response(
+        request,
+        context,
+        detail=None,
+        intake_state=IntakeState(),
+        user=user,
+        partial_name="partials/detail_panel.html",
+        detail_error=message,
+        status_code=status_code,
+        htmx_target="#detail-panel",
+    )
+
+
+def _intake_error_response(
+    request: Request,
+    context: AppContext,
+    *,
+    user: UserContext,
+    message: str,
+    status_code: int,
+) -> HTMLResponse:
+    return _workspace_template_response(
+        request,
+        context,
+        detail=None,
+        intake_state=IntakeState(message=message, message_kind="error"),
+        user=user,
+        partial_name="partials/intake_panel.html",
+        status_code=status_code,
+        htmx_target="#intake-panel",
+    )
+
+
+def _request_validation_error_response(
+    request: Request,
+    context: AppContext,
+) -> HTMLResponse | RedirectResponse:
+    path = request.url.path
+    message = "Check the form fields and try again."
+    if path.startswith("/onboarding"):
+        return templates.TemplateResponse(
+            request=request,
+            name="onboarding.html",
+            context=_onboarding_context(request, message=message),
+            status_code=422,
+        )
+    if path.startswith("/login"):
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context=_login_context(request, message=message),
+            status_code=422,
+        )
+    if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+        return redirect
+    user = _require_current_user(context, request=request)
+    if path.startswith("/settings"):
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context=_settings_context(
+                request,
+                context,
+                user=user,
+                mail_message=message,
+                mail_message_kind="error",
+            ),
+            status_code=422,
+        )
+    if path.startswith("/activities/"):
+        activity_id = request.path_params.get("activity_id")
+        detail = None
+        if activity_id:
+            try:
+                detail = context.service.get_case_detail_for_activity(
+                    activity_id=_uuid(activity_id),
+                    user=user,
+                    now=_now(context),
+                )
+            except NotFoundError, ValueError:
+                detail = None
+        return _workspace_template_response(
             request,
             context,
-            detail=None,
-            intake_state=IntakeState(message=UNSUPPORTED_INTAKE_MESSAGE),
+            detail=detail,
+            intake_state=IntakeState(),
             user=user,
-        ),
-        status_code=400,
+            partial_name="partials/detail_panel.html",
+            detail_error=message,
+            status_code=422,
+            htmx_target="#detail-panel",
+        )
+    return _workspace_template_response(
+        request,
+        context,
+        detail=None,
+        intake_state=IntakeState(message=message, message_kind="error"),
+        user=user,
+        partial_name="partials/intake_panel.html",
+        status_code=422,
+        htmx_target="#intake-panel",
     )
+
+
+def _is_htmx_request(request: Request) -> bool:
+    headers = getattr(request, "headers", {})
+    return headers.get("HX-Request", "").lower() == "true"
+
+
+def _form_error_message(error: Exception) -> str:
+    if isinstance(error, ResolutionError):
+        return str(error)
+    return DATETIME_INPUT_MESSAGE if isinstance(error, ValueError) else str(error)
+
+
+def _selected_resolution_path(
+    *,
+    resolution_path: str,
+    close_case: str | None,
+    skip_follow_up: str | None,
+    next_step: str,
+    next_due_at: str,
+) -> str:
+    choices: list[str] = []
+    if resolution_path.strip():
+        choices.append(resolution_path.strip())
+    if close_case == "on":
+        choices.append("close")
+    if skip_follow_up == "on":
+        choices.append("skip")
+    if not resolution_path.strip() and (next_step.strip() or next_due_at.strip()):
+        choices.append("follow_up")
+    return choices[0] if len(choices) == 1 else ""
 
 
 def _page_context(
@@ -901,6 +1243,7 @@ def _page_context(
     mail_import_state: object | None = None,
 ) -> dict[str, object]:
     hydrated_intake = _hydrate_intake_state(context, intake_state=intake_state, user=user)
+    selected_artifact = getattr(detail, "selected_artifact", None) if detail is not None else None
     return {
         "request": request,
         "page_title": "GoldenAge",
@@ -911,8 +1254,16 @@ def _page_context(
             user=user,
             now=_worklist_cutoff(context),
         ),
+        "intake_queue": context.service.list_unassigned_intake(user=user),
         "detail": detail,
         "detail_error": None,
+        "selected_case_id": str(detail.case_file.id) if detail is not None else None,
+        "selected_artifact_id": str(selected_artifact.id)
+        if selected_artifact is not None
+        else None,
+        "resolution_path": "follow_up",
+        "resolution_next_step": "",
+        "resolution_next_due_at": "",
         "intake_state": hydrated_intake,
         "mail_import_state": mail_import_state or context.service.get_mail_import_state(user=user),
         "format_datetime": _format_datetime,
@@ -952,7 +1303,7 @@ def _load_case_detail(
             now=now,
             selected_artifact_id=_uuid(artifact_id) if artifact_id else None,
         )
-    except NotFoundError:
+    except NotFoundError, ValueError:
         return None
 
 
@@ -972,6 +1323,7 @@ def _hydrate_intake_state(
         search_query=intake_state.search_query,
         search_results=intake_state.search_results,
         message=intake_state.message,
+        message_kind=intake_state.message_kind,
         conversation=intake_state.conversation,
         conversation_artifacts=intake_state.conversation_artifacts,
         recent_conversations=fallback.recent_conversations,
@@ -980,19 +1332,33 @@ def _hydrate_intake_state(
     )
 
 
-def _onboarding_context(request: Request, message: str | None) -> dict[str, object]:
+def _onboarding_context(
+    request: Request,
+    message: str | None,
+    *,
+    display_name: str = "",
+    email: str = "",
+) -> dict[str, object]:
     return {
         "request": request,
         "page_title": "Welcome to the Golden Age",
         "message": message,
+        "display_name": display_name,
+        "email": email,
     }
 
 
-def _login_context(request: Request, message: str | None) -> dict[str, object]:
+def _login_context(
+    request: Request,
+    message: str | None,
+    *,
+    email: str = "",
+) -> dict[str, object]:
     return {
         "request": request,
         "page_title": "Sign in to GoldenAge",
         "message": message,
+        "email": email,
     }
 
 
@@ -1067,16 +1433,22 @@ def _require_current_user(context: AppContext, *, request: Request | None = None
 def _redirect_to_login_or_onboarding_if_needed(
     request: Request,
     context: AppContext,
-) -> RedirectResponse | None:
+) -> HTMLResponse | RedirectResponse | None:
     if not context.settings.use_local_first_sqlite:
         return None
     if context.local_user_repository is None:
-        return RedirectResponse(url="/onboarding", status_code=302)
+        return _authentication_redirect(request, "/onboarding")
     if context.local_user_repository.get_first_user() is None:
-        return RedirectResponse(url="/onboarding", status_code=302)
+        return _authentication_redirect(request, "/onboarding")
     if _current_user(context, request=request) is None:
-        return RedirectResponse(url="/login", status_code=302)
+        return _authentication_redirect(request, "/login")
     return None
+
+
+def _authentication_redirect(request: Request, target: str) -> HTMLResponse | RedirectResponse:
+    if _is_htmx_request(request):
+        return HTMLResponse(status_code=200, headers={"HX-Redirect": target})
+    return RedirectResponse(url=target, status_code=302)
 
 
 async def _store_profile_picture(
@@ -1084,7 +1456,7 @@ async def _store_profile_picture(
     profile_picture: UploadFile | None,
     settings: Settings,
 ) -> str | None:
-    if profile_picture is None:
+    if profile_picture is None or not profile_picture.filename:
         return None
     if not (profile_picture.content_type or "").startswith("image/"):
         return None
@@ -1204,7 +1576,10 @@ def _parse_form_datetime(value: str, timezone_name: str) -> datetime | None:
 
 
 def _require_form_datetime(value: str, timezone_name: str) -> datetime:
-    parsed = _parse_form_datetime(value, timezone_name)
+    try:
+        parsed = _parse_form_datetime(value, timezone_name)
+    except ValueError as error:
+        raise ResolutionError(DATETIME_INPUT_MESSAGE) from error
     if parsed is None:
         raise ResolutionError("A due date is required.")
     return parsed
