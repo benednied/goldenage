@@ -15,7 +15,7 @@ class LocalArtifactStore:
 
     The configured root and its ancestors must be controlled by the application
     owner. POSIX opens are relative to a verified directory descriptor. Windows
-    locks each directory against deletion/rename and rejects reparse points.
+    locks each directory against writes and deletion/rename and rejects reparse points.
     """
 
     def __init__(self, root: Path) -> None:
@@ -80,7 +80,7 @@ class LocalArtifactStore:
 
 @contextmanager
 def _locked_windows_root(root: Path, *, create: bool) -> Iterator[None]:
-    """Pin Windows path components using handles that deny delete sharing.
+    """Pin Windows path components using handles that deny write/delete sharing.
 
     pywin32 is an existing Windows dependency. OPEN_REPARSE_POINT opens the
     link itself so junctions and other reparse points can be rejected before
@@ -101,7 +101,7 @@ def _locked_windows_root(root: Path, *, create: bool) -> Iterator[None]:
             handle = win32file.CreateFile(
                 str(path),
                 win32con.FILE_READ_ATTRIBUTES,
-                win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+                win32con.FILE_SHARE_READ,
                 None,
                 win32con.OPEN_EXISTING,
                 win32con.FILE_FLAG_BACKUP_SEMANTICS | win32con.FILE_FLAG_OPEN_REPARSE_POINT,

@@ -144,8 +144,10 @@ def test_concurrent_writers_do_not_overwrite_each_other(tmp_path: Path) -> None:
 def test_failed_write_removes_partial_file(tmp_path: Path, monkeypatch, failure: str) -> None:
     store = LocalArtifactStore(tmp_path)
     original_write = os.write
+    opened = []
 
     def fail(fd: int, *args) -> int:
+        opened.append(fd)
         original_write(fd, b"partial")
         raise OSError("disk failure")
 
@@ -154,6 +156,9 @@ def test_failed_write_removes_partial_file(tmp_path: Path, monkeypatch, failure:
         store.store(uuid4(), "mail.msg", b"content")
 
     assert list(tmp_path.iterdir()) == []
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
 
 
 def test_short_writes_preserve_all_bytes(tmp_path: Path, monkeypatch) -> None:
@@ -199,3 +204,27 @@ def test_root_swap_before_file_open_cannot_redirect_write(tmp_path: Path, monkey
 
     assert list(outside.iterdir()) == []
     assert (saved / f"{artifact_id}.bin").read_bytes() == b"content"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows sharing semantics")
+def test_windows_root_is_locked_during_file_creation(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "artifacts"
+    store = LocalArtifactStore(root)
+    original_open = os.open
+
+    def try_rename_then_open(path, flags, mode=0o777, *, dir_fd=None):
+        if flags & os.O_CREAT:
+            with pytest.raises(PermissionError):
+                root.rename(tmp_path / "moved")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", try_rename_then_open)
+    key = store.store(uuid4(), "mail.msg", b"original")
+    assert Path(key).read_bytes() == b"original"
+
+
+def test_stalled_write_fails_and_removes_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(os, "write", lambda fd, data: 0)
+    with pytest.raises(OSError, match="no progress"):
+        LocalArtifactStore(tmp_path).store(uuid4(), "mail.msg", b"content")
+    assert list(tmp_path.iterdir()) == []

@@ -151,7 +151,10 @@ class ArtifactStore(Protocol):
     """Binary storage port."""
 
     def store(self, artifact_id: UUID, file_name: str, content: bytes) -> str:
-        """Persist the original file bytes and return the storage key."""
+        """Persist original bytes under a server-owned key without overwriting.
+
+        file_name is untrusted metadata and must not determine a filesystem path.
+        """
 
 
 class ArtifactContentExtractor(Protocol):
