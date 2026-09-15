@@ -161,22 +161,22 @@
     "dependencies": [
       {
         "name": "annotated-doc",
-        "version": "0.0.4",
+        "version": "0.0.5",
         "vulns": []
       },
       {
         "name": "annotated-types",
-        "version": "0.7.0",
+        "version": "0.8.0",
         "vulns": []
       },
       {
         "name": "anyio",
-        "version": "4.13.0",
+        "version": "4.15.1",
         "vulns": []
       },
       {
         "name": "certifi",
-        "version": "2026.2.25",
+        "version": "2026.7.22",
         "vulns": []
       },
       {
@@ -186,7 +186,7 @@
       },
       {
         "name": "coverage",
-        "version": "7.13.5",
+        "version": "7.16.1",
         "vulns": []
       },
       {
@@ -240,7 +240,7 @@
       },
       {
         "name": "packaging",
-        "version": "26.0",
+        "version": "26.3",
         "vulns": []
       },
       {
@@ -250,27 +250,27 @@
       },
       {
         "name": "psycopg",
-        "version": "3.3.3",
+        "version": "3.3.5",
         "vulns": []
       },
       {
         "name": "psycopg-binary",
-        "version": "3.3.3",
+        "version": "3.3.5",
         "vulns": []
       },
       {
         "name": "pydantic",
-        "version": "2.12.5",
+        "version": "2.13.5",
         "vulns": []
       },
       {
         "name": "pydantic-core",
-        "version": "2.41.5",
+        "version": "2.46.5",
         "vulns": []
       },
       {
         "name": "pygments",
-        "version": "2.20.0",
+        "version": "2.21.0",
         "vulns": []
       },
       {
@@ -295,7 +295,7 @@
       },
       {
         "name": "ruff",
-        "version": "0.15.11",
+        "version": "0.16.7",
         "vulns": []
       },
       {
@@ -305,22 +305,22 @@
       },
       {
         "name": "ty",
-        "version": "0.0.32",
+        "version": "0.0.81",
         "vulns": []
       },
       {
         "name": "typing-extensions",
-        "version": "4.15.0",
+        "version": "4.16.0",
         "vulns": []
       },
       {
         "name": "typing-inspection",
-        "version": "0.4.2",
+        "version": "0.4.4",
         "vulns": []
       },
       {
         "name": "uvicorn",
-        "version": "0.44.0",
+        "version": "0.53.0",
         "vulns": []
       }
     ],

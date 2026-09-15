@@ -3,7 +3,7 @@
 Issue: https://github.com/benednied/goldenage/issues/2
 
 Checked on 2026-09-15 against origin/master at 3657756. This branch is independent
-of the artifact storage change in PR #23 and needs no native Windows verification.
+of the artifact storage change in PR #23 and does not depend on its Windows storage verification.
 No application handlers, schema, or environment variables change.
 
 ## Resolution
@@ -17,7 +17,16 @@ No application handlers, schema, or environment variables change.
 | IDNA | 3.11 | 3.19 |
 | pytest | 8.4.2 | 9.1.1 |
 
-Only these six resolved package versions changed. FastAPI 0.141.1 declares
+The initial security update changed these six versions. At the maintainer’s
+request, `uv lock --upgrade` then refreshed all remaining locked packages to the
+latest compatible stable releases available on PyPI on 2026-09-15. This includes
+Uvicorn 0.53.0, Psycopg 3.3.5, Pydantic 2.13.5, Ruff 0.16.7, and ty 0.0.81.
+`uv pip list --outdated` reports only pydantic-core: 2.49.0 is available, but
+Pydantic 2.13.5 requires exactly 2.46.5. That required version is retained.
+The universal lock also advances pywin32 311 to 312 and tzdata 2026.1 to 2026.4;
+Windows-only dependencies were resolved but not installed or natively tested.
+
+ FastAPI 0.141.1 declares
 `starlette>=0.46.0`; the chosen Starlette satisfies it without a resolver override.
 All three web packages declare Python >=3.10 and were installed on Python 3.14.4.
 Direct minimum versions preserve the tested FastAPI and multipart baseline. A
@@ -36,7 +45,7 @@ all initial IDs, aliases, fixed versions, and the final installed-package report
 No advisory was ignored or classified as a false positive. GoldenAge itself is a
 local unpublished package and the scanner cannot audit it against PyPI. The
 Windows-only pywin32 dependency is not installed on macOS and was not scanned;
-its lockfile entry did not change.
+its native behavior was not validated by this scan.
 
 | Advisory | Affected version range / fix | Application exposure |
 | --- | --- | --- |
@@ -66,18 +75,18 @@ passwords, and rejection of multipart bodies without a boundary. Existing tests
 cover successful artifact uploads, unsupported/empty uploads, onboarding,
 profile-image rejection, and valid/invalid credentials.
 
-A new environment at `/tmp/goldenage-sec01-fresh` was created with:
+A new environment at `/tmp/goldenage-sec01-latest-fresh` was created with:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-fresh uv sync --frozen --extra dev
-UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-fresh uv run --frozen --extra dev ruff check .
-UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-fresh uv run --frozen --extra dev ruff format --check .
-UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-fresh uv run --frozen --extra dev ty check
-UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-fresh uv run --frozen --extra dev pytest -q
-uvx pip-audit==2.10.1 --path /tmp/goldenage-sec01-fresh/lib/python3.14/site-packages --format json
+UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-latest-fresh uv sync --frozen --extra dev
+UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-latest-fresh uv run --frozen --extra dev ruff check .
+UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-latest-fresh uv run --frozen --extra dev ruff format --check .
+UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-latest-fresh uv run --frozen --extra dev ty check
+UV_PROJECT_ENVIRONMENT=/tmp/goldenage-sec01-latest-fresh uv run --frozen --extra dev pytest -q
+uvx pip-audit==2.10.1 --path /tmp/goldenage-sec01-latest-fresh/lib/python3.14/site-packages --format json
 ```
 
-All commands exited successfully. `ty` reports one unused-ignore warning already
-present in `test_web_edges.py`; pytest reports lifecycle deprecations and the
-new Starlette warning about future migration from httpx to httpx2. These do not
-prevent execution and require no handler changes for this upgrade.
+All commands exited successfully. The obsolete unused-ignore suppression was
+removed for the newer ty release, and type checking is clean. Pytest still emits
+lifecycle and upstream httpx/AnyIO deprecation warnings. These do not prevent
+execution and require no handler changes for this upgrade.

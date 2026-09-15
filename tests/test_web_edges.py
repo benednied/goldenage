@@ -349,7 +349,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
             "password": "secret-passphrase",
         },
     )
-    context = client.app.state.context  # ty:ignore[unresolved-attribute]
+    context = client.app.state.context
     case_id = uuid4()
     artifact_id = uuid4()
     activity_id = uuid4()
