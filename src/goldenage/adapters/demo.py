@@ -9,14 +9,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parseaddr
-from pathlib import Path
 from uuid import UUID
 
+from goldenage.adapters.artifact_storage import LocalArtifactStore as LocalArtifactStore
 from goldenage.application.ports import (
     ActivityRepository,
     ArtifactContentExtractor,
     ArtifactRepository,
-    ArtifactStore,
     AuditRepository,
     CaseRepository,
     ElizabethanSearchClient,
@@ -413,21 +412,6 @@ class InMemoryMailImportRepository(MailImportRepository):
         if rfc_message_id is not None:
             ids.add(rfc_message_id)
         self._imported_ids[key] = frozenset(ids)
-
-
-class LocalArtifactStore(ArtifactStore):
-    """Local artifact storage for development."""
-
-    def __init__(self, root: Path) -> None:
-        self._root = root
-        self._root.mkdir(parents=True, exist_ok=True)
-
-    def store(self, artifact_id: UUID, file_name: str, content: bytes) -> str:
-        target_dir = self._root / str(artifact_id)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / file_name
-        target_path.write_bytes(content)
-        return str(target_path)
 
 
 class OutlookMsgExtractor(ArtifactContentExtractor):

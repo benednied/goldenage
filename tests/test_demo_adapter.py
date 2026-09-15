@@ -406,5 +406,5 @@ def test_local_artifact_store_writes_to_artifact_directory(tmp_path) -> None:
     artifact_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     storage_key = demo.LocalArtifactStore(tmp_path).store(artifact_id, "mail.msg", b"body")
 
-    assert storage_key == str(tmp_path / str(artifact_id) / "mail.msg")
-    assert (tmp_path / str(artifact_id) / "mail.msg").read_bytes() == b"body"
+    assert storage_key == str(tmp_path / f"{artifact_id}.bin")
+    assert (tmp_path / f"{artifact_id}.bin").read_bytes() == b"body"
