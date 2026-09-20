@@ -11,10 +11,11 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import UploadFile
 
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
@@ -226,11 +227,24 @@ def create_app() -> FastAPI:
                 status_code=400,
             )
 
-        profile_image_path = await _store_profile_picture(
-            profile_picture=profile_picture,
-            settings=settings,
-            limits=upload_limits,
-        )
+        try:
+            profile_image_path = await _store_profile_picture(
+                profile_picture=profile_picture,
+                settings=settings,
+                limits=upload_limits,
+            )
+        except HTTPException as error:
+            if error.status_code != 400:
+                raise
+            return templates.TemplateResponse(
+                request=request,
+                name="onboarding.html",
+                context=_onboarding_context(
+                    request,
+                    message="Profile picture uploads must be image files.",
+                ),
+                status_code=400,
+            )
         if profile_picture is not None and profile_image_path is None:
             return templates.TemplateResponse(
                 request=request,
