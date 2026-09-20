@@ -10,11 +10,18 @@ from goldenage.adapters.outlook_mailbox import OutlookMailboxMessage
 from goldenage.domain.models import ExtractedArtifactData, MailParticipant
 from goldenage.web.app import create_app
 
+VALID_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc````\x00\x00\x00\x04\x00\x01"
+    b"\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 @pytest.fixture(autouse=True)
 def disable_outlook_sync_by_default(monkeypatch) -> None:
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "0")
     monkeypatch.delenv("GOLDENAGE_OUTLOOK_ACCOUNT", raising=False)
+    monkeypatch.setattr("goldenage.web.app.validate_outlook_msg", lambda content: None)
 
 
 def test_worklist_page_renders(monkeypatch) -> None:
@@ -351,7 +358,7 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
             "email": "bened@example.com",
             "password": "secret-passphrase",
         },
-        files={"profile_picture": ("profile.png", b"fake-image", "image/png")},
+        files={"profile_picture": ("profile.png", VALID_PNG, "image/png")},
     )
     assert onboard_response.status_code == 200
     assert "Local workspace" in onboard_response.text
