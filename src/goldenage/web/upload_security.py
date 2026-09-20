@@ -19,6 +19,7 @@ from typing import Any
 
 import olefile
 from fastapi import HTTPException, UploadFile
+from starlette.formparsers import MultiPartException
 
 MEBIBYTE = 1024 * 1024
 
@@ -60,11 +61,8 @@ class UploadLimits:
         )
 
 
-class UploadTooLarge(HTTPException):
-    """The ASGI receive wrapper consumed more bytes than its budget."""
-
-    def __init__(self) -> None:
-        super().__init__(status_code=413, detail="Request body is too large.")
+class UploadTooLarge(MultiPartException):
+    """Abort multipart parsing and let Starlette close its temporary files."""
 
 
 class UploadLimitMiddleware:
@@ -100,7 +98,7 @@ class UploadLimitMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.limit:
-                    raise UploadTooLarge
+                    raise UploadTooLarge("Request body is too large.")
             return message
 
         await self.app(scope, bounded_receive, send)
@@ -181,6 +179,10 @@ def normalize_profile_png(content: bytes, *, limits: UploadLimits) -> bytes:
                 raise HTTPException(
                     status_code=413, detail="Profile picture dimensions are too large."
                 )
+        elif kind == b"acTL":
+            raise HTTPException(
+                status_code=400, detail="Animated profile pictures are not supported."
+            )
         elif kind == b"IDAT" and width is not None:
             idat.append(data)
         elif kind == b"IEND" and length == 0:
@@ -194,8 +196,9 @@ def normalize_profile_png(content: bytes, *, limits: UploadLimits) -> bytes:
     try:
         decompressor = zlib.decompressobj()
         decoded = decompressor.decompress(b"".join(idat), expected + 1)
-        decoded += decompressor.flush(expected + 1 - len(decoded))
-    except zlib.error as exc:
+        if len(decoded) <= expected:
+            decoded += decompressor.flush(expected + 1 - len(decoded))
+    except (ValueError, zlib.error) as exc:
         raise HTTPException(
             status_code=400, detail="Profile picture must be a valid PNG image."
         ) from exc
@@ -208,7 +211,8 @@ def normalize_profile_png(content: bytes, *, limits: UploadLimits) -> bytes:
     ):
         raise HTTPException(status_code=400, detail="Profile picture must be a valid PNG image.")
     return (
-        _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0))
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0))
         + _png_chunk(b"IDAT", zlib.compress(decoded, level=9))
         + _png_chunk(b"IEND", b"")
     )

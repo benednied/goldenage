@@ -890,8 +890,13 @@ async def _bounded_form(request: Request, limits: UploadLimits):
             max_part_size=limits.multipart_field_bytes,
         )
     except HTTPException as exc:
-        if exc.status_code == 400 and "Part exceeded maximum size" in str(exc.detail):
-            raise HTTPException(status_code=413, detail="Multipart field is too large.") from exc
+        if exc.status_code == 400:
+            if "Part exceeded maximum size" in str(exc.detail):
+                raise HTTPException(
+                    status_code=413, detail="Multipart field is too large."
+                ) from exc
+            if "Request body is too large" in str(exc.detail):
+                raise HTTPException(status_code=413, detail="Request body is too large.") from exc
         raise
 
 

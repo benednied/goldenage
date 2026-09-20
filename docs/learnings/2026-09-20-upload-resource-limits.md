@@ -17,5 +17,8 @@ Profile pictures accept only non-interlaced, 8-bit PNG variants (grayscale,
 RGB, grayscale+alpha, RGBA), with one image frame and at most 16 million
 pixels. Their scanlines are zlib-decoded under the calculated pixel budget and
 then written as a new metadata-free PNG using a server-generated `.png` name.
+Animated PNGs, malformed PNGs, and PNG data with trailing bytes are rejected;
+metadata chunks are discarded during re-encoding. This deliberately rejects
+ambiguous image payloads instead of attempting to preserve client content.
 Outlook uploads require a parseable OLE compound-file container in addition to
 the `.msg` filename; declared MIME types are not trusted.

@@ -1,12 +1,15 @@
 import asyncio
-import io
 import struct
+import tempfile
 import zlib
+from typing import cast
 
 import pytest
 from fastapi import HTTPException, UploadFile
+from starlette.formparsers import MultiPartException
 
 from goldenage.web.upload_security import (
+    UploadLimitMiddleware,
     UploadLimits,
     normalize_profile_png,
     read_upload_limited,
@@ -15,20 +18,59 @@ from goldenage.web.upload_security import (
 
 
 def test_read_upload_limited_accepts_at_limit_and_closes_file() -> None:
-    file = UploadFile(filename="mail.msg", file=io.BytesIO(b"1234"))
+    file = _upload_file(b"1234")
 
     assert asyncio.run(read_upload_limited(file, limit=4, chunk_size=1)) == b"1234"
     assert file.file.closed
 
 
 def test_read_upload_limited_rejects_first_byte_over_limit_and_closes_file() -> None:
-    file = UploadFile(filename="mail.msg", file=io.BytesIO(b"12345"))
+    file = _upload_file(b"12345")
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(read_upload_limited(file, limit=4, chunk_size=1))
 
     assert error.value.status_code == 413
     assert file.file.closed
+
+
+def test_request_limit_counts_chunked_multipart_before_parser() -> None:
+    consumed: list[bytes] = []
+
+    async def downstream(scope, receive, send) -> None:
+        del scope, send
+        while message := await receive():
+            consumed.append(message.get("body", b""))
+            if not message.get("more_body"):
+                return
+
+    chunks = iter(
+        [
+            {"type": "http.request", "body": b"a", "more_body": True},
+            {"type": "http.request", "body": b"b", "more_body": True},
+            {"type": "http.request", "body": b"c", "more_body": True},
+            {"type": "http.request", "body": b"d", "more_body": True},
+            {"type": "http.request", "body": b"e", "more_body": False},
+        ]
+    )
+
+    async def receive() -> dict[str, object]:
+        return cast(dict[str, object], next(chunks))
+
+    async def send(message: object) -> None:
+        del message
+
+    middleware = UploadLimitMiddleware(downstream, limit=4)
+    with pytest.raises(MultiPartException, match="Request body is too large"):
+        asyncio.run(
+            middleware(
+                {"type": "http", "headers": [(b"content-type", b"multipart/form-data")]},
+                receive,
+                send,
+            )
+        )
+
+    assert consumed == [b"a", b"b", b"c", b"d"]
 
 
 def test_invalid_msg_is_rejected_even_with_msg_extension_and_mime_type() -> None:
@@ -56,6 +98,23 @@ def test_png_pixel_limit_and_bad_compressed_content_are_rejected() -> None:
 
     with pytest.raises(HTTPException, match="valid PNG"):
         normalize_profile_png(_png(width=1, height=1, scanlines=b"broken"), limits=UploadLimits())
+
+
+def test_animated_and_trailing_png_content_are_rejected() -> None:
+    source = _png(width=1, height=1, scanlines=b"\0\0\0\0")
+    animated = source[:33] + _chunk(b"acTL", struct.pack(">II", 2, 0)) + source[33:]
+
+    with pytest.raises(HTTPException, match="Animated"):
+        normalize_profile_png(animated, limits=UploadLimits())
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(source + b"not a PNG chunk", limits=UploadLimits())
+
+
+def _upload_file(content: bytes) -> UploadFile:
+    spool = tempfile.SpooledTemporaryFile(max_size=len(content) + 1)
+    spool.write(content)
+    spool.seek(0)
+    return UploadFile(filename="mail.msg", file=spool)  # ty:ignore[invalid-argument-type]
 
 
 def _png_with_text_metadata() -> bytes:
