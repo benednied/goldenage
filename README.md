@@ -130,6 +130,9 @@ uv run --extra dev ruff format .
 
 ## Repository Guide
 
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): local setup, checks, and the contribution workflow
+- [Bug report form](.github/ISSUE_TEMPLATE/bug_report.yml) and [feature request form](.github/ISSUE_TEMPLATE/feature_request.yml): start a reproducible report or a product request
+- [Pull-request template](.github/pull_request_template.md): review information for proposed changes
 - [`docs/README.md`](docs/README.md): documentation index
 - [`docs/70-decisions/`](docs/70-decisions): canonical technical decisions and ADRs
 - [`docs/learnings/`](docs/learnings): dated implementation notes and discovered constraints
