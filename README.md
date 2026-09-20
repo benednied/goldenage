@@ -121,6 +121,15 @@ uv run --extra dev ty check
 ./.venv/bin/pytest -q
 ```
 
+## Continuous Integration
+
+Pull requests and pushes to the default branch run the locked Python 3.14
+quality job: Ruff lint, Ruff format verification, `ty`, and `pytest`. Run the
+same checks locally before opening a pull request; the exact commands and
+failure-handling guidance are in [`docs/ci.md`](docs/ci.md). Branch-protection
+configuration requires GitHub repository administration and is documented
+there as well.
+
 To auto-fix style issues locally, use:
 
 ```bash
