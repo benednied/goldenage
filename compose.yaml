@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: goldenage
+      POSTGRES_USER: goldenage
+      POSTGRES_PASSWORD: goldenage-local-password
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - goldenage-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goldenage -d goldenage"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  goldenage-postgres-data:
