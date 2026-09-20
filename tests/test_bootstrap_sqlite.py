@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from shutil import copytree
 
 import pytest
 
@@ -39,6 +40,37 @@ def test_ensure_sqlite_bootstrapped_applies_each_migration_once(tmp_path) -> Non
         ]
         assert migration_names == ["001_first.sql", "002_second.sql"]
         assert connection.execute("SELECT COUNT(*) FROM first_table").fetchone() == (0,)
+
+
+def test_ensure_sqlite_bootstrapped_preserves_historical_names_when_upgrading(tmp_path) -> None:
+    repository_root = Path(__file__).parents[1]
+    schema_dir = copytree(repository_root / "sql" / "sqlite", tmp_path / "schema")
+    database_path = tmp_path / "goldenage.sqlite3"
+
+    bootstrap_sqlite.ensure_sqlite_bootstrapped(database_path, schema_dir)
+    (schema_dir / "0003_migration_validation_probe.sql").write_text(
+        "CREATE TABLE migration_validation_probe(id INTEGER PRIMARY KEY);",
+        encoding="utf-8",
+    )
+    bootstrap_sqlite.ensure_sqlite_bootstrapped(database_path, schema_dir)
+    bootstrap_sqlite.ensure_sqlite_bootstrapped(database_path, schema_dir)
+
+    with sqlite3.connect(database_path) as connection:
+        migration_names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM schema_migration ORDER BY name"
+            ).fetchall()
+        ]
+        assert migration_names == [
+            "0001_initial.sql",
+            "0002_apple_mail_import.sql",
+            "0002_mailbox_ingestion.sql",
+            "0003_migration_validation_probe.sql",
+        ]
+        assert connection.execute("SELECT COUNT(*) FROM migration_validation_probe").fetchone() == (
+            0,
+        )
 
 
 def test_main_requires_sqlite_path(monkeypatch) -> None:
