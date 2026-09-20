@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import struct
 from datetime import UTC, datetime
 
 import pytest
@@ -10,18 +11,48 @@ from goldenage.adapters.outlook_mailbox import OutlookMailboxMessage
 from goldenage.domain.models import ExtractedArtifactData, MailParticipant
 from goldenage.web.app import create_app
 
+
+def _minimal_compound_file() -> bytes:
+    """Return a structurally valid, empty OLE compound document for MSG web flows."""
+    free_sector = 0xFFFFFFFF
+    end_of_chain = 0xFFFFFFFE
+    fat_sector = 0xFFFFFFFD
+
+    def directory_entry(name: str, entry_type: int, child: int = free_sector) -> bytearray:
+        entry = bytearray(128)
+        encoded_name = (name + "\0").encode("utf-16le")
+        entry[: len(encoded_name)] = encoded_name
+        struct.pack_into("<H", entry, 64, len(encoded_name))
+        entry[66] = entry_type
+        entry[67] = 1
+        struct.pack_into("<III", entry, 68, free_sector, free_sector, child)
+        struct.pack_into("<I", entry, 116, end_of_chain)
+        return entry
+
+    header = bytearray(512)
+    header[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<HHHHH", header, 24, 0x003E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<IIIIIIIII", header, 40, 0, 1, 0, 0, 4096, end_of_chain, 0, end_of_chain, 0)
+    struct.pack_into("<I", header, 76, 1)
+    directory = directory_entry("Root Entry", 5, 1) + directory_entry("mail", 2) + bytearray(256)
+    fat = bytearray(512)
+    for index, value in enumerate([end_of_chain, fat_sector] + [free_sector] * 126):
+        struct.pack_into("<I", fat, index * 4, value)
+    return bytes(header + directory + fat)
+
+
 VALID_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc````\x00\x00\x00\x04\x00\x01"
-    b"\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x78\x9c\x63\x60\x60\x60"
+    b"\x00\x00\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+VALID_MSG = _minimal_compound_file()
 
 
 @pytest.fixture(autouse=True)
 def disable_outlook_sync_by_default(monkeypatch) -> None:
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "0")
     monkeypatch.delenv("GOLDENAGE_OUTLOOK_ACCOUNT", raising=False)
-    monkeypatch.setattr("goldenage.web.app.validate_outlook_msg", lambda content: None)
 
 
 def test_worklist_page_renders(monkeypatch) -> None:
@@ -144,7 +175,7 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
 
     upload_response = client.post(
         "/artifacts/upload",
-        files={"file": ("acme.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+        files={"file": ("acme.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
     assert "Confirm suggestion" in upload_response.text
@@ -201,7 +232,7 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
 
     upload_response = client.post(
         "/artifacts/upload",
-        files={"file": ("acme.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+        files={"file": ("acme.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
 
@@ -256,7 +287,7 @@ def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypat
 
     upload_response = client.post(
         "/artifacts/upload",
-        files={"file": ("acme.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+        files={"file": ("acme.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
 
@@ -293,7 +324,7 @@ def test_recent_conversation_opens_fallback_triage_when_no_suggestion(
 
     upload_response = client.post(
         "/artifacts/upload",
-        files={"file": ("unmatched.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+        files={"file": ("unmatched.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
 
     import re
@@ -649,7 +680,7 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
 
     upload_response = client.post(
         "/artifacts/upload",
-        files={"file": ("empty.msg", b"fake msg bytes", "application/vnd.ms-outlook")},
+        files={"file": ("empty.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
     assert "Create new case" in upload_response.text
