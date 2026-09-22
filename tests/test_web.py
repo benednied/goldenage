@@ -695,6 +695,7 @@ def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
 
 @pytest.mark.parametrize("file_name", ["../outside.msg", "/tmp/outside.msg", "<script>.msg"])
 def test_upload_keeps_original_name_out_of_storage_path(tmp_path, monkeypatch, file_name) -> None:
+    content = (Path(__file__).parent / "fixtures" / "minimal.msg").read_bytes()
     root = tmp_path / "artifacts"
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(root))
     monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
@@ -711,7 +712,7 @@ def test_upload_keeps_original_name_out_of_storage_path(tmp_path, monkeypatch, f
     with TestClient(app) as client:
         response = client.post(
             "/artifacts/upload",
-            files={"file": (file_name, b"original bytes", "application/vnd.ms-outlook")},
+            files={"file": (file_name, content, "application/vnd.ms-outlook")},
         )
         assert response.status_code == 200
         artifact_id = UUID(re.search(r"/artifacts/([0-9a-f-]+)/assign", response.text).group(1))
@@ -721,6 +722,6 @@ def test_upload_keeps_original_name_out_of_storage_path(tmp_path, monkeypatch, f
         ).artifact
         assert artifact.file_name == file_name
         assert Path(artifact.storage_key) == root / f"{artifact_id}.bin"
-        assert Path(artifact.storage_key).read_bytes() == b"original bytes"
+        assert Path(artifact.storage_key).read_bytes() == content
         assert not (tmp_path / "outside.msg").exists()
         assert "<script>.msg" not in response.text
