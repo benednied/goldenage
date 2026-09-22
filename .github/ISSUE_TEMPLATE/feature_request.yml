@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an outcome that would improve GoldenAge.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user or operational problem, not only a proposed implementation.
+        Do not include credentials, access tokens, personal data, or production data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Who experiences the problem, and when?
+      placeholder: Case workers cannot ... when ...
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe what should be possible, without prescribing a technical solution.
+      placeholder: A case worker can ...
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criteria
+      description: How would we know the request has solved the problem?
+      placeholder: The request is successful when ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (optional)
+      description: Add mockups, alternatives considered, or non-sensitive examples if helpful.
+    validations:
+      required: false

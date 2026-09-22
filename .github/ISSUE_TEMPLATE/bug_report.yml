@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem in GoldenAge.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. Do not include credentials, access tokens,
+        personal data, or production data. Do not report suspected vulnerabilities here;
+        use the project's private security reporting route.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Briefly describe the problem and its impact.
+      placeholder: The worklist does not load after ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest sequence of steps that reliably shows the problem.
+      placeholder: |
+        1. Start the app with ...
+        2. Open ...
+        3. Select ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized error messages or screenshots if useful.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: GoldenAge version or commit
+      description: Use the version, release tag, or commit you tested.
+      placeholder: e.g. 0.1.0 or abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, browser (if applicable), and runtime mode. Do not include secrets.
+      placeholder: Ubuntu 24.04, Python 3.14, Firefox 140, SQLite local-first mode
+    validations:
+      required: true
