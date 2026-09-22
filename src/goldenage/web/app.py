@@ -11,10 +11,11 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import UploadFile
 
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
@@ -65,6 +66,13 @@ from goldenage.bootstrap_sqlite import ensure_sqlite_bootstrapped
 from goldenage.config import Settings, load_settings
 from goldenage.domain.models import MailSelector, UserContext
 from goldenage.domain.rules import ResolutionError, due_label
+from goldenage.web.upload_security import (
+    UploadLimitMiddleware,
+    UploadLimits,
+    normalize_profile_png,
+    read_upload_limited,
+    validate_outlook_msg,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
@@ -81,6 +89,7 @@ class AppContext:
     default_user: UserContext | None
     local_user_repository: SQLiteLocalUserRepository | None = None
     outlook_worker: OutlookMailboxWorker | None = None
+    upload_limits: UploadLimits = UploadLimits()
 
 
 def create_app() -> FastAPI:
@@ -89,6 +98,8 @@ def create_app() -> FastAPI:
     context = _build_context(settings)
 
     app = FastAPI(title="GoldenAge")
+    upload_limits = UploadLimits.from_environment()
+    app.add_middleware(UploadLimitMiddleware, limit=upload_limits.request_bytes)
     app.state.context = context
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
     if settings.use_local_first_sqlite:
@@ -190,16 +201,19 @@ def create_app() -> FastAPI:
     @app.post("/onboarding", response_class=HTMLResponse)
     async def create_onboarding_user(
         request: Request,
-        display_name: str = Form(default=""),
-        email: str = Form(default=""),
-        password: str = Form(default=""),
-        profile_picture: UploadFile | None = File(default=None),
     ) -> HTMLResponse:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         if _current_user(context, request=request) is not None:
             return RedirectResponse(url="/worklist", status_code=302)
 
+        form = await _bounded_form(request, upload_limits)
+        display_name = str(form.get("display_name", ""))
+        email = str(form.get("email", ""))
+        password = str(form.get("password", ""))
+        profile_picture = form.get("profile_picture")
+        if not isinstance(profile_picture, UploadFile):
+            profile_picture = None
         normalized_name = display_name.strip()
         normalized_email = email.strip().lower()
         if not normalized_name or not normalized_email or not password:
@@ -213,10 +227,24 @@ def create_app() -> FastAPI:
                 status_code=400,
             )
 
-        profile_image_path = await _store_profile_picture(
-            profile_picture=profile_picture,
-            settings=settings,
-        )
+        try:
+            profile_image_path = await _store_profile_picture(
+                profile_picture=profile_picture,
+                settings=settings,
+                limits=upload_limits,
+            )
+        except HTTPException as error:
+            if error.status_code != 400:
+                raise
+            return templates.TemplateResponse(
+                request=request,
+                name="onboarding.html",
+                context=_onboarding_context(
+                    request,
+                    message="Profile picture uploads must be image files.",
+                ),
+                status_code=400,
+            )
         if profile_picture is not None and profile_image_path is None:
             return templates.TemplateResponse(
                 request=request,
@@ -546,29 +574,25 @@ def create_app() -> FastAPI:
     @app.post("/artifacts/upload", response_class=HTMLResponse)
     async def upload_artifact(
         request: Request,
-        file: UploadFile = File(...),
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        content = await file.read()
+        form = await _bounded_form(request, context.upload_limits)
+        file = form.get("file")
+        if not isinstance(file, UploadFile):
+            return _upload_error_response(request, context, user, "Select a file before uploading.")
+        content = await read_upload_limited(
+            file,
+            limit=context.upload_limits.artifact_bytes,
+            chunk_size=context.upload_limits.read_chunk_bytes,
+        )
         if not content:
-            response = templates.TemplateResponse(
-                request=request,
-                name="partials/intake_panel.html",
-                context=_page_context(
-                    request,
-                    context,
-                    detail=None,
-                    intake_state=IntakeState(message="Select a file before uploading."),
-                    user=user,
-                ),
-                status_code=400,
-            )
-            return response
+            return _upload_error_response(request, context, user, "Select a file before uploading.")
 
         if not (file.filename or "").lower().endswith(".msg"):
             return _unsupported_upload_response(request, context, user=user)
+        validate_outlook_msg(content)
 
         intake_state = context.service.upload_artifact(
             file_name=file.filename or "upload.bin",
@@ -867,6 +891,46 @@ def _build_context(settings: Settings) -> AppContext:
         default_user=default_user,
         local_user_repository=local_user_repository,
         outlook_worker=outlook_worker,
+        upload_limits=UploadLimits.from_environment(),
+    )
+
+
+async def _bounded_form(request: Request, limits: UploadLimits):
+    """Parse only the small, known multipart shape used by upload endpoints."""
+    try:
+        return await request.form(
+            max_files=1,
+            max_fields=limits.multipart_fields,
+            max_part_size=limits.multipart_field_bytes,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 400:
+            if "Part exceeded maximum size" in str(exc.detail):
+                raise HTTPException(
+                    status_code=413, detail="Multipart field is too large."
+                ) from exc
+            if "Request body is too large" in str(exc.detail):
+                raise HTTPException(status_code=413, detail="Request body is too large.") from exc
+        raise
+
+
+def _upload_error_response(
+    request: Request,
+    context: AppContext,
+    user: UserContext,
+    message: str,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/intake_panel.html",
+        context=_page_context(
+            request,
+            context,
+            detail=None,
+            intake_state=IntakeState(message=message),
+            user=user,
+        ),
+        status_code=400,
     )
 
 
@@ -1083,16 +1147,19 @@ async def _store_profile_picture(
     *,
     profile_picture: UploadFile | None,
     settings: Settings,
+    limits: UploadLimits = UploadLimits(),
 ) -> str | None:
     if profile_picture is None:
         return None
-    if not (profile_picture.content_type or "").startswith("image/"):
-        return None
-    content = await profile_picture.read()
+    content = await read_upload_limited(
+        profile_picture,
+        limit=limits.profile_image_bytes,
+        chunk_size=limits.read_chunk_bytes,
+    )
     if not content:
         return None
-    suffix = Path(profile_picture.filename or "profile.bin").suffix or ".bin"
-    file_name = f"{uuid4()}{suffix.lower()}"
+    content = normalize_profile_png(content, limits=limits)
+    file_name = f"{uuid4()}.png"
     target = settings.profile_dir / file_name
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)

@@ -1,4 +1,5 @@
 import asyncio
+import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -629,8 +630,7 @@ def test_store_profile_picture_edges(tmp_path) -> None:
     assert (
         asyncio.run(web_app._store_profile_picture(profile_picture=None, settings=settings)) is None
     )
-    empty = UploadFile(filename="profile.png", file=SimpleNamespace(read=lambda size=-1: b""))  # ty:ignore[invalid-argument-type]
-    empty.headers = {"content-type": "image/png"}  # ty:ignore[invalid-assignment]
+    empty = UploadFile(filename="profile.png", file=tempfile.SpooledTemporaryFile())  # ty:ignore[invalid-argument-type]
     assert (
         asyncio.run(web_app._store_profile_picture(profile_picture=empty, settings=settings))
         is None
