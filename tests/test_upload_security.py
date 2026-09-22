@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 from fastapi import HTTPException, UploadFile
-from starlette.formparsers import MultiPartException
+from starlette.requests import Request
 
 from goldenage.web.upload_security import (
     UploadLimitMiddleware,
@@ -36,6 +36,7 @@ def test_read_upload_limited_rejects_first_byte_over_limit_and_closes_file() -> 
 
 def test_request_limit_counts_chunked_multipart_before_parser() -> None:
     consumed: list[bytes] = []
+    sent: list[dict[str, object]] = []
 
     async def downstream(scope, receive, send) -> None:
         del scope, send
@@ -58,19 +59,73 @@ def test_request_limit_counts_chunked_multipart_before_parser() -> None:
         return cast(dict[str, object], next(chunks))
 
     async def send(message: object) -> None:
-        del message
+        sent.append(cast(dict[str, object], message))
 
     middleware = UploadLimitMiddleware(downstream, limit=4)
-    with pytest.raises(MultiPartException, match="Request body is too large"):
-        asyncio.run(
-            middleware(
-                {"type": "http", "headers": [(b"content-type", b"multipart/form-data")]},
-                receive,
-                send,
-            )
+    asyncio.run(
+        middleware(
+            {"type": "http", "headers": [(b"content-type", b"multipart/form-data")]},
+            receive,
+            send,
         )
+    )
 
     assert consumed == [b"a", b"b", b"c", b"d"]
+    assert sent == [
+        {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"text/plain; charset=utf-8")]},
+        {"type": "http.response.body", "body": b"Request body is too large."},
+    ]
+
+
+def test_request_limit_returns_413_through_starlette_parser_without_content_length() -> None:
+    boundary = b"goldenage-boundary"
+    body = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="mail.msg"\r\n'
+        b"Content-Type: application/octet-stream\r\n\r\n"
+        b"0123456789"
+        b"\r\n--" + boundary + b"--\r\n"
+    )
+    chunks = iter(body[index : index + 7] for index in range(0, len(body), 7))
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        try:
+            chunk = next(chunks)
+        except StopIteration:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.request", "body": chunk, "more_body": True}
+
+    async def downstream(scope, receive, send) -> None:
+        request = Request(scope, receive)
+        try:
+            await request.form()
+        except HTTPException as error:
+            await send({"type": "http.response.start", "status": error.status_code, "headers": []})
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"detail":"' + error.detail.encode() + b'"}',
+                }
+            )
+
+    async def send(message: object) -> None:
+        sent.append(cast(dict[str, object], message))
+
+    asyncio.run(
+        UploadLimitMiddleware(downstream, limit=20)(
+            {
+                "type": "http",
+                "app": object(),
+                "headers": [(b"content-type", b"multipart/form-data; boundary=" + boundary)],
+            },
+            receive,
+            send,
+        )
+    )
+
+    assert sent[0]["status"] == 413
+    assert sent[1]["body"] == b'{"detail":"Request body is too large."}'
 
 
 def test_invalid_msg_is_rejected_even_with_msg_extension_and_mime_type() -> None:

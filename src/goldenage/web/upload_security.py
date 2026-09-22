@@ -91,17 +91,41 @@ class UploadLimitMiddleware:
                 pass
 
         received = 0
+        request_exceeded = False
+        response_started = False
 
         async def bounded_receive() -> Any:
-            nonlocal received
+            nonlocal received, request_exceeded
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.limit:
+                    request_exceeded = True
                     raise UploadTooLarge("Request body is too large.")
             return message
 
-        await self.app(scope, bounded_receive, send)
+        async def bounded_send(message: Any) -> None:
+            """Rewrite the parser's response for an over-sized request.
+
+            Starlette converts ``MultiPartException`` into a 400 response inside
+            ``Request.form``.  Keep using that exception so the multipart parser
+            closes any temporary upload files, then translate its specific error
+            back to the 413 contract at the ASGI boundary.
+            """
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+                if request_exceeded:
+                    message = {**message, "status": 413}
+            await send(message)
+
+        try:
+            await self.app(scope, bounded_receive, bounded_send)
+        except UploadTooLarge:
+            # This also covers small ASGI test apps which expose the parser
+            # exception directly instead of Starlette's HTTPException wrapper.
+            if not response_started:
+                await _send_413(send)
 
 
 async def read_upload_limited(file: UploadFile, *, limit: int, chunk_size: int) -> bytes:
