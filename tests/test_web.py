@@ -1,6 +1,9 @@
 import json
+import re
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -688,3 +691,37 @@ def _sample_extracted_data(subject: str) -> ExtractedArtifactData:
         conversation_id="conv-1",
         internet_message_id="<msg-1@example.com>",
     )
+
+
+@pytest.mark.parametrize("file_name", ["../outside.msg", "/tmp/outside.msg", "<script>.msg"])
+def test_upload_keeps_original_name_out_of_storage_path(tmp_path, monkeypatch, file_name) -> None:
+    content = (Path(__file__).parent / "fixtures" / "minimal.msg").read_bytes()
+    root = tmp_path / "artifacts"
+    monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(root))
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    for name in ("DATABASE_URL", "GOLDENAGE_LOCAL_FIRST_MODE", "GOLDENAGE_LOCAL_FIRST_DB"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        OutlookMsgExtractor,
+        "extract",
+        lambda self, file_name, media_type, content: _sample_extracted_data(
+            subject="Acme contract renewal"
+        ),
+    )
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/artifacts/upload",
+            files={"file": (file_name, content, "application/vnd.ms-outlook")},
+        )
+        assert response.status_code == 200
+        artifact_id = UUID(re.search(r"/artifacts/([0-9a-f-]+)/assign", response.text).group(1))
+        context = app.state.context
+        artifact = context.service.get_intake_state(
+            artifact_id=artifact_id, user=context.default_user
+        ).artifact
+        assert artifact.file_name == file_name
+        assert Path(artifact.storage_key) == root / f"{artifact_id}.bin"
+        assert Path(artifact.storage_key).read_bytes() == content
+        assert not (tmp_path / "outside.msg").exists()
+        assert "<script>.msg" not in response.text

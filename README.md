@@ -57,6 +57,15 @@ GOLDENAGE_OUTLOOK_SCAN_PER_FOLDER_LIMIT=250
 
 In `auto` mode, macOS uses Apple Mail automation when available and Windows uses classic Outlook desktop through COM. Set the mail address in Settings; leaving the folder field blank scans all mail folders under that configured address. The legacy `GOLDENAGE_APPLE_MAIL_*` env vars still work as fallbacks.
 
+## Artifact Storage
+
+`GOLDENAGE_ARTIFACT_DIR` defaults to `var/artifacts`. Use an application-owned
+local directory with trusted parents. New artifacts use exclusive server-owned
+`<uuid>.bin` names; the original filename remains metadata. Existing storage keys
+remain valid without migration. Root symlinks and Windows reparse points are
+rejected. See [storage security and platform validation](docs/learnings/2026-09-15-secure-artifact-storage.md)
+for permissions, failure behavior, and supported filesystem assumptions.
+
 ## Windows Outlook Mailbox Intake
 
 The mailbox integration only works on Windows with classic desktop Outlook installed and signed in. It uses Outlook COM/MAPI through `pywin32`, so it does not run on Linux, macOS, Outlook Web, or the new WebView-based Outlook app.
