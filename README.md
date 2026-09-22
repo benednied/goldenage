@@ -120,12 +120,31 @@ That command:
 - seeds the fixed demo user
 - seeds the baseline cases and activities used by the first slice
 
+## Creating Migrations
+
+PostgreSQL migrations live in [`sql/`](sql); SQLite migrations live in
+[`sql/sqlite/`](sql/sqlite). They are separate namespaces, but each uses the format
+`NNNN_lowercase_description.sql` and a unique next ID. Check the target branch directly
+before creating or merging a migration, then run:
+
+```bash
+./.venv/bin/python -m goldenage.migration_validation
+```
+
+The check preserves the shipped historical prefix collisions as explicit exceptions and
+rejects malformed, duplicate, or backward-sorting new IDs. Never rename or edit an
+applied migration: deliver a correction as a new forward migration. See
+[`ADR-0004`](docs/70-decisions/adr-0004-migration-identifiers.md) for the baseline and
+concurrent-PR collision procedure. Add this command to the existing quality job when
+that job is available.
+
 ## Verification
 
 ```bash
 uv run --extra dev ruff check .
 uv run --extra dev ruff format --check .
 uv run --extra dev ty check
+./.venv/bin/python -m goldenage.migration_validation
 ./.venv/bin/python -m compileall src tests
 ./.venv/bin/pytest -q
 ```
