@@ -349,7 +349,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
             "password": "secret-passphrase",
         },
     )
-    context = client.app.state.context  # ty:ignore[unresolved-attribute]
+    context = client.app.state.context
     case_id = uuid4()
     artifact_id = uuid4()
     activity_id = uuid4()
@@ -714,3 +714,69 @@ def _settings(
         auth_secret="secret",
         auth_cookie_secure=auth_cookie_secure,
     )
+
+
+@pytest.mark.parametrize("field_count, expected_status", [(1000, 302), (1001, 400)])
+def test_login_enforces_urlencoded_field_count(field_count: int, expected_status: int) -> None:
+    client = TestClient(web_app.create_app(), follow_redirects=False)
+
+    response = client.post(
+        "/login/local",
+        content="&".join(f"field{i}=value" for i in range(field_count)),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 400:
+        assert "Too many fields" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "field_size, expected_status", [(1024 * 1024, 302), (1024 * 1024 + 1, 400)]
+)
+def test_login_enforces_urlencoded_field_size(field_size: int, expected_status: int) -> None:
+    client = TestClient(web_app.create_app(), follow_redirects=False)
+
+    response = client.post(
+        "/login/local",
+        content="x=" + "a" * (field_size - 1),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 400:
+        assert "Field exceeded maximum size" in response.json()["detail"]
+
+
+def test_semicolon_in_password_remains_literal(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
+    monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
+    client = TestClient(web_app.create_app(), follow_redirects=False)
+    response = client.post(
+        "/onboarding",
+        data={"display_name": "Test User", "email": "user@example.com", "password": "safe;phrase"},
+    )
+    assert response.status_code == 303
+    client.cookies.clear()
+
+    response = client.post(
+        "/login/local",
+        content="email=user%40example.com&password=safe;phrase",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/worklist"
+
+
+def test_upload_rejects_multipart_without_boundary() -> None:
+    client = TestClient(web_app.create_app())
+
+    response = client.post(
+        "/artifacts/upload",
+        content=b"invalid multipart body",
+        headers={"content-type": "multipart/form-data"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Missing boundary in multipart."

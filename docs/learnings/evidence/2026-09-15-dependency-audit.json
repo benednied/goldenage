@@ -1,0 +1,329 @@
+{
+  "date": "2026-09-15",
+  "scanner": "pip-audit 2.10.1",
+  "service": "pypi",
+  "python": "3.14.4",
+  "platform": "macOS",
+  "before_findings": [
+    {
+      "name": "click",
+      "version": "8.3.2",
+      "vulns": [
+        {
+          "id": "PYSEC-2026-2132",
+          "aliases": [
+            "GHSA-47fr-3ffg-hgmw",
+            "CVE-2026-7246"
+          ],
+          "fix_versions": [
+            "8.3.3"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.11",
+      "vulns": [
+        {
+          "id": "PYSEC-2026-215",
+          "aliases": [
+            "GHSA-65pc-fj4g-8rjx",
+            "CVE-2026-45409"
+          ],
+          "fix_versions": [
+            "3.15"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pytest",
+      "version": "8.4.2",
+      "vulns": [
+        {
+          "id": "PYSEC-2026-1845",
+          "aliases": [
+            "CVE-2025-71176",
+            "GHSA-6w46-j5rx-g56g"
+          ],
+          "fix_versions": [
+            "9.0.3"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "python-multipart",
+      "version": "0.0.26",
+      "vulns": [
+        {
+          "id": "PYSEC-2026-3039",
+          "aliases": [
+            "CVE-2026-42561",
+            "GHSA-pp6c-gr5w-3c5g"
+          ],
+          "fix_versions": [
+            "0.0.27"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-3040",
+          "aliases": [
+            "CVE-2026-53540",
+            "GHSA-v9pg-7xvm-68hf"
+          ],
+          "fix_versions": [
+            "0.0.31"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-3036",
+          "aliases": [
+            "CVE-2026-53539",
+            "GHSA-5rvq-cxj2-64vf"
+          ],
+          "fix_versions": [
+            "0.0.30"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-3037",
+          "aliases": [
+            "CVE-2026-53538",
+            "GHSA-6jv3-5f52-599m"
+          ],
+          "fix_versions": [
+            "0.0.30"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "starlette",
+      "version": "1.0.0",
+      "vulns": [
+        {
+          "id": "PYSEC-2026-161",
+          "aliases": [
+            "X41-2026-002",
+            "CVE-2026-48710",
+            "GHSA-86qp-5c8j-p5mr"
+          ],
+          "fix_versions": [
+            "1.0.1"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-2281",
+          "aliases": [
+            "GHSA-wqp7-x3pw-xc5r",
+            "CVE-2026-48818"
+          ],
+          "fix_versions": [
+            "1.1.0"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-2280",
+          "aliases": [
+            "GHSA-x746-7m8f-x49c",
+            "CVE-2026-48817"
+          ],
+          "fix_versions": [
+            "1.1.0"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-249",
+          "aliases": [
+            "CVE-2026-54283",
+            "GHSA-82w8-qh3p-5jfq"
+          ],
+          "fix_versions": [
+            "1.3.1"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-248",
+          "aliases": [
+            "GHSA-jp82-jpqv-5vv3",
+            "CVE-2026-54282"
+          ],
+          "fix_versions": [
+            "1.3.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "after": {
+    "dependencies": [
+      {
+        "name": "annotated-doc",
+        "version": "0.0.5",
+        "vulns": []
+      },
+      {
+        "name": "annotated-types",
+        "version": "0.8.0",
+        "vulns": []
+      },
+      {
+        "name": "anyio",
+        "version": "4.15.1",
+        "vulns": []
+      },
+      {
+        "name": "certifi",
+        "version": "2026.7.22",
+        "vulns": []
+      },
+      {
+        "name": "click",
+        "version": "8.5.0",
+        "vulns": []
+      },
+      {
+        "name": "coverage",
+        "version": "7.16.1",
+        "vulns": []
+      },
+      {
+        "name": "fastapi",
+        "version": "0.141.1",
+        "vulns": []
+      },
+      {
+        "name": "goldenage",
+        "skip_reason": "Dependency not found on PyPI and could not be audited: goldenage (0.1.0)"
+      },
+      {
+        "name": "h11",
+        "version": "0.16.0",
+        "vulns": []
+      },
+      {
+        "name": "httpcore",
+        "version": "1.0.9",
+        "vulns": []
+      },
+      {
+        "name": "httpx",
+        "version": "0.28.1",
+        "vulns": []
+      },
+      {
+        "name": "idna",
+        "version": "3.19",
+        "vulns": []
+      },
+      {
+        "name": "iniconfig",
+        "version": "2.3.0",
+        "vulns": []
+      },
+      {
+        "name": "jinja2",
+        "version": "3.1.6",
+        "vulns": []
+      },
+      {
+        "name": "markupsafe",
+        "version": "3.0.3",
+        "vulns": []
+      },
+      {
+        "name": "olefile",
+        "version": "0.47",
+        "vulns": []
+      },
+      {
+        "name": "packaging",
+        "version": "26.3",
+        "vulns": []
+      },
+      {
+        "name": "pluggy",
+        "version": "1.6.0",
+        "vulns": []
+      },
+      {
+        "name": "psycopg",
+        "version": "3.3.5",
+        "vulns": []
+      },
+      {
+        "name": "psycopg-binary",
+        "version": "3.3.5",
+        "vulns": []
+      },
+      {
+        "name": "pydantic",
+        "version": "2.13.5",
+        "vulns": []
+      },
+      {
+        "name": "pydantic-core",
+        "version": "2.46.5",
+        "vulns": []
+      },
+      {
+        "name": "pygments",
+        "version": "2.21.0",
+        "vulns": []
+      },
+      {
+        "name": "pytest",
+        "version": "9.1.1",
+        "vulns": []
+      },
+      {
+        "name": "pytest-cov",
+        "version": "7.1.0",
+        "vulns": []
+      },
+      {
+        "name": "python-multipart",
+        "version": "0.0.32",
+        "vulns": []
+      },
+      {
+        "name": "python-oxmsg",
+        "version": "0.0.2",
+        "vulns": []
+      },
+      {
+        "name": "ruff",
+        "version": "0.16.7",
+        "vulns": []
+      },
+      {
+        "name": "starlette",
+        "version": "1.6.0",
+        "vulns": []
+      },
+      {
+        "name": "ty",
+        "version": "0.0.81",
+        "vulns": []
+      },
+      {
+        "name": "typing-extensions",
+        "version": "4.16.0",
+        "vulns": []
+      },
+      {
+        "name": "typing-inspection",
+        "version": "0.4.4",
+        "vulns": []
+      },
+      {
+        "name": "uvicorn",
+        "version": "0.53.0",
+        "vulns": []
+      }
+    ],
+    "fixes": []
+  }
+}

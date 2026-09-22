@@ -9,12 +9,14 @@ description = "Operational case management and Wiedervorlage system with HTMX-dr
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-  "fastapi>=0.115.0,<1.0.0",
+  "fastapi>=0.141.1,<1.0.0",
   "jinja2>=3.1.6,<4.0.0",
   "psycopg[binary]>=3.2.9,<4.0.0",
   "pywin32; sys_platform == 'win32'",
   "python-oxmsg>=0.0.2,<1.0.0",
-  "python-multipart>=0.0.20,<1.0.0",
+  "python-multipart>=0.0.32,<1.0.0",
+  # FastAPI allows older Starlette releases with known form-parser advisories.
+  "starlette>=1.6.0,<2.0.0",
   "pywin32>=306; platform_system == 'Windows'",
   "uvicorn>=0.34.0,<1.0.0",
 ]
@@ -22,7 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28.1,<1.0.0",
-  "pytest>=8.3.5,<9.0.0",
+  "pytest>=9.0.3,<10.0.0",
   "pytest-cov>=7.1.0",
   "ruff>=0.15.11",
   "ty>=0.0.32",
