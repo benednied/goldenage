@@ -40,4 +40,7 @@ jobs:
           uv run --no-sync ruff check .
           uv run --no-sync ruff format --check .
           uv run --no-sync ty check
+          if test -f src/goldenage/migration_validation.py; then
+            uv run --no-sync python -m goldenage.migration_validation
+          fi
           uv run --no-sync pytest -q

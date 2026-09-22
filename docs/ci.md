@@ -58,3 +58,7 @@ ruleset or classic branch protection rather than creating competing rules):
 
 The checkout is deliberately limited to the four baseline checks. Coverage,
 database, distribution, and security gates remain separate follow-up work.
+
+The quality job also runs `python -m goldenage.migration_validation` when the
+migration validator is present. This permits the CI and migration-convention PRs
+to land in either order while enforcing the check as soon as both are integrated.
