@@ -5,7 +5,9 @@ import zlib
 from typing import cast
 
 import pytest
+import starlette.formparsers
 from fastapi import HTTPException, UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
 from goldenage.web.upload_security import (
@@ -72,12 +74,19 @@ def test_request_limit_counts_chunked_multipart_before_parser() -> None:
 
     assert consumed == [b"a", b"b", b"c", b"d"]
     assert sent == [
-        {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"text/plain; charset=utf-8")]},
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+        },
         {"type": "http.response.body", "body": b"Request body is too large."},
     ]
 
 
-def test_request_limit_returns_413_through_starlette_parser_without_content_length() -> None:
+@pytest.mark.parametrize("content_length", [None, b"1"])
+def test_request_limit_returns_413_through_starlette_parser_without_content_length(
+    monkeypatch, content_length
+) -> None:
     boundary = b"goldenage-boundary"
     body = (
         b"--" + boundary + b"\r\n"
@@ -86,6 +95,19 @@ def test_request_limit_returns_413_through_starlette_parser_without_content_leng
         b"0123456789"
         b"\r\n--" + boundary + b"--\r\n"
     )
+    spools = []
+    original_spool = starlette.formparsers.SpooledTemporaryFile
+
+    def record_spool(*args, **kwargs):
+        spool = original_spool(*args, **kwargs)
+        spools.append(spool)
+        return spool
+
+    monkeypatch.setattr(starlette.formparsers, "SpooledTemporaryFile", record_spool)
+    limit = body.index(b"0123456789") + 5
+    headers = [(b"content-type", b"multipart/form-data; boundary=" + boundary)]
+    if content_length is not None:
+        headers.append((b"content-length", content_length))
     chunks = iter(body[index : index + 7] for index in range(0, len(body), 7))
     sent: list[dict[str, object]] = []
 
@@ -100,7 +122,7 @@ def test_request_limit_returns_413_through_starlette_parser_without_content_leng
         request = Request(scope, receive)
         try:
             await request.form()
-        except HTTPException as error:
+        except StarletteHTTPException as error:
             await send({"type": "http.response.start", "status": error.status_code, "headers": []})
             await send(
                 {
@@ -113,17 +135,18 @@ def test_request_limit_returns_413_through_starlette_parser_without_content_leng
         sent.append(cast(dict[str, object], message))
 
     asyncio.run(
-        UploadLimitMiddleware(downstream, limit=20)(
+        UploadLimitMiddleware(downstream, limit=limit)(
             {
                 "type": "http",
                 "app": object(),
-                "headers": [(b"content-type", b"multipart/form-data; boundary=" + boundary)],
+                "headers": headers,
             },
             receive,
             send,
         )
     )
 
+    assert spools and all(spool.closed for spool in spools)
     assert sent[0]["status"] == 413
     assert sent[1]["body"] == b'{"detail":"Request body is too large."}'
 
@@ -200,3 +223,31 @@ def _chunk(kind: bytes, data: bytes) -> bytes:
         + data
         + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
     )
+
+
+def test_unrelated_streaming_error_response_is_preserved() -> None:
+    messages = [
+        {"type": "http.response.start", "status": 400, "headers": []},
+        {"type": "http.response.body", "body": b"Request body is too large.", "more_body": True},
+        {"type": "http.response.body", "body": b" unrelated text", "more_body": False},
+    ]
+    sent = []
+
+    async def downstream(scope, receive, send):
+        for message in messages:
+            await send(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(
+        UploadLimitMiddleware(downstream, limit=4)(
+            {"type": "http", "headers": [(b"content-type", b"multipart/form-data")]},
+            receive,
+            send,
+        )
+    )
+    assert sent == messages
