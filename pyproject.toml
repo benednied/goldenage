@@ -33,6 +33,12 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = [
+  "--cov=goldenage",
+  "--cov-branch",
+  "--cov-report=term-missing",
+  "--cov-report=json:coverage.json",
+]
 
 [tool.coverage.report]
 fail_under = 100

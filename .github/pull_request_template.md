@@ -9,7 +9,7 @@
 - [ ] `./.venv/bin/python -m ruff check .`
 - [ ] `./.venv/bin/python -m ruff format --check .`
 - [ ] `./.venv/bin/python -m ty check`
-- [ ] `./.venv/bin/python -m pytest -q`
+- [ ] `./.venv/bin/python -m pytest -q` (100% line and branch coverage gate)
 
 ## Configuration or schema changes (optional)
 

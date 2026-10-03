@@ -3,7 +3,7 @@
 The `CI` workflow runs for every pull request and for pushes to `master`, the
 default branch reported by the ENG-01 audit. Its required job is named
 `quality`. It uses Python 3.14, installs the dependency graph from `uv.lock`,
-and runs only these existing checks:
+and runs these quality checks:
 
 ```bash
 uv sync --frozen --extra dev
@@ -13,6 +13,13 @@ uv run --no-sync ty check
 uv run --no-sync pytest -q
 ```
 
+The repository's pytest configuration adds the single canonical coverage
+configuration to that command: it measures the explicit `goldenage` source
+tree with line and branch coverage, prints missing lines, writes
+`coverage.json`, and enforces the configured 100% threshold. A failed test or
+coverage gate remains a failed job; the report upload runs afterwards so the
+missing coverage is available for diagnosis.
+
 The workflow has read-only repository permissions, a 15-minute timeout, and
 cancels superseded runs for the same pull request or branch. It does not need
 secrets. `actions/checkout` and `actions/setup-python` are pinned to immutable
@@ -21,11 +28,10 @@ commit SHAs; their trailing version comments identify the reviewed release.
 
 ## Handling a failed check
 
-Open the failed `quality` job, reproduce the named command locally, correct the
-failure, and push the correction. A new push cancels the obsolete pull-request
-run. Do not add future checks (coverage, PostgreSQL, packaging, or security) to
-branch protection until their jobs have run successfully and their exact GitHub
-check names are known.
+Open the failed `quality` job, reproduce the named command locally, inspect the
+missing lines in the log or downloaded `coverage.json` artifact, correct the
+failure, and push the correction. A new push cancels the obsolete
+pull-request run.
 
 ## GitHub administrator handoff
 
@@ -56,8 +62,8 @@ ruleset or classic branch protection rather than creating competing rules):
    gh api repos/OWNER/REPO/branches/DEFAULT/protection
    ```
 
-The checkout is deliberately limited to the four baseline checks. Coverage,
-database, distribution, and security gates remain separate follow-up work.
+Coverage is part of the required `quality` check. Database, distribution, and
+security gates remain separate follow-up work.
 
 The quality job also runs `python -m goldenage.migration_validation` when the
 migration validator is present. This permits the CI and migration-convention PRs
