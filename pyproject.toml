@@ -38,6 +38,7 @@ addopts = [
   "--cov-branch",
   "--cov-report=term-missing",
   "--cov-report=json:coverage.json",
+  "--cov-fail-under=100",
 ]
 
 [tool.coverage.report]

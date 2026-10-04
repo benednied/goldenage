@@ -16,9 +16,12 @@ uv run --no-sync pytest -q
 The repository's pytest configuration adds the single canonical coverage
 configuration to that command: it measures the explicit `goldenage` source
 tree with line and branch coverage, prints missing lines, writes
-`coverage.json`, and enforces the configured 100% threshold. A failed test or
-coverage gate remains a failed job; the report upload runs afterwards so the
-missing coverage is available for diagnosis.
+`coverage.json`, and enforces the configured 100% threshold with
+`--cov-fail-under=100`. That pytest-cov option is intentional: the
+`tool.coverage.report.fail_under` setting alone does not turn a pytest-cov run
+into a failing gate. A failed test or coverage gate remains a failed job; the
+report upload runs afterwards so the missing coverage is available for
+diagnosis.
 
 The workflow has read-only repository permissions, a 15-minute timeout, and
 cancels superseded runs for the same pull request or branch. It does not need

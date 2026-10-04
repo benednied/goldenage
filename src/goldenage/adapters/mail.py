@@ -642,7 +642,7 @@ def _parse_sent_at(raw_value: str | None) -> datetime | None:
         return None
     try:
         return parsedate_to_datetime(raw_value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
