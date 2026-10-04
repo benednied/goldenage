@@ -442,8 +442,8 @@ class OutlookMsgExtractor(ArtifactContentExtractor):
             subject=_coerce_optional_str(message.subject) or file_name,
             sender=sender,
             recipients=recipients,
-            sent_at=message.sent_date() if callable(message.sent_date) else message.sent_date,
-            received_at=message.sent_date() if callable(message.sent_date) else message.sent_date,
+            sent_at=_coerce_optional_datetime(message.sent_date),
+            received_at=_coerce_optional_datetime(message.sent_date),
             direction="inbound",
         )
 
@@ -738,6 +738,16 @@ def _coerce_optional_str(value_or_callable) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _coerce_optional_datetime(value_or_callable: object) -> datetime | None:
+    """Read a datetime property that oxmsg may expose as a method or value."""
+    value = value_or_callable() if callable(value_or_callable) else value_or_callable
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise TypeError("Expected an Outlook datetime value.")
+    return value
 
 
 def _normalize_email(value: str | None) -> str | None:

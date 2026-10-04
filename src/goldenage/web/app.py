@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
@@ -130,7 +130,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/login", response_class=HTMLResponse)
-    async def login(request: Request) -> HTMLResponse:
+    async def login(request: Request) -> Response:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         if context.local_user_repository is not None:
@@ -150,7 +150,7 @@ def create_app() -> FastAPI:
         request: Request,
         email: str = Form(default=""),
         password: str = Form(default=""),
-    ) -> HTMLResponse:
+    ) -> Response:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         local_user_repository = context.local_user_repository
@@ -169,7 +169,7 @@ def create_app() -> FastAPI:
         return response
 
     @app.post("/login/ldap", response_class=HTMLResponse)
-    async def login_ldap(request: Request) -> HTMLResponse:
+    async def login_ldap(request: Request) -> Response:
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -187,7 +187,7 @@ def create_app() -> FastAPI:
         return response
 
     @app.get("/onboarding", response_class=HTMLResponse)
-    async def onboarding(request: Request) -> HTMLResponse:
+    async def onboarding(request: Request) -> Response:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         if _current_user(context, request=request) is not None:
@@ -201,7 +201,7 @@ def create_app() -> FastAPI:
     @app.post("/onboarding", response_class=HTMLResponse)
     async def create_onboarding_user(
         request: Request,
-    ) -> HTMLResponse:
+    ) -> Response:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         if _current_user(context, request=request) is not None:
@@ -271,7 +271,7 @@ def create_app() -> FastAPI:
         return response
 
     @app.get("/settings", response_class=HTMLResponse)
-    async def settings_page(request: Request) -> HTMLResponse:
+    async def settings_page(request: Request) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -291,7 +291,7 @@ def create_app() -> FastAPI:
         sent_after: str = Form(default=""),
         result_limit: int = Form(default=25),
         unread_only: str | None = Form(default=None),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -337,7 +337,7 @@ def create_app() -> FastAPI:
         sent_after: str = Form(default=""),
         result_limit: int = Form(default=25),
         unread_only: str | None = Form(default=None),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -378,7 +378,7 @@ def create_app() -> FastAPI:
     async def import_desktop_mail(
         request: Request,
         candidate_id: str = Form(...),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -421,7 +421,7 @@ def create_app() -> FastAPI:
         current_password: str = Form(default=""),
         new_password: str = Form(default=""),
         confirm_password: str = Form(default=""),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -462,7 +462,7 @@ def create_app() -> FastAPI:
         request: Request,
         case_id: str | None = None,
         artifact_id: str | None = None,
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -482,7 +482,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/cases/{case_id}/panel", response_class=HTMLResponse)
-    async def case_panel(request: Request, case_id: str) -> HTMLResponse:
+    async def case_panel(request: Request, case_id: str) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -494,7 +494,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/cases/{case_id}/artifacts/{artifact_id}/panel", response_class=HTMLResponse)
-    async def artifact_panel(request: Request, case_id: str, artifact_id: str) -> HTMLResponse:
+    async def artifact_panel(request: Request, case_id: str, artifact_id: str) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -521,7 +521,7 @@ def create_app() -> FastAPI:
         next_due_at: str = Form(default=""),
         close_case: str | None = Form(default=None),
         skip_follow_up: str | None = Form(default=None),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -574,7 +574,7 @@ def create_app() -> FastAPI:
     @app.post("/artifacts/upload", response_class=HTMLResponse)
     async def upload_artifact(
         request: Request,
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -610,7 +610,7 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/artifacts/{artifact_id}/suggestion/reject", response_class=HTMLResponse)
-    async def reject_suggestion(request: Request, artifact_id: str) -> HTMLResponse:
+    async def reject_suggestion(request: Request, artifact_id: str) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -634,7 +634,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/intake/conversations/{conversation_id}", response_class=HTMLResponse)
-    async def intake_conversation_panel(request: Request, conversation_id: str) -> HTMLResponse:
+    async def intake_conversation_panel(request: Request, conversation_id: str) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -655,7 +655,7 @@ def create_app() -> FastAPI:
         request: Request,
         artifact_id: str = Form(...),
         query: str = Form(...),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -680,7 +680,7 @@ def create_app() -> FastAPI:
         case_id: str = Form(...),
         next_step: str = Form(...),
         next_due_at: str = Form(...),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
@@ -744,7 +744,7 @@ def create_app() -> FastAPI:
         primary_contact: str = Form(default=""),
         next_step: str = Form(...),
         next_due_at: str = Form(...),
-    ) -> HTMLResponse:
+    ) -> Response:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)

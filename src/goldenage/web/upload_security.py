@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import olefile
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
+from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException
 
 MEBIBYTE = 1024 * 1024
