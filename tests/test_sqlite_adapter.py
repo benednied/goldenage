@@ -309,6 +309,14 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         artifact_id=artifact_id,
         now=NOW,
     )
+    mail_repo.save_imported_message(
+        user=user,
+        source_system="desktop_mail_client",
+        external_message_id="candidate-without-rfc",
+        rfc_message_id=None,
+        artifact_id=artifact_id,
+        now=NOW,
+    )
     assert mail_repo.get_selector(user=user, source_system="desktop_mail_client") == selector
     assert mail_repo.list_review_candidates(user=user, source_system="desktop_mail_client") == (
         candidate,
@@ -324,7 +332,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
     assert mail_repo.list_imported_message_ids(
         user=user,
         source_system="desktop_mail_client",
-    ) == frozenset({"candidate-1", "<candidate-1@example.com>"})
+    ) == frozenset({"candidate-1", "<candidate-1@example.com>", "candidate-without-rfc"})
     mail_repo.discard_review_candidate(
         user=user,
         source_system="desktop_mail_client",

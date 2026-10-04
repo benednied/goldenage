@@ -134,3 +134,27 @@ def test_main_applies_schema_and_optional_seed(monkeypatch, tmp_path) -> None:
         ("schema", "postgresql://from-env", tmp_path),
         ("seed", "postgresql://from-env"),
     ]
+
+
+def test_main_skips_optional_seed_by_default(monkeypatch, tmp_path) -> None:
+    calls: list[tuple[str, str | Path]] = []
+    monkeypatch.setattr(
+        bootstrap_postgres,
+        "load_settings",
+        lambda: type("Settings", (), {"database_url": "postgresql://from-env"})(),
+    )
+    monkeypatch.setattr(
+        bootstrap_postgres,
+        "apply_schema",
+        lambda dsn, schema_path: calls.append(("schema", dsn, schema_path)),  # ty:ignore[invalid-argument-type]
+    )
+    monkeypatch.setattr(
+        bootstrap_postgres,
+        "seed_demo_data",
+        lambda dsn: calls.append(("seed", dsn)),
+    )
+    monkeypatch.setattr("sys.argv", ["bootstrap_postgres"])
+
+    bootstrap_postgres.main()
+
+    assert calls == [("schema", "postgresql://from-env", Path("sql"))]

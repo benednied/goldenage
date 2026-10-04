@@ -466,6 +466,17 @@ def test_outlook_helpers_encode_decode_filter_and_handle_com_edge_cases() -> Non
         Accounts=(SimpleNamespace(SmtpAddress="other@example.com", DisplayName="Other"),),
     )
     assert mail._find_outlook_store(namespace, "Mailbox") == store
+    fallback_store = SimpleNamespace(DisplayName="Mailbox")
+    assert (
+        mail._find_outlook_store(
+            SimpleNamespace(
+                Stores=(fallback_store,),
+                Accounts=(SimpleNamespace(SmtpAddress="Mailbox", DeliveryStore=None),),
+            ),
+            "Mailbox",
+        )
+        == fallback_store
+    )
     with pytest.raises(mail.MailImportClientError, match="was not found"):
         mail._find_outlook_store(namespace, "missing@example.com")
 

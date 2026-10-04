@@ -63,6 +63,66 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     )
     assert bad_picture.status_code == 400
     assert "Profile picture uploads must be image files." in bad_picture.text
+    created = local_client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+        },
+    )
+    assert created.status_code == 303
+    local_client.cookies.clear()
+    assert local_client.get("/login").status_code == 200
+
+
+def test_onboarding_and_upload_error_response_branches(monkeypatch, tmp_path) -> None:
+    demo_client = TestClient(web_app.create_app(), follow_redirects=False)
+    password_response = demo_client.post(
+        "/settings/password",
+        data={
+            "current_password": "wrong",
+            "new_password": "new-password",
+            "confirm_password": "new-password",
+        },
+    )
+    assert password_response.status_code == 200
+    assert "Password changes are available only for LocalDB accounts." in password_response.text
+    missing_file = demo_client.post("/artifacts/upload", data={"not_file": "value"})
+    assert missing_file.status_code == 400
+    assert "Select a file before uploading." in missing_file.text
+
+    monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
+    monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
+    empty_picture_client = TestClient(web_app.create_app(), follow_redirects=False)
+    empty_picture = empty_picture_client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+        },
+        files={"profile_picture": ("profile.png", b"", "image/png")},
+    )
+    assert empty_picture.status_code == 400
+    assert "Profile picture uploads must be image files." in empty_picture.text
+
+    async def reject_profile_picture(**kwargs):
+        del kwargs
+        raise HTTPException(status_code=413, detail="Profile picture is too large.")
+
+    monkeypatch.setattr(web_app, "_store_profile_picture", reject_profile_picture)
+    rejected_client = TestClient(web_app.create_app(), raise_server_exceptions=False)
+    rejected = rejected_client.post(
+        "/onboarding",
+        data={
+            "display_name": "Bened Example",
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+        },
+        files={"profile_picture": ("profile.png", b"data", "image/png")},
+    )
+    assert rejected.status_code == 413
 
 
 def test_static_ux_contracts_keep_focus_order_and_responsive_layout() -> None:
@@ -683,6 +743,49 @@ def test_outlook_ingest_callback_skips_when_no_repository_user(monkeypatch, tmp_
 
     context.service.ingest_mail = lambda **kwargs: (_ for _ in ()).throw(AssertionError("skipped"))  # ty:ignore[invalid-assignment]
     captured["on_message"](SimpleNamespace())  # ty:ignore[call-non-callable]
+
+
+def test_bounded_form_translates_parser_limits() -> None:
+    class FailingRequest:
+        def __init__(self, error: HTTPException) -> None:
+            self.error = error
+
+        async def form(self, **kwargs):
+            del kwargs
+            raise self.error
+
+    limits = web_app.UploadLimits()
+    field_error = HTTPException(status_code=400, detail="Part exceeded maximum size")
+    with pytest.raises(HTTPException) as field_result:
+        asyncio.run(
+            web_app._bounded_form(
+                FailingRequest(field_error),  # ty:ignore[invalid-argument-type]
+                limits,
+            )
+        )
+    assert field_result.value.status_code == 413
+    assert field_result.value.detail == "Multipart field is too large."
+
+    body_error = HTTPException(status_code=400, detail="Request body is too large")
+    with pytest.raises(HTTPException) as body_result:
+        asyncio.run(
+            web_app._bounded_form(
+                FailingRequest(body_error),  # ty:ignore[invalid-argument-type]
+                limits,
+            )
+        )
+    assert body_result.value.status_code == 413
+    assert body_result.value.detail == "Request body is too large."
+
+    unrelated_error = HTTPException(status_code=400, detail="Malformed multipart request")
+    with pytest.raises(HTTPException) as unrelated_result:
+        asyncio.run(
+            web_app._bounded_form(
+                FailingRequest(unrelated_error),  # ty:ignore[invalid-argument-type]
+                limits,
+            )
+        )
+    assert unrelated_result.value is unrelated_error
 
 
 def _settings(
