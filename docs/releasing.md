@@ -10,7 +10,8 @@ creates the immutable tag, and reviews the draft before publishing it.
 `pyproject.toml` contains the one authoritative application/package version in
 `[project].version`. The version in `uv.lock` is generated package metadata and
 must be refreshed, but it is not edited by hand or treated as a second source
-of truth. The workflow checks the built wheel and source distribution as well.
+of truth. The same file pins the setuptools/wheel build backend requirements;
+the workflow checks the built wheel and source distribution as well.
 
 Use this release scheme:
 
@@ -83,10 +84,13 @@ A release is ready only when all of the following are true:
 2. In one pull request, update `[project].version` in `pyproject.toml`, run
    `uv lock` so `uv.lock` reflects it, and move the relevant `CHANGELOG.md`
    entries into a dated version section. Include migration and upgrade notes.
+   Run `uv lock --check` afterwards; the release workflow rejects stale lock
+   metadata even when the package version happens to look correct.
 3. Run the local checks and package smoke tests:
 
    ```bash
    uv sync --frozen --extra dev
+   uv lock --check
    uv run --no-sync ruff check .
    uv run --no-sync ruff format --check .
    uv run --no-sync ty check
