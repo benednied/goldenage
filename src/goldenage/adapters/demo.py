@@ -515,7 +515,9 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
         display_name="Alex Example",
         visible_group_ids=frozenset(),
     )
-    now = datetime.now(UTC)
+    # Keep the relative demo dates stable when the fixture is used near midnight.
+    # The compliance activity must remain on the same day for the worklist example.
+    now = datetime.now(UTC).replace(hour=8, minute=0, second=0, microsecond=0)
 
     cases = [
         CaseFile(
