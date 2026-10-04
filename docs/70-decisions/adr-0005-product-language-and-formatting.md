@@ -37,8 +37,8 @@ fallback, and maintenance responsibilities without improving the current product
   `datetime-local` form controls use the HTML wire format `YYYY-MM-DDTHH:MM`; submitted
   values are interpreted in the configured local time zone and persisted as UTC.
 - Counts and limits are currently rendered as ungrouped decimal digits. No localized
-  decimal, grouping, currency, or percentage formatting is supported because the
-  product does not currently expose such values.
+  decimal grouping, currency, or percentage formatting is supported; currency and
+  percentage values are not currently exposed by the product.
 - If a language is not English, it is unsupported and there is no fallback catalog or
   language negotiation. A request for another supported language reopens this ADR and
   must define selection, fallback, placeholders, plural forms, formatting, ownership,

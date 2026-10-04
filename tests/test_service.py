@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -142,11 +142,15 @@ def build_service(
 
 
 def test_today_worklist_contains_overdue_and_later_today_but_not_tomorrow(tmp_path) -> None:
-    service, user, _ = build_service(tmp_path)
-    current_day = datetime.now(UTC).date()
-    end_of_day = datetime.combine(current_day, datetime.max.time(), tzinfo=UTC)
+    service, user, state = build_service(tmp_path)
+    later_today = next(
+        activity
+        for activity in state.activities.values()
+        if activity.description == "Review the outstanding compliance questionnaire."
+    )
+    end_of_later_today = later_today.due_at + timedelta(minutes=1)
 
-    items = service.get_today_worklist(user=user, now=end_of_day)
+    items = service.get_today_worklist(user=user, now=end_of_later_today)
 
     descriptions = [item.activity.description for item in items]
     assert "Call Max about the amended pricing appendix." in descriptions
