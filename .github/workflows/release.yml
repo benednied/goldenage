@@ -1,0 +1,225 @@
+name: Release draft
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing immutable release tag, for example v0.2.0rc1"
+        required: true
+        type: string
+
+# A second run for the same tag must wait for the first run and must not replace
+# an artifact or draft release created by it.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+# Quality and package-building steps only read the repository. The release job
+# below is the only job that needs to create a GitHub draft release.
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out the requested tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install the frozen uv toolchain
+        run: python -m pip install --disable-pip-version-check "uv==0.6.14"
+
+      - name: Validate tag, version, and default-branch commit
+        id: source
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tomllib
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:a[0-9]+|b[0-9]+|rc[0-9]+)?", tag):
+              raise SystemExit(f"invalid release tag {tag!r}")
+
+          tag_commit = subprocess.check_output(
+              ["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"],
+              text=True,
+          ).strip()
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          subprocess.run(
+              [
+                  "git",
+                  "fetch",
+                  "--no-tags",
+                  "origin",
+                  f"refs/heads/{default_branch}:refs/remotes/origin/{default_branch}",
+              ],
+              check=True,
+          )
+          if subprocess.run(
+              ["git", "merge-base", "--is-ancestor", tag_commit, f"origin/{default_branch}"]
+          ).returncode:
+              raise SystemExit(
+                  f"tag {tag} points to {tag_commit}, which is not on {default_branch}"
+              )
+
+          with open("pyproject.toml", "rb") as project_file:
+              version = tomllib.load(project_file)["project"]["version"]
+          if tag != f"v{version}":
+              raise SystemExit(f"tag {tag} does not match pyproject.toml version {version}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"commit={tag_commit}\nversion={version}\n")
+          print(f"release {tag} resolves to {tag_commit}")
+          PY
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run all required checks for the tagged commit
+        run: |
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
+          uv run --no-sync ty check
+          if test -f src/goldenage/migration_validation.py; then
+            uv run --no-sync python -m goldenage.migration_validation
+          fi
+          uv run --no-sync pytest -q
+
+  package:
+    name: package-and-draft
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_COMMIT: ${{ needs.quality.outputs.commit }}
+      RELEASE_VERSION: ${{ needs.quality.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the exact quality-tested commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.quality.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install the frozen uv toolchain
+        run: python -m pip install --disable-pip-version-check "uv==0.6.14"
+
+      - name: Revalidate tag and source metadata before building
+        run: |
+          test "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          python - <<'PY'
+          import os
+          import tomllib
+
+          with open("pyproject.toml", "rb") as project_file:
+              version = tomllib.load(project_file)["project"]["version"]
+          if version != os.environ["RELEASE_VERSION"]:
+              raise SystemExit(f"source version {version} differs from quality output")
+          if os.environ["RELEASE_TAG"] != f"v{version}":
+              raise SystemExit("tag and source version differ")
+          PY
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Build wheel and source distribution
+        run: uv build --wheel --sdist --out-dir dist
+
+      - name: Validate distribution metadata and private-file exclusions
+        run: python scripts/check_distribution.py dist "$RELEASE_VERSION"
+
+      - name: Run clean wheel and source-distribution smoke tests
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          sdist="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          wheel_env="$RUNNER_TEMP/goldenage-wheel-smoke"
+          sdist_env="$RUNNER_TEMP/goldenage-sdist-smoke"
+          python -m venv "$wheel_env"
+          python -m venv "$sdist_env"
+          "$wheel_env/bin/python" -m pip install --disable-pip-version-check --no-deps "$wheel"
+          "$sdist_env/bin/python" -m pip install --disable-pip-version-check --no-deps "$sdist"
+          "$wheel_env/bin/python" -I -c 'import importlib.metadata; import goldenage; assert importlib.metadata.version("goldenage") == "'"$RELEASE_VERSION"'"'
+          "$sdist_env/bin/python" -I -c 'import importlib.metadata; import goldenage; assert importlib.metadata.version("goldenage") == "'"$RELEASE_VERSION"'"'
+
+      - name: Generate checksums and release notes
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          sdist="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          sha256sum "$wheel" "$sdist" > dist/SHA256SUMS
+          sha256sum --check dist/SHA256SUMS
+          python - "$RELEASE_VERSION" "$RELEASE_COMMIT" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          version, commit = sys.argv[1:]
+          lines = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          heading = f"## [{version}]"
+          try:
+              start = lines.index(heading)
+          except ValueError as error:
+              raise SystemExit(f"CHANGELOG.md has no {heading} section") from error
+          section = []
+          for line in lines[start:]:
+              if section and line.startswith("## "):
+                  break
+              section.append(line)
+          notes = [
+              f"# GoldenAge {version}",
+              "",
+              f"- Tag: `{os.environ['RELEASE_TAG']}`",
+              f"- Source commit: [`{commit}`](https://github.com/{os.environ['GITHUB_REPOSITORY']}/commit/{commit})",
+              "- Toolchain: Python 3.14 with locked uv 0.6.14",
+              "- Distribution checks: quality, metadata, install/import smoke tests, and SHA-256 verification",
+              "",
+              *section,
+          ]
+          Path("release-notes.md").write_text("\n".join(notes).rstrip() + "\n", encoding="utf-8")
+          PY
+
+      - name: Refuse to replace an existing release
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::a GitHub release already exists for $RELEASE_TAG; refusing to overwrite it"
+            exit 1
+          fi
+
+      - name: Create the GitHub draft release
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          sdist="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          gh release create "$RELEASE_TAG" "$wheel" "$sdist" dist/SHA256SUMS \
+            --draft \
+            --verify-tag \
+            --title "GoldenAge $RELEASE_VERSION" \
+            --notes-file release-notes.md

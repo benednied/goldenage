@@ -2,6 +2,11 @@
 
 GoldenAge is a focused web application for operational case work. The current implementation slice ships the daily worklist, case-detail workflow, manual Outlook `.msg` intake, optional Windows classic Outlook mailbox intake, single-case assignment suggestion, and fallback search flow behind clean architecture boundaries.
 
+The package version is maintained in [`pyproject.toml`](pyproject.toml). See
+[`CHANGELOG.md`](CHANGELOG.md) for user-visible changes and
+[`docs/releasing.md`](docs/releasing.md) for the versioning and draft-release
+process.
+
 ## What Exists
 
 - Daily worklist with overdue/today prioritization
@@ -253,6 +258,8 @@ uv run --extra dev ruff format .
 ## Repository Guide
 
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): local setup, checks, and the contribution workflow
+- [`CHANGELOG.md`](CHANGELOG.md): user-visible changes and release sections
+- [`docs/releasing.md`](docs/releasing.md): versioning and draft-release runbook
 - [Bug report form](.github/ISSUE_TEMPLATE/bug_report.yml) and [feature request form](.github/ISSUE_TEMPLATE/feature_request.yml): start a reproducible report or a product request
 - [Pull-request template](.github/pull_request_template.md): review information for proposed changes
 - [`docs/README.md`](docs/README.md): documentation index
