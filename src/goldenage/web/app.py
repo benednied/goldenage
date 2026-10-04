@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import time as time_module
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
@@ -15,7 +16,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
 
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
@@ -77,6 +78,10 @@ from goldenage.web.upload_security import (
 BASE_DIR = Path(__file__).resolve().parent
 UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
 AUTH_COOKIE_NAME = "goldenage_session"
+CSRF_COOKIE_NAME = "goldenage_csrf"
+CSRF_FIELD_NAME = "csrf_token"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+COOKIE_HTTPONLY = True
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
@@ -105,6 +110,14 @@ def create_app() -> FastAPI:
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
+
+    @app.middleware("http")
+    async def csrf_cookie_middleware(request: Request, call_next):
+        response = await call_next(request)
+        token = getattr(request.state, "csrf_token", None)
+        if token is not None:
+            _set_csrf_cookie(response, token, settings=settings)
+        return response
 
     @app.on_event("startup")
     async def startup_event() -> None:
@@ -151,6 +164,7 @@ def create_app() -> FastAPI:
         email: str = Form(default=""),
         password: str = Form(default=""),
     ) -> HTMLResponse:
+        await _require_csrf(request, settings=settings)
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         local_user_repository = context.local_user_repository
@@ -165,11 +179,12 @@ def create_app() -> FastAPI:
                 status_code=401,
             )
         response = RedirectResponse(url="/worklist", status_code=303)
-        _set_auth_cookie(response, account.id, settings=settings)
+        _set_auth_cookie(response, account.id, password_hash=account.password_hash, settings=settings)
         return response
 
     @app.post("/login/ldap", response_class=HTMLResponse)
     async def login_ldap(request: Request) -> HTMLResponse:
+        await _require_csrf(request, settings=settings)
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -178,12 +193,14 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/logout", response_class=HTMLResponse)
-    async def logout() -> RedirectResponse:
+    async def logout(request: Request) -> RedirectResponse:
+        await _require_csrf(request, settings=settings)
         response = RedirectResponse(
             url="/login" if settings.use_local_first_sqlite else "/worklist",
             status_code=303,
         )
-        response.delete_cookie(AUTH_COOKIE_NAME)
+        _delete_auth_cookie(response, settings=settings)
+        _delete_csrf_cookie(response, settings=settings)
         return response
 
     @app.get("/onboarding", response_class=HTMLResponse)
@@ -202,12 +219,12 @@ def create_app() -> FastAPI:
     async def create_onboarding_user(
         request: Request,
     ) -> HTMLResponse:
+        form = await _require_csrf(request, settings=settings, limits=upload_limits)
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         if _current_user(context, request=request) is not None:
             return RedirectResponse(url="/worklist", status_code=302)
 
-        form = await _bounded_form(request, upload_limits)
         display_name = str(form.get("display_name", ""))
         email = str(form.get("email", ""))
         password = str(form.get("password", ""))
@@ -267,7 +284,7 @@ def create_app() -> FastAPI:
             profile_image_path=profile_image_path,
         )
         response = RedirectResponse(url="/worklist", status_code=303)
-        _set_auth_cookie(response, account.id, settings=settings)
+        _set_auth_cookie(response, account.id, password_hash=account.password_hash, settings=settings)
         return response
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -294,6 +311,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             selector = MailSelector(
@@ -340,6 +358,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             mail_import_state = context.service.search_mail_candidates(
@@ -381,6 +400,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             intake_state = context.service.import_mail_candidate(
@@ -424,6 +444,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         repository = context.local_user_repository
         message = "Password changes are available only for LocalDB accounts."
@@ -524,6 +545,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             detail = context.service.resolve_activity(
@@ -577,8 +599,8 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        form = await _require_csrf(request, settings=settings, limits=context.upload_limits)
         user = _require_current_user(context, request=request)
-        form = await _bounded_form(request, context.upload_limits)
         file = form.get("file")
         if not isinstance(file, UploadFile):
             return _upload_error_response(request, context, user, "Select a file before uploading.")
@@ -613,6 +635,7 @@ def create_app() -> FastAPI:
     async def reject_suggestion(request: Request, artifact_id: str) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         intake_state = context.service.get_intake_state(
             artifact_id=_uuid(artifact_id),
@@ -658,6 +681,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         intake_state = context.service.search_cases_for_artifact(
             artifact_id=_uuid(artifact_id),
@@ -683,6 +707,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             detail = context.service.assign_artifact_to_case(
@@ -747,6 +772,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             detail = context.service.create_case_for_artifact(

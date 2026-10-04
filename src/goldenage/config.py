@@ -7,7 +7,9 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-_GENERATED_AUTH_SECRET = secrets.token_urlsafe(32)
+_DEVELOPMENT_AUTH_SECRET = secrets.token_urlsafe(32)
+_DEFAULT_AUTH_SESSION_MAX_AGE = 8 * 60 * 60
+_VALID_ENVIRONMENTS = {"development", "production"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,11 @@ class Settings:
     apple_mail_fixture_path: Path | None
     auth_secret: str
     auth_cookie_secure: bool
+    environment: str = "development"
+    auth_cookie_domain: str | None = None
+    auth_cookie_path: str = "/"
+    auth_cookie_samesite: str = "lax"
+    auth_session_max_age: int = _DEFAULT_AUTH_SESSION_MAX_AGE
 
     @property
     def use_local_first_sqlite(self) -> bool:
@@ -41,6 +48,16 @@ def load_settings() -> Settings:
     """Load settings from environment."""
     if os.environ.get("GOLDENAGE_DISABLE_DOTENV") != "1":
         _load_dotenv(Path.cwd() / ".env")
+    environment = _environment()
+    auth_secret = _auth_secret(environment)
+    auth_cookie_samesite = os.environ.get("GOLDENAGE_AUTH_COOKIE_SAMESITE", "lax").strip().lower()
+    if auth_cookie_samesite not in {"lax", "strict", "none"}:
+        raise RuntimeError(
+            "GOLDENAGE_AUTH_COOKIE_SAMESITE must be one of: lax, strict, none."
+        )
+    auth_cookie_path = os.environ.get("GOLDENAGE_AUTH_COOKIE_PATH", "/").strip() or "/"
+    if not auth_cookie_path.startswith("/"):
+        raise RuntimeError("GOLDENAGE_AUTH_COOKIE_PATH must start with '/'.")
     artifact_dir = Path(os.environ.get("GOLDENAGE_ARTIFACT_DIR", "var/artifacts"))
     local_first_mode = os.environ.get("GOLDENAGE_LOCAL_FIRST_MODE") or os.environ.get(
         "GOLDENAGE_LOCAL_FIRST_DB"
@@ -69,9 +86,60 @@ def load_settings() -> Settings:
             if (raw_path := os.environ.get("GOLDENAGE_APPLE_MAIL_FIXTURE_PATH"))
             else None
         ),
-        auth_secret=os.environ.get("GOLDENAGE_AUTH_SECRET", _GENERATED_AUTH_SECRET),
-        auth_cookie_secure=_env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
+        auth_secret=auth_secret,
+        auth_cookie_secure=environment == "production" or _env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
+        environment=environment,
+        auth_cookie_domain=os.environ.get("GOLDENAGE_AUTH_COOKIE_DOMAIN") or None,
+        auth_cookie_path=auth_cookie_path,
+        auth_cookie_samesite=auth_cookie_samesite,
+        auth_session_max_age=_env_int(
+            "GOLDENAGE_AUTH_SESSION_MAX_AGE",
+            _DEFAULT_AUTH_SESSION_MAX_AGE,
+        ),
     )
+
+
+def _environment() -> str:
+    """Return the explicitly selected runtime environment."""
+    value = (
+        os.environ.get("GOLDENAGE_ENVIRONMENT")
+        or os.environ.get("GOLDENAGE_ENV")
+        or "development"
+    ).strip().lower()
+    if value not in _VALID_ENVIRONMENTS:
+        choices = ", ".join(sorted(_VALID_ENVIRONMENTS))
+        raise RuntimeError(f"GOLDENAGE_ENVIRONMENT must be one of: {choices}.")
+    return value
+
+
+def _auth_secret(environment: str) -> str:
+    """Return the configured auth secret, with a development-only fallback."""
+    configured = os.environ.get("GOLDENAGE_AUTH_SECRET")
+    if configured is None or not configured.strip():
+        if environment == "production":
+            raise RuntimeError(
+                "GOLDENAGE_AUTH_SECRET must be set to a persistent random value in production."
+            )
+        return _DEVELOPMENT_AUTH_SECRET
+
+    secret = configured.strip()
+    if environment == "production" and not _is_suitable_production_secret(secret):
+        raise RuntimeError(
+            "GOLDENAGE_AUTH_SECRET must contain at least 32 characters in production."
+        )
+    return secret
+
+
+def _is_suitable_production_secret(value: str) -> bool:
+    """Return whether a production secret is sufficiently difficult to guess."""
+    lowered = value.lower()
+    placeholders = {
+        "change-me",
+        "changeme",
+        "replace-with-a-long-random-local-secret",
+        "replace-with-a-long-random-production-secret",
+    }
+    return len(value) >= 32 and lowered not in placeholders
 
 
 def _env_flag(name: str) -> bool:
