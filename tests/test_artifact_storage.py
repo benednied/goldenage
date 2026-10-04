@@ -2,11 +2,14 @@
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 
+from goldenage.adapters import artifact_storage
 from goldenage.adapters.artifact_storage import LocalArtifactStore
 
 
@@ -228,3 +231,105 @@ def test_stalled_write_fails_and_removes_file(tmp_path: Path, monkeypatch) -> No
     with pytest.raises(OSError, match="no progress"):
         LocalArtifactStore(tmp_path).store(uuid4(), "mail.msg", b"content")
     assert list(tmp_path.iterdir()) == []
+
+
+class _FakeWindowsHandle:
+    def __init__(self, path: str, closed: list[str]) -> None:
+        self.path = path
+        self._closed = closed
+
+    def Close(self) -> None:
+        self._closed.append(self.path)
+
+
+class _FakeWindowsFile:
+    def __init__(self, attributes: int) -> None:
+        self.attributes = attributes
+        self.paths: list[str] = []
+        self.closed: list[str] = []
+
+    def CreateFile(self, path: str, *args: object) -> _FakeWindowsHandle:
+        del args
+        self.paths.append(path)
+        return _FakeWindowsHandle(path, self.closed)
+
+    def GetFileInformationByHandle(self, handle: _FakeWindowsHandle) -> tuple[int]:
+        del handle
+        return (self.attributes,)
+
+
+def _fake_windows_modules(monkeypatch, attributes: int) -> _FakeWindowsFile:
+    win32file = _FakeWindowsFile(attributes)
+    win32con = SimpleNamespace(
+        FILE_READ_ATTRIBUTES=1,
+        FILE_SHARE_READ=2,
+        OPEN_EXISTING=3,
+        FILE_FLAG_BACKUP_SEMANTICS=4,
+        FILE_FLAG_OPEN_REPARSE_POINT=8,
+        FILE_ATTRIBUTE_REPARSE_POINT=16,
+        FILE_ATTRIBUTE_DIRECTORY=32,
+    )
+    modules = {"win32file": win32file, "win32con": win32con}
+    monkeypatch.setattr(artifact_storage.importlib, "import_module", modules.__getitem__)
+    return win32file
+
+
+def test_windows_root_is_pinned_with_fake_handles(monkeypatch) -> None:
+    win32file = _fake_windows_modules(monkeypatch, attributes=32)
+    mkdir_calls: list[str] = []
+
+    def mkdir(path: Path, **kwargs: object) -> None:
+        del kwargs
+        mkdir_calls.append(str(path))
+        if len(mkdir_calls) == 1:
+            raise FileExistsError
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    root = Path("/fake/nested/artifacts")
+    with artifact_storage._locked_windows_root(root, create=True):
+        pass
+
+    assert len(win32file.paths) == 4
+    assert win32file.closed == list(reversed(win32file.paths))
+    assert len(mkdir_calls) == 3
+
+
+def test_windows_open_root_delegates_to_locked_context(monkeypatch) -> None:
+    calls: list[tuple[Path, bool]] = []
+
+    @contextmanager
+    def fake_locked_root(root: Path, *, create: bool):
+        calls.append((root, create))
+        yield
+
+    root = Path("/fake/artifacts")
+    monkeypatch.setattr(artifact_storage, "_locked_windows_root", fake_locked_root)
+    monkeypatch.setattr(artifact_storage.os, "name", "nt")
+    store = object.__new__(LocalArtifactStore)
+    store._root = root
+
+    with store._open_root(create=True) as root_fd:
+        assert root_fd is None
+
+    assert calls == [(root, True)]
+
+
+def test_windows_root_rejects_reparse_points(monkeypatch) -> None:
+    win32con_reparse = 16
+    win32file = _fake_windows_modules(monkeypatch, attributes=win32con_reparse)
+
+    with pytest.raises(OSError, match="reparse point"):
+        with artifact_storage._locked_windows_root(Path("C:/artifacts"), create=False):
+            pass
+
+    assert win32file.closed == [win32file.paths[0]]
+
+
+def test_windows_root_rejects_non_directories(monkeypatch) -> None:
+    win32file = _fake_windows_modules(monkeypatch, attributes=0)
+
+    with pytest.raises(NotADirectoryError, match="/"):
+        with artifact_storage._locked_windows_root(Path("/fake/artifacts"), create=False):
+            pass
+
+    assert win32file.closed == [win32file.paths[0]]

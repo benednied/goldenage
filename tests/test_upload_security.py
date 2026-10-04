@@ -314,6 +314,14 @@ def test_png_parser_rejects_truncated_chunks_formats_checksums_and_zlib() -> Non
     with pytest.raises(HTTPException, match="valid PNG"):
         normalize_profile_png(invalid_zlib, limits=UploadLimits())
 
+    no_iend = (
+        signature
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(b"\0\0\0\0"))
+    )
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(no_iend, limits=UploadLimits())
+
 
 def test_upload_limit_environment_falls_back_for_invalid_values(monkeypatch) -> None:
     monkeypatch.setenv("GOLDENAGE_UPLOAD_REQUEST_BYTES", "not-an-integer")

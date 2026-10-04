@@ -9,7 +9,9 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from goldenage.config import Settings
 from goldenage.domain.models import CaseFile, LocalUserAccount, UserContext
@@ -718,6 +720,52 @@ def test_build_context_postgres_and_required_sqlite_path(monkeypatch, tmp_path) 
         web_app._build_context(missing_sqlite_settings)
 
 
+def test_login_renders_without_a_local_repository(monkeypatch, tmp_path) -> None:
+    original_build_context = web_app._build_context
+    rendered: dict[str, object] = {}
+    marker = object()
+
+    def build_context_without_local_repository(settings):
+        return replace(original_build_context(settings), local_user_repository=None)
+
+    def fake_template_response(*, request, name, context):
+        rendered.update(request=request, name=name, context=context)
+        return marker
+
+    monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
+    monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
+    monkeypatch.setattr(web_app, "LocalArtifactStore", lambda root: object())
+    monkeypatch.setattr(web_app, "_build_context", build_context_without_local_repository)
+    monkeypatch.setattr(web_app.templates, "TemplateResponse", fake_template_response)
+
+    app = web_app.create_app()
+    route = next(
+        route for route in app.routes if isinstance(route, APIRoute) and route.path == "/login"
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/login",
+            "raw_path": b"/login",
+            "root_path": "",
+            "scheme": "http",
+            "query_string": b"",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "http_version": "1.1",
+            "app": app,
+            "router": app.router,
+        }
+    )
+
+    response = asyncio.run(route.endpoint(request))
+
+    assert response is marker
+    assert rendered["name"] == "login.html"
+
+
 def test_outlook_ingest_callback_skips_when_no_repository_user(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -786,6 +834,16 @@ def test_bounded_form_translates_parser_limits() -> None:
             )
         )
     assert unrelated_result.value is unrelated_error
+
+    non_400_error = HTTPException(status_code=413, detail="too large")
+    with pytest.raises(HTTPException) as non_400_result:
+        asyncio.run(
+            web_app._bounded_form(
+                FailingRequest(non_400_error),  # ty:ignore[invalid-argument-type]
+                limits,
+            )
+        )
+    assert non_400_result.value is non_400_error
 
 
 def _settings(
