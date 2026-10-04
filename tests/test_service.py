@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -142,8 +143,11 @@ def build_service(
 
 
 def test_today_worklist_contains_overdue_and_later_today_but_not_tomorrow(tmp_path) -> None:
-    service, user, _ = build_service(tmp_path)
-    current_day = datetime.now(UTC).date()
+    fixture_now = datetime(2026, 10, 4, 12, tzinfo=UTC)
+    with patch("goldenage.adapters.demo.datetime", wraps=datetime) as clock:
+        clock.now.return_value = fixture_now
+        service, user, _ = build_service(tmp_path)
+    current_day = fixture_now.date()
     end_of_day = datetime.combine(current_day, datetime.max.time(), tzinfo=UTC)
 
     items = service.get_today_worklist(user=user, now=end_of_day)
