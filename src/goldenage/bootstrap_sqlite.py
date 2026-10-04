@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from goldenage.config import load_settings
+from goldenage.resource_paths import SchemaPath, migration_paths, read_resource_text
 
 
 def main() -> None:
@@ -19,8 +20,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--schema-path",
-        default="sql/sqlite",
-        help="Path to a SQLite migration directory or a single schema SQL file.",
+        default=None,
+        type=Path,
+        help=(
+            "Path to a SQLite migration directory or a single schema SQL file. "
+            "Defaults to migrations bundled in the installed package."
+        ),
     )
     args = parser.parse_args()
 
@@ -29,7 +34,7 @@ def main() -> None:
     if raw_path is None:
         raise SystemExit("GOLDENAGE_SQLITE_PATH is not configured.")
 
-    ensure_sqlite_bootstrapped(Path(raw_path), Path(args.schema_path))
+    ensure_sqlite_bootstrapped(Path(raw_path), args.schema_path)
 
 
 def ensure_sqlite_bootstrapped(database_path: Path, schema_path: Path | None = None) -> None:
@@ -37,8 +42,7 @@ def ensure_sqlite_bootstrapped(database_path: Path, schema_path: Path | None = N
     target = database_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.touch(exist_ok=True)
-    migration_root = schema_path or (Path.cwd() / "sql" / "sqlite")
-    sql_paths = _schema_paths(migration_root)
+    sql_paths = _schema_paths(schema_path)
 
     with sqlite3.connect(target) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
@@ -57,7 +61,7 @@ def ensure_sqlite_bootstrapped(database_path: Path, schema_path: Path | None = N
             ).fetchone()
             if row is not None:
                 continue
-            connection.executescript(sql_path.read_text(encoding="utf-8"))
+            connection.executescript(read_resource_text(sql_path))
             connection.execute(
                 "INSERT INTO schema_migration (name) VALUES (?)",
                 (sql_path.name,),
@@ -65,10 +69,9 @@ def ensure_sqlite_bootstrapped(database_path: Path, schema_path: Path | None = N
         connection.commit()
 
 
-def _schema_paths(schema_path: Path) -> list[Path]:
-    if schema_path.is_dir():
-        return sorted(schema_path.glob("*.sql"))
-    return [schema_path]
+def _schema_paths(schema_path: Path | None = None) -> list[SchemaPath]:
+    """Return SQLite migrations from an override or bundled package resources."""
+    return migration_paths(schema_path, "sqlite")
 
 
 if __name__ == "__main__":  # pragma: no cover

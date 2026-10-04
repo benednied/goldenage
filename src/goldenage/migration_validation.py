@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import re
 from dataclasses import dataclass
+from importlib.resources.abc import Traversable
 from pathlib import Path
+
+from goldenage.resource_paths import bundled_migration_directory
 
 MIGRATION_FILENAME = re.compile(r"(?P<id>[0-9]{4})_(?P<description>[a-z][a-z0-9_]*)\.sql$")
 
@@ -54,7 +57,10 @@ class MigrationValidationError(ValueError):
     """Raised when migration filenames do not comply with the repository contract."""
 
 
-def validate_migration_directory(directory: Path, namespace: MigrationNamespace) -> None:
+def validate_migration_directory(
+    directory: Path | Traversable,
+    namespace: MigrationNamespace,
+) -> None:
     """Validate one dialect's historical baseline and any subsequent migrations."""
     paths = sorted(path for path in directory.iterdir() if path.is_file())
     names = {path.name for path in paths}
@@ -99,9 +105,19 @@ def validate_migration_directory(directory: Path, namespace: MigrationNamespace)
 
 
 def validate_repository_migrations(repository_root: Path) -> None:
-    """Validate both database-specific migration namespaces in a repository."""
+    """Validate both migration namespaces from a checkout or installed package."""
     for namespace in NAMESPACES:
-        validate_migration_directory(repository_root / namespace.directory, namespace)
+        directory = repository_root / namespace.directory
+        if not directory.is_dir():
+            packaged_directory = repository_root / "src" / "goldenage" / "resources" / "sql"
+            if namespace is SQLITE_NAMESPACE:
+                packaged_directory /= "sqlite"
+            directory = packaged_directory
+        if directory.is_dir():
+            validate_migration_directory(directory, namespace)
+        else:
+            dialect = "sqlite" if namespace is SQLITE_NAMESPACE else "postgres"
+            validate_migration_directory(bundled_migration_directory(dialect), namespace)
 
 
 def main() -> None:

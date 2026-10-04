@@ -84,8 +84,11 @@ GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3 \
 ./.venv/bin/python -m goldenage.bootstrap_sqlite
 ```
 
-The bootstrap creates `var/` and applies `sql/sqlite/` migrations. App startup also
-applies outstanding SQLite migrations, so the bootstrap command is safe to repeat.
+The bootstrap creates `var/` and applies the SQLite migrations bundled in the
+GoldenAge package. App startup also applies outstanding SQLite migrations, so the
+bootstrap command is safe to repeat from any working directory. Use
+`--schema-path` only when an explicit external migration directory or SQL file is
+required.
 Start the server with the same command as demo mode and open
 <http://127.0.0.1:8000/worklist>. It serves profile images from the local artifact
 directory, replaces the fixed `Alex Example` user with a first-user onboarding flow,
@@ -201,16 +204,17 @@ Troubleshooting:
 
 In PostgreSQL mode, that command:
 
-- applies SQL migrations in [`sql/`](sql)
+- applies the PostgreSQL migrations bundled in the installed GoldenAge package
 - seeds the fixed demo user
 - seeds the baseline cases and activities used by the first slice
 
 ## Creating Migrations
 
-PostgreSQL migrations live in [`sql/`](sql); SQLite migrations live in
-[`sql/sqlite/`](sql/sqlite). They are separate namespaces, but each uses the format
-`NNNN_lowercase_description.sql` and a unique next ID. Check the target branch directly
-before creating or merging a migration, then run:
+PostgreSQL migrations live in [`src/goldenage/resources/sql/`](src/goldenage/resources/sql);
+SQLite migrations live in [`src/goldenage/resources/sql/sqlite/`](src/goldenage/resources/sql/sqlite).
+They are separate namespaces, but each uses the format `NNNN_lowercase_description.sql`
+and a unique next ID. Check the target branch directly before creating or merging a
+migration, then run:
 
 ```bash
 ./.venv/bin/python -m goldenage.migration_validation
@@ -232,6 +236,7 @@ uv run --extra dev ty check
 ./.venv/bin/python -m goldenage.migration_validation
 ./.venv/bin/python -m compileall src tests
 ./.venv/bin/pytest -q
+uv build
 ```
 
 ## Continuous Integration

@@ -1,10 +1,12 @@
 import sqlite3
+from importlib.resources import as_file
 from pathlib import Path
 from shutil import copytree
 
 import pytest
 
 from goldenage import bootstrap_sqlite
+from goldenage.resource_paths import bundled_migration_directory
 
 
 def test_schema_paths_returns_sorted_directory_sql_and_single_file(tmp_path) -> None:
@@ -43,8 +45,8 @@ def test_ensure_sqlite_bootstrapped_applies_each_migration_once(tmp_path) -> Non
 
 
 def test_ensure_sqlite_bootstrapped_preserves_historical_names_when_upgrading(tmp_path) -> None:
-    repository_root = Path(__file__).parents[1]
-    schema_dir = copytree(repository_root / "sql" / "sqlite", tmp_path / "schema")
+    with as_file(bundled_migration_directory("sqlite")) as bundled_directory:
+        schema_dir = copytree(bundled_directory, tmp_path / "schema")
     database_path = tmp_path / "goldenage.sqlite3"
 
     bootstrap_sqlite.ensure_sqlite_bootstrapped(database_path, schema_dir)

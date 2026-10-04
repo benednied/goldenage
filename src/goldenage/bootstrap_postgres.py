@@ -8,6 +8,7 @@ from pathlib import Path
 
 from goldenage.adapters.demo import build_demo_state
 from goldenage.config import load_settings
+from goldenage.resource_paths import SchemaPath, migration_paths, read_resource_text
 
 try:
     import psycopg
@@ -25,8 +26,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--schema-path",
-        default="sql",
-        help="Path to a SQL migration directory or a single schema SQL file.",
+        default=None,
+        type=Path,
+        help=(
+            "Path to a SQL migration directory or a single schema SQL file. "
+            "Defaults to migrations bundled in the installed package."
+        ),
     )
     parser.add_argument(
         "--seed-demo",
@@ -40,12 +45,12 @@ def main() -> None:
     if not dsn:
         raise SystemExit("DATABASE_URL is not configured.")
 
-    apply_schema(dsn, Path(args.schema_path))
+    apply_schema(dsn, args.schema_path)
     if args.seed_demo:
         seed_demo_data(dsn)
 
 
-def apply_schema(dsn: str, schema_path: Path) -> None:
+def apply_schema(dsn: str, schema_path: Path | None = None) -> None:
     """Apply bootstrap SQL files once."""
     sql_paths = _schema_paths(schema_path)
     with psycopg.connect(dsn) as connection:
@@ -65,7 +70,7 @@ def apply_schema(dsn: str, schema_path: Path) -> None:
                 )
                 if cursor.fetchone() is not None:
                     continue
-                cursor.execute(sql_path.read_text(encoding="utf-8"))
+                cursor.execute(read_resource_text(sql_path))
                 cursor.execute(
                     "INSERT INTO schema_migration (name) VALUES (%(name)s)",
                     {"name": sql_path.name},
@@ -73,10 +78,9 @@ def apply_schema(dsn: str, schema_path: Path) -> None:
         connection.commit()
 
 
-def _schema_paths(schema_path: Path) -> list[Path]:
-    if schema_path.is_dir():
-        return sorted(schema_path.glob("*.sql"))
-    return [schema_path]
+def _schema_paths(schema_path: Path | None = None) -> list[SchemaPath]:
+    """Return PostgreSQL migrations from an override or bundled package resources."""
+    return migration_paths(schema_path, "postgres")
 
 
 def seed_demo_data(dsn: str) -> None:
