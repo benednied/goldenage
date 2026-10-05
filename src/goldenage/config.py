@@ -52,12 +52,20 @@ def load_settings() -> Settings:
     auth_secret = _auth_secret(environment)
     auth_cookie_samesite = os.environ.get("GOLDENAGE_AUTH_COOKIE_SAMESITE", "lax").strip().lower()
     if auth_cookie_samesite not in {"lax", "strict", "none"}:
-        raise RuntimeError(
-            "GOLDENAGE_AUTH_COOKIE_SAMESITE must be one of: lax, strict, none."
-        )
+        raise RuntimeError("GOLDENAGE_AUTH_COOKIE_SAMESITE must be one of: lax, strict, none.")
     auth_cookie_path = os.environ.get("GOLDENAGE_AUTH_COOKIE_PATH", "/").strip() or "/"
     if not auth_cookie_path.startswith("/"):
         raise RuntimeError("GOLDENAGE_AUTH_COOKIE_PATH must start with '/'.")
+    auth_cookie_domain = os.environ.get("GOLDENAGE_AUTH_COOKIE_DOMAIN") or None
+    if auth_cookie_domain is not None:
+        auth_cookie_domain = auth_cookie_domain.strip() or None
+        if auth_cookie_domain and any(character.isspace() for character in auth_cookie_domain):
+            raise RuntimeError("GOLDENAGE_AUTH_COOKIE_DOMAIN must not contain whitespace.")
+    auth_cookie_secure = environment == "production" or _env_flag("GOLDENAGE_AUTH_COOKIE_SECURE")
+    if auth_cookie_samesite == "none" and not auth_cookie_secure:
+        raise RuntimeError(
+            "GOLDENAGE_AUTH_COOKIE_SAMESITE=none requires secure authentication cookies."
+        )
     artifact_dir = Path(os.environ.get("GOLDENAGE_ARTIFACT_DIR", "var/artifacts"))
     local_first_mode = os.environ.get("GOLDENAGE_LOCAL_FIRST_MODE") or os.environ.get(
         "GOLDENAGE_LOCAL_FIRST_DB"
@@ -87,9 +95,9 @@ def load_settings() -> Settings:
             else None
         ),
         auth_secret=auth_secret,
-        auth_cookie_secure=environment == "production" or _env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
+        auth_cookie_secure=auth_cookie_secure,
         environment=environment,
-        auth_cookie_domain=os.environ.get("GOLDENAGE_AUTH_COOKIE_DOMAIN") or None,
+        auth_cookie_domain=auth_cookie_domain,
         auth_cookie_path=auth_cookie_path,
         auth_cookie_samesite=auth_cookie_samesite,
         auth_session_max_age=_env_int(
@@ -102,10 +110,14 @@ def load_settings() -> Settings:
 def _environment() -> str:
     """Return the explicitly selected runtime environment."""
     value = (
-        os.environ.get("GOLDENAGE_ENVIRONMENT")
-        or os.environ.get("GOLDENAGE_ENV")
-        or "development"
-    ).strip().lower()
+        (
+            os.environ.get("GOLDENAGE_ENVIRONMENT")
+            or os.environ.get("GOLDENAGE_ENV")
+            or "development"
+        )
+        .strip()
+        .lower()
+    )
     if value not in _VALID_ENVIRONMENTS:
         choices = ", ".join(sorted(_VALID_ENVIRONMENTS))
         raise RuntimeError(f"GOLDENAGE_ENVIRONMENT must be one of: {choices}.")
@@ -136,10 +148,15 @@ def _is_suitable_production_secret(value: str) -> bool:
     placeholders = {
         "change-me",
         "changeme",
+        "generate-a-random-secret-at-least-32-characters-long",
         "replace-with-a-long-random-local-secret",
         "replace-with-a-long-random-production-secret",
     }
-    return len(value) >= 32 and lowered not in placeholders
+    if len(value) < 32 or lowered in placeholders:
+        return False
+    # A repeated or otherwise trivially structured value is not a useful
+    # signing key even when it happens to meet the length requirement.
+    return len(set(value)) >= 10
 
 
 def _env_flag(name: str) -> bool:

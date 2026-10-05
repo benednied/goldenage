@@ -48,6 +48,7 @@
           <input type="checkbox" name="skip_follow_up" />
           <span>Record that no follow-up is needed.</span>
         </label>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <button type="submit">Resolve with a clear next state</button>
       </form>
     </section>
