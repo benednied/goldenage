@@ -23,6 +23,7 @@ from goldenage.application.ports import (
 )
 from goldenage.domain.models import (
     Activity,
+    AgentExecutionContext,
     Artifact,
     ArtifactMailMetadata,
     AssignmentSuggestion,
@@ -259,6 +260,7 @@ class GoldenAgeService:
         next_due_at: datetime | None,
         close_case: bool,
         skip_follow_up: bool,
+        provenance: AgentExecutionContext | None = None,
     ) -> CaseDetail:
         """Resolve one due activity while enforcing a clear next state."""
         activity = self._activity_repository.get_activity(activity_id, user)
@@ -299,6 +301,7 @@ class GoldenAgeService:
                 ),
             },
             now=now,
+            provenance=provenance,
         )
 
         return self.get_case_detail(case_id=activity.case_id, user=user, now=now)
@@ -722,6 +725,7 @@ class GoldenAgeService:
         query: str,
         user: UserContext,
         now: datetime,
+        provenance: AgentExecutionContext | None = None,
     ) -> IntakeState:
         """Run the fallback search flow after suggestion rejection."""
         artifact = self._artifact_repository.get_artifact(artifact_id, user)
@@ -742,6 +746,7 @@ class GoldenAgeService:
             subject_id=artifact.id,
             payload={"query": query, "result_count": len(results)},
             now=now,
+            provenance=provenance,
         )
         return IntakeState(
             artifact=artifact,
@@ -761,6 +766,7 @@ class GoldenAgeService:
         next_due_at: datetime,
         user: UserContext,
         now: datetime,
+        provenance: AgentExecutionContext | None = None,
     ) -> CaseDetail:
         """Confirm an artifact assignment and create the next activity."""
         artifact = self._artifact_repository.get_artifact(artifact_id, user)
@@ -804,6 +810,7 @@ class GoldenAgeService:
             subject_id=artifact_id,
             payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
             now=now,
+            provenance=provenance,
         )
         return self.get_case_detail(case_id=case_id, user=user, now=now)
 
@@ -818,6 +825,7 @@ class GoldenAgeService:
         next_due_at: datetime,
         user: UserContext,
         now: datetime,
+        provenance: AgentExecutionContext | None = None,
     ) -> CaseDetail:
         """Create a case from an intake artifact and schedule its first step."""
         artifact = self._artifact_repository.get_artifact(artifact_id, user)
@@ -847,6 +855,7 @@ class GoldenAgeService:
             next_due_at=next_due_at,
             user=user,
             now=now,
+            provenance=provenance,
         )
 
     def _save_mail_thread(
@@ -922,6 +931,7 @@ class GoldenAgeService:
         subject_id: UUID,
         payload: dict[str, object],
         now: datetime,
+        provenance: AgentExecutionContext | None = None,
     ) -> None:
         self._audit_repository.save_event(
             AuditEvent(
@@ -931,6 +941,13 @@ class GoldenAgeService:
                 subject_id=subject_id,
                 payload_json=payload,
                 created_at=now,
+                actor_kind=provenance.actor_kind if provenance is not None else "user",
+                acting_user_id=(
+                    provenance.acting_user_id if provenance is not None else actor_user_id
+                ),
+                agent_name=provenance.agent_name if provenance is not None else None,
+                conversation_id=provenance.conversation_id if provenance is not None else None,
+                agent_run_id=provenance.agent_run_id if provenance is not None else None,
             )
         )
 

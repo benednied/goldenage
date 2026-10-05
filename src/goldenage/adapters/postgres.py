@@ -224,9 +224,21 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             FROM artifact a
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE a.id = %(artifact_id)s
+              AND (
+                  (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                  OR (a.assigned_case_id IS NOT NULL
+                      AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
         """
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(sql, {"artifact_id": artifact_id})
+            cursor.execute(
+                sql,
+                {
+                    "artifact_id": artifact_id,
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                },
+            )
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -524,13 +536,21 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             JOIN artifact a ON a.id = mm.artifact_id
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE mm.conversation_id = %(conversation_id)s
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+              AND (
+                  (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                  OR (a.assigned_case_id IS NOT NULL
+                      AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
             ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 sql,
-                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                },
             )
             return tuple(_row_to_artifact(row) for row in cursor.fetchall())
 
@@ -614,9 +634,12 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
     def save_event(self, event: AuditEvent) -> None:
         sql = """
             INSERT INTO audit_event (
-                id, actor_user_id, event_type, subject_id, payload_json, created_at
+                id, actor_user_id, event_type, subject_id, payload_json, created_at,
+                actor_kind, acting_user_id, agent_name, conversation_id, agent_run_id
             ) VALUES (
-                %(id)s, %(actor_user_id)s, %(event_type)s, %(subject_id)s, %(payload_json)s, %(created_at)s
+                %(id)s, %(actor_user_id)s, %(event_type)s, %(subject_id)s, %(payload_json)s,
+                %(created_at)s, %(actor_kind)s, %(acting_user_id)s, %(agent_name)s,
+                %(conversation_id)s, %(agent_run_id)s
             )
         """
         payload = asdict(event)

@@ -9,6 +9,10 @@ from uuid import UUID
 
 from goldenage.domain.models import (
     Activity,
+    AgentConversation,
+    AgentMessage,
+    AgentRun,
+    AgentToolCall,
     Artifact,
     ArtifactMailMetadata,
     AssignmentSuggestion,
@@ -145,6 +149,62 @@ class AuditRepository(Protocol):
 
     def save_event(self, event: AuditEvent) -> None:
         """Persist an audit event."""
+
+
+class AgentRepository(Protocol):
+    """Persistence boundary for user-scoped Gisela conversations and executions."""
+
+    def save_conversation(self, conversation: AgentConversation) -> None:
+        """Persist a conversation owned by one acting user."""
+
+    def get_conversation(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> AgentConversation | None:
+        """Return a conversation only when it belongs to the acting user."""
+
+    def list_conversations(
+        self,
+        user: UserContext,
+        *,
+        limit: int = 25,
+    ) -> Sequence[AgentConversation]:
+        """Return the user's most recent conversations."""
+
+    def save_message(self, message: AgentMessage) -> None:
+        """Append or update one transcript message."""
+
+    def list_messages(
+        self,
+        conversation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[AgentMessage]:
+        """Return transcript entries after enforcing conversation ownership."""
+
+    def save_run(self, run: AgentRun) -> None:
+        """Persist an execution state transition."""
+
+    def get_run(self, run_id: UUID, user: UserContext) -> AgentRun | None:
+        """Return one execution if it belongs to the acting user."""
+
+    def list_runs(self, conversation_id: UUID, user: UserContext) -> Sequence[AgentRun]:
+        """Return runs linked to a visible conversation."""
+
+    def save_tool_call(self, tool_call: AgentToolCall) -> None:
+        """Persist a durable tool invocation and its result."""
+
+    def get_tool_call_by_idempotency(
+        self,
+        *,
+        conversation_id: UUID,
+        idempotency_key: str,
+        user: UserContext,
+    ) -> AgentToolCall | None:
+        """Return an existing invocation used as the retry fence."""
+
+    def list_tool_calls(self, run_id: UUID, user: UserContext) -> Sequence[AgentToolCall]:
+        """Return tool calls linked to one visible run."""
 
 
 class ArtifactStore(Protocol):

@@ -135,7 +135,9 @@ class InMemoryArtifactRepository(ArtifactRepository):
         if artifact is None:
             return None
         if artifact.assigned_case_id is None:
-            return artifact
+            if artifact.uploaded_by is None or artifact.uploaded_by == user.id:
+                return artifact
+            return None
         if self._case_repository.get_case(artifact.assigned_case_id, user) is None:
             return None
         return artifact
