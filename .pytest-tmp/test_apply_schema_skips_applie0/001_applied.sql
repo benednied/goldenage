@@ -1,0 +1,1 @@
+CREATE TABLE applied_test(id int)

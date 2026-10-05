@@ -46,6 +46,7 @@ from goldenage.adapters.postgres import (
     PostgresArtifactRepository,
     PostgresAuditRepository,
     PostgresCaseRepository,
+    PostgresUnitOfWork,
 )
 from goldenage.adapters.sqlite import (
     SQLiteActivityRepository,
@@ -54,6 +55,7 @@ from goldenage.adapters.sqlite import (
     SQLiteCaseRepository,
     SQLiteLocalUserRepository,
     SQLiteMailImportRepository,
+    SQLiteUnitOfWork,
 )
 from goldenage.application.use_cases import (
     CaseDetail,
@@ -808,22 +810,55 @@ def create_app() -> FastAPI:
 
 def _build_context(settings: Settings) -> AppContext:
     mail_import_repository = None
+    unit_of_work = None
     if settings.use_local_first_sqlite:
         if settings.sqlite_path is None:
             raise RuntimeError("GOLDENAGE_SQLITE_PATH must be set for local-first SQLite mode.")
         ensure_sqlite_bootstrapped(settings.sqlite_path)
-        case_repository = SQLiteCaseRepository(settings.sqlite_path)
-        activity_repository = SQLiteActivityRepository(settings.sqlite_path)
-        artifact_repository = SQLiteArtifactRepository(settings.sqlite_path)
-        audit_repository = SQLiteAuditRepository(settings.sqlite_path)
-        local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
-        mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
+        unit_of_work = SQLiteUnitOfWork(settings.sqlite_path)
+        case_repository = SQLiteCaseRepository(
+            settings.sqlite_path,
+            unit_of_work=unit_of_work,
+        )
+        activity_repository = SQLiteActivityRepository(
+            settings.sqlite_path,
+            unit_of_work=unit_of_work,
+        )
+        artifact_repository = SQLiteArtifactRepository(
+            settings.sqlite_path,
+            unit_of_work=unit_of_work,
+        )
+        audit_repository = SQLiteAuditRepository(
+            settings.sqlite_path,
+            unit_of_work=unit_of_work,
+        )
+        local_user_repository = SQLiteLocalUserRepository(
+            settings.sqlite_path,
+            unit_of_work=unit_of_work,
+        )
+        mail_import_repository = SQLiteMailImportRepository(
+            settings.sqlite_path,
+            unit_of_work=unit_of_work,
+        )
         default_user = None
     elif settings.database_url:
-        case_repository = PostgresCaseRepository(settings.database_url)
-        activity_repository = PostgresActivityRepository(settings.database_url)
-        artifact_repository = PostgresArtifactRepository(settings.database_url)
-        audit_repository = PostgresAuditRepository(settings.database_url)
+        unit_of_work = PostgresUnitOfWork(settings.database_url)
+        case_repository = PostgresCaseRepository(
+            settings.database_url,
+            unit_of_work=unit_of_work,
+        )
+        activity_repository = PostgresActivityRepository(
+            settings.database_url,
+            unit_of_work=unit_of_work,
+        )
+        artifact_repository = PostgresArtifactRepository(
+            settings.database_url,
+            unit_of_work=unit_of_work,
+        )
+        audit_repository = PostgresAuditRepository(
+            settings.database_url,
+            unit_of_work=unit_of_work,
+        )
         default_user = UserContext(
             id=_uuid("11111111-1111-1111-1111-111111111111"),
             email="alex@example.com",
@@ -859,6 +894,7 @@ def _build_context(settings: Settings) -> AppContext:
             outlook_scan_per_folder_limit=settings.outlook_scan_per_folder_limit,
         ),
         mail_import_repository=mail_import_repository,
+        unit_of_work=unit_of_work,
     )
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:
