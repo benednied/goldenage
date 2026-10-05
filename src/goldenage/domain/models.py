@@ -60,6 +60,49 @@ class CaseFile:
     status: CaseStatus
     last_activity_at: datetime
     visible_group_id: UUID | None = None
+    company_id: UUID | None = None
+    primary_contact_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Company:
+    """Accepted company master data, separate from mail-derived hints."""
+
+    id: UUID
+    name: str
+    normalized_name: str
+    created_at: datetime
+    updated_at: datetime
+    created_by: UUID | None = None
+    visible_group_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Contact:
+    """Accepted contact master data owned by one company."""
+
+    id: UUID
+    company_id: UUID
+    name: str
+    email: str | None
+    phone: str | None
+    normalized_email: str | None
+    created_at: datetime
+    updated_at: datetime
+    created_by: UUID | None = None
+    visible_group_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContactNote:
+    """Immutable, attributed note attached to a contact."""
+
+    id: UUID
+    contact_id: UUID
+    body: str
+    created_at: datetime
+    created_by: UUID
+    visible_group_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block body %}
+  {% set company = company_detail.company if company_detail else none %}
+  <header class="app-header"><div><p class="eyebrow">Company</p><h1>{{ company.name if company else "Company" }}</h1><p class="subhead">Contacts, linked cases, and explicit master-data updates.</p></div><div class="user-chip"><span class="avatar-placeholder">{{ user.display_name[:1]|upper }}</span><div class="user-copy"><span>{{ user.display_name }}</span><small>{{ user.email }}</small></div></div></header>
+  <nav class="app-nav" aria-label="Workspace navigation"><a href="/worklist">Worklist</a><a href="/companies">Companies</a><a href="/contacts">Contacts</a></nav>
+  {% if message %}<div class="message directory-message{% if message_kind == 'error' %} message-error{% endif %}">{{ message }}</div>{% endif %}
+  {% if company_detail %}
+    <main class="directory-layout">
+      <section class="panel directory-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Accepted record</p><h2>Company details</h2></div></div>
+        <form class="workflow-form" method="post" action="/companies/{{ company.id }}"><label>Name<input type="text" name="name" value="{{ company.name }}" required /></label><button type="submit">Save company</button></form>
+        <h3>Linked cases</h3>
+        {% if company_detail.cases %}<ul class="directory-list">{% for case in company_detail.cases %}<li><a href="/worklist?case_id={{ case.id }}"><strong>{{ case.title }}</strong><small>{{ case.status }} · {{ case.company or "legacy company text unavailable" }}</small></a></li>{% endfor %}</ul>{% else %}<p class="muted">No canonically linked cases yet.</p>{% endif %}
+      </section>
+      <section class="panel directory-panel">
+        <div class="panel-heading"><div><p class="eyebrow">People</p><h2>Contacts</h2></div><span class="count-badge">{{ company_detail.contacts|length }}</span></div>
+        {% if company_detail.contacts %}<ul class="directory-list">{% for contact in company_detail.contacts %}<li><a href="/contacts/{{ contact.id }}"><strong>{{ contact.name }}</strong><small>{{ contact.email or "No email" }}</small></a></li>{% endfor %}</ul>{% else %}<p class="muted">No contacts yet.</p>{% endif %}
+        <h3>Add contact</h3>
+        <form class="workflow-form" method="post" action="/companies/{{ company.id }}/contacts"><label>Name<input type="text" name="name" required /></label><label>Email<input type="email" name="email" /></label><label>Phone<input type="text" name="phone" /></label><button type="submit">Create contact</button></form>
+      </section>
+    </main>
+  {% else %}<p class="directory-message">Company not found.</p>{% endif %}
+{% endblock %}

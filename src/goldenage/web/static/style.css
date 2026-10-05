@@ -39,6 +39,98 @@ body {
   padding: 2.5rem 3rem 1.5rem;
 }
 
+.app-nav {
+  display: flex;
+  gap: 0.65rem;
+  padding: 0 3rem 1.5rem;
+}
+
+.app-nav a {
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+}
+
+.app-nav a:hover,
+.app-nav a:focus-visible {
+  background: var(--accent-soft);
+}
+
+.directory-layout {
+  display: grid;
+  grid-template-columns: minmax(20rem, 1fr) minmax(20rem, 1fr);
+  gap: 1.5rem;
+  padding: 0 3rem 3rem;
+}
+
+.directory-panel {
+  padding: 1.35rem;
+}
+
+.directory-message {
+  max-width: 60rem;
+  margin: 0 auto 1rem;
+}
+
+.search-form {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.search-form input {
+  flex: 1;
+}
+
+.directory-list,
+.notes-list {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0;
+  list-style: none;
+}
+
+.directory-list li,
+.notes-list li {
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.directory-list a {
+  display: grid;
+  gap: 0.2rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.directory-list small,
+.notes-list small {
+  color: var(--muted);
+}
+
+.notes-list p {
+  margin: 0 0 0.45rem;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .app-header,
+  .app-nav,
+  .workspace,
+  .directory-layout {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .directory-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .eyebrow {
   margin: 0 0 0.35rem;
   text-transform: uppercase;

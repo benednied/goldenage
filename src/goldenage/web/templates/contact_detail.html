@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block body %}
+  {% set contact = contact_detail.contact if contact_detail else none %}
+  <header class="app-header"><div><p class="eyebrow">Contact</p><h1>{{ contact.name if contact else "Contact" }}</h1><p class="subhead">{{ contact_detail.company.name if contact_detail else "" }}</p></div><div class="user-chip"><span class="avatar-placeholder">{{ user.display_name[:1]|upper }}</span><div class="user-copy"><span>{{ user.display_name }}</span><small>{{ user.email }}</small></div></div></header>
+  <nav class="app-nav" aria-label="Workspace navigation"><a href="/worklist">Worklist</a><a href="/companies">Companies</a><a href="/contacts">Contacts</a></nav>
+  {% if message %}<div class="message directory-message{% if message_kind == 'error' %} message-error{% endif %}">{{ message }}</div>{% endif %}
+  {% if contact_detail %}
+    <main class="directory-layout">
+      <section class="panel directory-panel"><div class="panel-heading"><div><p class="eyebrow">Accepted record</p><h2>Contact details</h2></div></div><p><a href="/companies/{{ contact_detail.company.id }}">{{ contact_detail.company.name }}</a></p><form class="workflow-form" method="post" action="/contacts/{{ contact.id }}"><label>Name<input type="text" name="name" value="{{ contact.name }}" required /></label><label>Email<input type="email" name="email" value="{{ contact.email or '' }}" /></label><label>Phone<input type="text" name="phone" value="{{ contact.phone or '' }}" /></label><button type="submit">Save contact</button></form><h3>Linked cases</h3>{% if contact_detail.cases %}<ul class="directory-list">{% for case in contact_detail.cases %}<li><a href="/worklist?case_id={{ case.id }}"><strong>{{ case.title }}</strong><small>{{ case.status }}</small></a></li>{% endfor %}</ul>{% else %}<p class="muted">No canonically linked cases yet.</p>{% endif %}</section>
+      <section class="panel directory-panel"><div class="panel-heading"><div><p class="eyebrow">Dated and attributed</p><h2>Contact notes</h2></div><span class="count-badge">{{ contact_detail.notes|length }}</span></div><form class="workflow-form" method="post" action="/contacts/{{ contact.id }}/notes"><label>Note<textarea name="body" rows="4" required></textarea></label><button type="submit">Add note</button></form>{% if contact_detail.notes %}<ul class="notes-list">{% for note in contact_detail.notes %}<li><p>{{ note.body }}</p><small>{{ format_datetime(note.created_at, local_timezone) }} · {% if note.created_by == user.id %}{{ user.display_name }}{% else %}{{ note.created_by }}{% endif %}</small></li>{% endfor %}</ul>{% else %}<p class="muted">No notes yet.</p>{% endif %}</section>
+    </main>
+  {% else %}<p class="directory-message">Contact not found.</p>{% endif %}
+{% endblock %}
