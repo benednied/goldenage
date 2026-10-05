@@ -2,44 +2,13 @@
 
 {% block body %}
   <main class="login-shell">
-    <section
-      class="login-video-pane"
-      aria-label="GoldenAge welcome video"
-    >
-      <video
-        id="login-video"
-        class="login-video"
-        autoplay
-        muted
-        loop
-        playsinline
-        preload="auto"
-        aria-hidden="true"
-      >
-        <source class="login-video-source" src="{{ request.url_for('static', path='corporate-login.webm') }}" type="video/webm" />
-        <source class="login-video-source" src="{{ request.url_for('static', path='corporate-login.mp4') }}" type="video/mp4" />
-      </video>
-      <div class="login-video-fallback">
-        <p class="/">Welcome to YOUR GoldenAge</p>
-        <h2>
-          <span>Work gets done when</span>
-          <span>operating context is clear.</span>
-        </h2>
-        <p class="login-video-error" aria-live="polite">
-          Corporate video unavailable: add <code>corporate-login.webm</code> or
-          <code>corporate-login.mp4</code> to <code>src/goldenage/web/static/</code>.
-        </p>
-      </div>
-      <button class="login-sound-toggle" type="button">Toggle sound</button>
-    </section>
-
     <section class="login-panel" aria-labelledby="login-title">
       <div class="login-card">
         <h1 id="login-title">Sign in to GoldenAge</h1>
         <p class="subhead">Use the configured identity backend for this workspace.</p>
 
         {% if message %}
-          <div class="message message-error">{{ message }}</div>
+          <div class="message message-error" role="alert">{{ message }}</div>
         {% endif %}
 
         <form
@@ -77,6 +46,37 @@
           <button type="submit">Sign in</button>
         </form>
       </div>
+    </section>
+
+    <section
+      class="login-video-pane"
+      aria-label="GoldenAge welcome video"
+    >
+      <video
+        id="login-video"
+        class="login-video"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="auto"
+        aria-hidden="true"
+      >
+        <source class="login-video-source" src="{{ request.url_for('static', path='corporate-login.webm') }}" type="video/webm" />
+        <source class="login-video-source" src="{{ request.url_for('static', path='corporate-login.mp4') }}" type="video/mp4" />
+      </video>
+      <div class="login-video-fallback">
+        <p class="/">Welcome to YOUR GoldenAge</p>
+        <h2>
+          <span>Work gets done when</span>
+          <span>operating context is clear.</span>
+        </h2>
+        <p class="login-video-error" aria-live="polite">
+          Corporate video unavailable: add <code>corporate-login.webm</code> or
+          <code>corporate-login.mp4</code> to <code>src/goldenage/web/static/</code>.
+        </p>
+      </div>
+      <button class="login-sound-toggle" type="button">Toggle sound</button>
     </section>
   </main>
   <script src="{{ request.url_for('static', path='login.js') }}" defer></script>

@@ -1,11 +1,11 @@
-<section id="worklist-pane" class="panel panel-list">
+<section id="worklist-pane" class="panel panel-list" aria-labelledby="worklist-title">
   {% include "partials/worklist.html" %}
 </section>
 <aside class="side-pane">
-  <section id="detail-panel" class="panel panel-detail">
+  <section id="detail-panel" class="panel panel-detail" aria-labelledby="detail-panel-title" aria-live="polite">
     {% include "partials/detail_panel.html" %}
   </section>
-  <section id="intake-panel" class="panel panel-intake">
+  <section id="intake-panel" class="panel panel-intake" aria-labelledby="intake-panel-title" aria-live="polite">
     {% include "partials/intake_panel.html" %}
   </section>
 </aside>

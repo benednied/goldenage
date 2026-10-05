@@ -1,0 +1,6 @@
+# Browser-only tools are kept separate from the locked application extra so the
+# normal quality job does not download a browser runtime.
+axe-playwright-python==0.1.8
+greenlet==3.2.4
+playwright==1.63.0
+pyee==13.0.0

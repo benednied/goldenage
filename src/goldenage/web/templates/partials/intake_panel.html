@@ -1,7 +1,7 @@
 <div class="panel-heading">
   <div>
     <p class="eyebrow">New Intake</p>
-    <h2>Drop zone</h2>
+    <h2 id="intake-panel-title">Drop zone</h2>
   </div>
 </div>
 
@@ -27,7 +27,11 @@
 {% endif %}
 
 {% if intake_state.message %}
-  <div class="message{% if intake_state.message_kind == 'error' %} message-error{% endif %}">
+  <div
+    class="message{% if intake_state.message_kind == 'error' %} message-error{% endif %}"
+    role="{% if intake_state.message_kind == 'error' %}alert{% else %}status{% endif %}"
+    aria-live="polite"
+  >
     {{ intake_state.message }}
   </div>
 {% endif %}

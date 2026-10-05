@@ -229,6 +229,11 @@ h4 {
   box-shadow: 0 12px 28px rgba(46, 34, 17, 0.08);
 }
 
+.work-item:focus-visible {
+  outline: 3px solid rgba(13, 92, 99, 0.55);
+  outline-offset: 3px;
+}
+
 .due-overdue {
   border-color: rgba(183, 58, 58, 0.26);
   background: linear-gradient(180deg, rgba(246, 221, 221, 0.62) 0%, #fff 100%);
@@ -557,6 +562,8 @@ button.icon-link {
 }
 
 .login-video-pane {
+  grid-column: 1;
+  grid-row: 1;
   position: relative;
   min-height: 100vh;
   overflow: hidden;
@@ -651,6 +658,8 @@ button.icon-link {
 }
 
 .login-panel {
+  grid-column: 2;
+  grid-row: 1;
   display: grid;
   align-content: center;
   min-height: 100vh;
@@ -716,6 +725,11 @@ button.icon-link {
   background: var(--accent);
 }
 
+.login-provider-toggle input:focus-visible + span {
+  outline: 3px solid rgba(13, 92, 99, 0.55);
+  outline-offset: 3px;
+}
+
 .login-provider-toggle input:disabled + span {
   border-color: rgba(13, 92, 99, 0.18);
   color: rgba(13, 92, 99, 0.48);
@@ -727,6 +741,16 @@ button.icon-link {
   .login-shell {
     grid-template-columns: 1fr;
     grid-template-rows: 38vh auto;
+  }
+
+  .login-video-pane {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .login-panel {
+    grid-column: 1;
+    grid-row: 2;
   }
 
   .login-video-pane {
