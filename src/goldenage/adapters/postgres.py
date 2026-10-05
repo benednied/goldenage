@@ -12,6 +12,7 @@ from goldenage.application.ports import (
     ArtifactRepository,
     AuditRepository,
     CaseRepository,
+    MailImportRepository,
 )
 from goldenage.domain.models import (
     Activity,
@@ -22,9 +23,12 @@ from goldenage.domain.models import (
     CaseFile,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
+    MailCandidate,
     MailConversation,
     MailMessage,
     MailParticipant,
+    MailSelector,
+    MailSourceSystem,
     UserContext,
 )
 
@@ -42,15 +46,78 @@ class PostgresRepositoryError(RuntimeError):
     """Raised when PostgreSQL adapters cannot be used."""
 
 
-class _PostgresRepositoryBase:
-    """Base helper for raw-SQL repositories."""
+class _PostgresConnectionProxy:
+    """Expose an active connection without allowing repository methods to commit it."""
+
+    def __init__(self, connection) -> None:
+        self._connection = connection
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        del args
+
+    def cursor(self):
+        return self._connection.cursor()
+
+    def commit(self) -> None:
+        """Defer the commit until the enclosing business transaction exits."""
+
+
+class PostgresRepositoryTransaction:
+    """Unit of work shared by PostgreSQL repositories during one business operation."""
 
     def __init__(self, dsn: str) -> None:
         if psycopg is None:
             raise PostgresRepositoryError("psycopg is not installed.")
         self._dsn = dsn
+        self._connection = None
+
+    def __enter__(self) -> "PostgresRepositoryTransaction":
+        if self._connection is not None:
+            raise PostgresRepositoryError("PostgreSQL transaction is already active.")
+        self._connection = psycopg.connect(self._dsn, row_factory=dict_row)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is None:
+            return
+        try:
+            if exc_type is None:
+                connection.commit()
+            else:
+                connection.rollback()
+        finally:
+            connection.close()
+
+    def connection(self) -> _PostgresConnectionProxy | None:
+        """Return a no-commit proxy when this transaction is active."""
+        if self._connection is None:
+            return None
+        return _PostgresConnectionProxy(self._connection)
+
+
+class _PostgresRepositoryBase:
+    """Base helper for raw-SQL repositories."""
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        transaction: PostgresRepositoryTransaction | None = None,
+    ) -> None:
+        if psycopg is None:
+            raise PostgresRepositoryError("psycopg is not installed.")
+        self._dsn = dsn
+        self._transaction = transaction or PostgresRepositoryTransaction(dsn)
 
     def _connect(self):
+        active_connection = self._transaction.connection()
+        if active_connection is not None:
+            return active_connection
         return psycopg.connect(self._dsn, row_factory=dict_row)
 
     def _case_visible(self, case_id: UUID, user: UserContext) -> bool:
@@ -191,7 +258,7 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
             connection.commit()
 
 
-class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
+class _PostgresArtifactRepositoryCore(_PostgresRepositoryBase, ArtifactRepository):
     """Artifact and suggestion repository backed by PostgreSQL."""
 
     def save_artifact(self, artifact: Artifact) -> None:
@@ -248,6 +315,269 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, {"case_id": case_id})
             return tuple(_row_to_artifact(row) for row in cursor.fetchall())
+
+
+class _PostgresMailImportRepositoryCore(_PostgresRepositoryBase, MailImportRepository):
+    """PostgreSQL persistence for mail selectors, review queue, and dedupe state."""
+
+    def transaction(self) -> PostgresRepositoryTransaction:
+        """Return the shared transaction used by all PostgreSQL repositories."""
+        return self._transaction
+
+    def upsert_source(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        now: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO mail_import_source (user_id, source_system, enabled_at, updated_at)
+            VALUES (%(user_id)s, %(source_system)s, %(enabled_at)s, %(updated_at)s)
+            ON CONFLICT (user_id, source_system) DO UPDATE SET
+                updated_at = EXCLUDED.updated_at
+        """
+        params = {
+            "user_id": user.id,
+            "source_system": source_system,
+            "enabled_at": now,
+            "updated_at": now,
+        }
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            connection.commit()
+
+    def save_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        selector: MailSelector,
+        now: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO mail_import_selector (
+                user_id, source_system, account_name, mailbox_name, unread_only, sender_filter,
+                subject_filter, sent_after, result_limit, updated_at
+            ) VALUES (
+                %(user_id)s, %(source_system)s, %(account_name)s, %(mailbox_name)s,
+                %(unread_only)s, %(sender_filter)s, %(subject_filter)s, %(sent_after)s,
+                %(result_limit)s, %(updated_at)s
+            )
+            ON CONFLICT (user_id, source_system) DO UPDATE SET
+                account_name = EXCLUDED.account_name,
+                mailbox_name = EXCLUDED.mailbox_name,
+                unread_only = EXCLUDED.unread_only,
+                sender_filter = EXCLUDED.sender_filter,
+                subject_filter = EXCLUDED.subject_filter,
+                sent_after = EXCLUDED.sent_after,
+                result_limit = EXCLUDED.result_limit,
+                updated_at = EXCLUDED.updated_at
+        """
+        params = {
+            "user_id": user.id,
+            "source_system": source_system,
+            "account_name": selector.account_name,
+            "mailbox_name": selector.mailbox_name,
+            "unread_only": selector.unread_only,
+            "sender_filter": selector.sender_filter,
+            "subject_filter": selector.subject_filter,
+            "sent_after": selector.sent_after,
+            "result_limit": selector.result_limit,
+            "updated_at": now,
+        }
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            connection.commit()
+
+    def get_selector(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> MailSelector | None:
+        sql = """
+            SELECT account_name, mailbox_name, unread_only, sender_filter, subject_filter,
+                   sent_after, result_limit
+            FROM mail_import_selector
+            WHERE user_id = %(user_id)s AND source_system = %(source_system)s
+        """
+        params = {"user_id": user.id, "source_system": source_system}
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            return _row_to_mail_selector(row) if row else None
+
+    def replace_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidates: Sequence[MailCandidate],
+        now: datetime,
+    ) -> None:
+        delete_sql = """
+            DELETE FROM mail_import_review_candidate
+            WHERE user_id = %(user_id)s AND source_system = %(source_system)s
+        """
+        insert_sql = """
+            INSERT INTO mail_import_review_candidate (
+                user_id, source_system, candidate_id, account_name, mailbox_name, subject,
+                sender_name, sender_email, sent_at, preview_text, unread, rfc_message_id,
+                created_at
+            ) VALUES (
+                %(user_id)s, %(source_system)s, %(candidate_id)s, %(account_name)s,
+                %(mailbox_name)s, %(subject)s, %(sender_name)s, %(sender_email)s,
+                %(sent_at)s, %(preview_text)s, %(unread)s, %(rfc_message_id)s, %(created_at)s
+            )
+        """
+        user_id = user.id
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                delete_sql,
+                {"user_id": user_id, "source_system": source_system},
+            )
+            for candidate in candidates:
+                cursor.execute(
+                    insert_sql,
+                    {
+                        "user_id": user_id,
+                        "source_system": source_system,
+                        "candidate_id": candidate.candidate_id,
+                        "account_name": candidate.account_name,
+                        "mailbox_name": candidate.mailbox_name,
+                        "subject": candidate.subject,
+                        "sender_name": candidate.sender_name,
+                        "sender_email": candidate.sender_email,
+                        "sent_at": candidate.sent_at,
+                        "preview_text": candidate.preview_text,
+                        "unread": candidate.unread,
+                        "rfc_message_id": candidate.rfc_message_id,
+                        "created_at": now,
+                    },
+                )
+            connection.commit()
+
+    def list_review_candidates(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> Sequence[MailCandidate]:
+        sql = """
+            SELECT candidate_id, source_system, account_name, mailbox_name, subject,
+                   sender_name, sender_email, sent_at, preview_text, unread, rfc_message_id
+            FROM mail_import_review_candidate
+            WHERE user_id = %(user_id)s AND source_system = %(source_system)s
+            ORDER BY sent_at DESC NULLS LAST, candidate_id ASC
+        """
+        params = {"user_id": user.id, "source_system": source_system}
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            return tuple(_row_to_mail_candidate(row) for row in cursor.fetchall())
+
+    def get_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> MailCandidate | None:
+        sql = """
+            SELECT candidate_id, source_system, account_name, mailbox_name, subject,
+                   sender_name, sender_email, sent_at, preview_text, unread, rfc_message_id
+            FROM mail_import_review_candidate
+            WHERE user_id = %(user_id)s
+              AND source_system = %(source_system)s
+              AND candidate_id = %(candidate_id)s
+        """
+        params = {
+            "user_id": user.id,
+            "source_system": source_system,
+            "candidate_id": candidate_id,
+        }
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            return _row_to_mail_candidate(row) if row else None
+
+    def discard_review_candidate(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        candidate_id: str,
+    ) -> None:
+        sql = """
+            DELETE FROM mail_import_review_candidate
+            WHERE user_id = %(user_id)s
+              AND source_system = %(source_system)s
+              AND candidate_id = %(candidate_id)s
+        """
+        params = {
+            "user_id": user.id,
+            "source_system": source_system,
+            "candidate_id": candidate_id,
+        }
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            connection.commit()
+
+    def list_imported_message_ids(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+    ) -> frozenset[str]:
+        sql = """
+            SELECT external_message_id, rfc_message_id
+            FROM imported_mail_message
+            WHERE user_id = %(user_id)s AND source_system = %(source_system)s
+        """
+        params = {"user_id": user.id, "source_system": source_system}
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+        ids: set[str] = set()
+        for row in rows:
+            ids.add(str(row["external_message_id"]))
+            if row["rfc_message_id"]:
+                ids.add(str(row["rfc_message_id"]))
+        return frozenset(ids)
+
+    def save_imported_message(
+        self,
+        *,
+        user: UserContext,
+        source_system: MailSourceSystem,
+        external_message_id: str,
+        rfc_message_id: str | None,
+        artifact_id: UUID,
+        now: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO imported_mail_message (
+                user_id, source_system, external_message_id, rfc_message_id, artifact_id, imported_at
+            ) VALUES (
+                %(user_id)s, %(source_system)s, %(external_message_id)s, %(rfc_message_id)s,
+                %(artifact_id)s, %(imported_at)s
+            )
+        """
+        params = {
+            "user_id": user.id,
+            "source_system": source_system,
+            "external_message_id": external_message_id,
+            "rfc_message_id": rfc_message_id,
+            "artifact_id": artifact_id,
+            "imported_at": now,
+        }
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            connection.commit()
+
+
+class PostgresArtifactRepository(_PostgresArtifactRepositoryCore, ArtifactRepository):
+    """Artifact and suggestion repository backed by PostgreSQL."""
 
     def list_unassigned_artifacts(
         self,
@@ -608,6 +938,10 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             return tuple(_row_to_mailbox_sync_checkpoint(row) for row in cursor.fetchall())
 
 
+class PostgresMailImportRepository(_PostgresMailImportRepositoryCore):
+    """PostgreSQL persistence for mail selectors, review queue, and dedupe state."""
+
+
 class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
     """Audit repository backed by PostgreSQL."""
 
@@ -735,6 +1069,34 @@ def _row_to_mail_message(row: dict[str, object]) -> MailMessage:
         direction=row["direction"],
         received_at=row["received_at"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_mail_selector(row: dict[str, object]) -> MailSelector:
+    return MailSelector(
+        account_name=row["account_name"],
+        mailbox_name=row["mailbox_name"],
+        unread_only=bool(row["unread_only"]),
+        sender_filter=row["sender_filter"] or "",
+        subject_filter=row["subject_filter"] or "",
+        sent_after=row["sent_after"],
+        result_limit=int(row["result_limit"]),
+    )
+
+
+def _row_to_mail_candidate(row: dict[str, object]) -> MailCandidate:
+    return MailCandidate(
+        candidate_id=row["candidate_id"],
+        source_system=row["source_system"],
+        account_name=row["account_name"],
+        mailbox_name=row["mailbox_name"],
+        subject=row["subject"],
+        sender_name=row["sender_name"],
+        sender_email=row["sender_email"],
+        sent_at=row["sent_at"],
+        preview_text=row["preview_text"],
+        unread=bool(row["unread"]),
+        rfc_message_id=row["rfc_message_id"],
     )
 
 
