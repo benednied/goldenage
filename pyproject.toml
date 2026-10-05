@@ -51,14 +51,6 @@ python-version = "3.14"
 
 [tool.ty.src]
 include = ["src", "tests"]
-exclude = [
-  "src/goldenage/adapters/demo.py",
-  "src/goldenage/adapters/postgres.py",
-  "src/goldenage/adapters/sqlite.py",
-  "src/goldenage/bootstrap_postgres.py",
-  "src/goldenage/web/app.py",
-  "tests/test_web.py",
-]
 
 [tool.ty.terminal]
 output-format = "concise"

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime
+from decimal import Decimal
+from typing import Protocol, TypeVar, cast
 from uuid import UUID
+
+import psycopg as _psycopg
+from psycopg.rows import BaseRowFactory
+from psycopg.rows import dict_row as _dict_row
+from psycopg.types.json import Jsonb
 
 from goldenage.application.ports import (
     ActivityRepository,
@@ -28,14 +35,19 @@ from goldenage.domain.models import (
     UserContext,
 )
 
-try:
-    import psycopg
-    from psycopg.rows import dict_row
-    from psycopg.types.json import Jsonb
-except ModuleNotFoundError:  # pragma: no cover - exercised only without dependencies.
-    psycopg = None
-    dict_row = None
-    Jsonb = None
+
+class _PsycopgModule(Protocol):
+    def connect(
+        self,
+        dsn: str,
+        *,
+        row_factory: BaseRowFactory[dict[str, object]],
+    ) -> _psycopg.Connection[dict[str, object]]:
+        """Open a connection whose rows are mappings of validated values."""
+
+
+psycopg: _PsycopgModule = cast(_PsycopgModule, _psycopg)
+dict_row: BaseRowFactory[dict[str, object]] = cast(BaseRowFactory[dict[str, object]], _dict_row)
 
 
 class PostgresRepositoryError(RuntimeError):
@@ -50,7 +62,7 @@ class _PostgresRepositoryBase:
             raise PostgresRepositoryError("psycopg is not installed.")
         self._dsn = dsn
 
-    def _connect(self):
+    def _connect(self) -> _psycopg.Connection[dict[str, object]]:
         return psycopg.connect(self._dsn, row_factory=dict_row)
 
     def _case_visible(self, case_id: UUID, user: UserContext) -> bool:
@@ -64,7 +76,7 @@ class _PostgresRepositoryBase:
             row = cursor.fetchone()
             if row is None:
                 return False
-            visible_group_id = row["visible_group_id"]
+            visible_group_id = _optional(row, "visible_group_id", UUID)
             return visible_group_id is None or visible_group_id in user.visible_group_ids
 
 
@@ -163,10 +175,8 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
             row = cursor.fetchone()
             if row is None:
                 return None
-            if (
-                row["visible_group_id"] is not None
-                and row["visible_group_id"] not in user.visible_group_ids
-            ):
+            visible_group_id = _optional(row, "visible_group_id", UUID)
+            if visible_group_id is not None and visible_group_id not in user.visible_group_ids:
                 return None
             return _row_to_activity(row)
 
@@ -230,7 +240,7 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             row = cursor.fetchone()
             if row is None:
                 return None
-            visible_group_id = row["visible_group_id"]
+            visible_group_id = _optional(row, "visible_group_id", UUID)
             if visible_group_id is not None and visible_group_id not in user.visible_group_ids:
                 return None
             return _row_to_artifact(row)
@@ -626,139 +636,246 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
             connection.commit()
 
 
-def _row_to_case_file(row: dict[str, object]) -> CaseFile:
-    return CaseFile(
-        id=row["id"],
-        title=row["title"],
-        company=row["company"],
-        primary_contact=row["primary_contact"],
-        status=row["status"],
-        last_activity_at=row["last_activity_at"],
-        visible_group_id=row["visible_group_id"],
-    )
+ValueType = TypeVar("ValueType")
 
 
-def _row_to_activity(row: dict[str, object]) -> Activity:
-    return Activity(
-        id=row["id"],
-        case_id=row["case_id"],
-        description=row["description"],
-        kind=row["kind"],
-        due_at=row["due_at"],
-        created_at=row["created_at"],
-        created_by=row["created_by"],
-        completed_at=row["completed_at"],
-    )
+def _required_value(value: object, expected: type[ValueType], field: str) -> ValueType:
+    if not isinstance(value, expected):
+        raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+    return value
 
 
-def _row_to_artifact(row: dict[str, object]) -> Artifact:
-    return Artifact(
-        id=row["id"],
-        file_name=row["file_name"],
-        media_type=row["media_type"],
-        size_bytes=row["size_bytes"],
-        content_text=row["content_text"],
-        storage_key=row["storage_key"],
-        uploaded_at=row["uploaded_at"],
-        uploaded_by=row["uploaded_by"],
-        assigned_case_id=row["assigned_case_id"],
-    )
+def _optional_value(
+    value: object,
+    expected: type[ValueType],
+    field: str,
+) -> ValueType | None:
+    if value is None:
+        return None
+    return _required_value(value, expected, field)
 
 
-def _row_to_suggestion(row: dict[str, object]) -> AssignmentSuggestion:
-    return AssignmentSuggestion(
-        artifact_id=row["artifact_id"],
-        suggested_case_id=row["suggested_case_id"],
-        summary_reason=row["summary_reason"],
-        confidence=float(row["confidence"]),
-        created_at=row["created_at"],
-    )
+def _required(row: Mapping[str, object], field: str, expected: type[ValueType]) -> ValueType:
+    return _required_value(row.get(field), expected, field)
 
 
-def _row_to_mail_metadata(row: dict[str, object]) -> ArtifactMailMetadata:
-    return ArtifactMailMetadata(
-        artifact_id=row["artifact_id"],
-        source_system=row["source_system"],
-        message_format=row["message_format"],
-        parse_status=row["parse_status"],
-        external_message_id=row["external_message_id"],
-        rfc_message_id=row["rfc_message_id"],
-        source_account=row["source_account"],
-        source_mailbox=row["source_mailbox"],
-        subject=row["subject"],
-        sender_name=row["sender_name"],
-        sender_email=row["sender_email"],
-        sender_domain=row["sender_domain"],
-        recipients=tuple(
+def _optional(
+    row: Mapping[str, object],
+    field: str,
+    expected: type[ValueType],
+) -> ValueType | None:
+    return _optional_value(row.get(field), expected, field)
+
+
+def _literal(
+    row: Mapping[str, object],
+    field: str,
+    choices: tuple[ValueType, ...],
+) -> ValueType:
+    value = _required(row, field, str)
+    if value not in choices:
+        raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+    return cast(ValueType, value)
+
+
+def _optional_literal(
+    row: Mapping[str, object],
+    field: str,
+    choices: tuple[ValueType, ...],
+) -> ValueType | None:
+    value = row.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in choices:
+        raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+    return cast(ValueType, value)
+
+
+def _required_float(row: Mapping[str, object], field: str) -> float:
+    value = row.get(field)
+    if isinstance(value, bool):
+        raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise PostgresRepositoryError(
+                f"PostgreSQL field {field!r} has an invalid value."
+            ) from exc
+    raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+
+
+def _required_int(row: Mapping[str, object], field: str) -> int:
+    value = row.get(field)
+    if isinstance(value, bool):
+        raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise PostgresRepositoryError(
+                f"PostgreSQL field {field!r} has an invalid value."
+            ) from exc
+    raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+
+
+def _required_bool(row: Mapping[str, object], field: str) -> bool:
+    value = row.get(field)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.lower() in ("false", "true"):
+        return value.lower() == "true"
+    raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+
+
+def _participants(value: object, field: str) -> tuple[MailParticipant, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+    participants: list[MailParticipant] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise PostgresRepositoryError(f"PostgreSQL field {field!r} has an invalid value.")
+        participants.append(
             MailParticipant(
-                name=participant.get("name"),
-                email=participant.get("email"),
+                name=_optional_value(item.get("name"), str, f"{field}.name"),
+                email=_optional_value(item.get("email"), str, f"{field}.email"),
             )
-            for participant in row["recipients_json"]
-        ),
-        sent_at=row["sent_at"],
-        created_at=row["created_at"],
+        )
+    return tuple(participants)
+
+
+def _row_to_case_file(row: Mapping[str, object]) -> CaseFile:
+    return CaseFile(
+        id=_required(row, "id", UUID),
+        title=_required(row, "title", str),
+        company=_optional(row, "company", str),
+        primary_contact=_optional(row, "primary_contact", str),
+        status=_literal(row, "status", ("open", "closed")),
+        last_activity_at=_required(row, "last_activity_at", datetime),
+        visible_group_id=_optional(row, "visible_group_id", UUID),
     )
 
 
-def _row_to_mail_conversation(row: dict[str, object]) -> MailConversation:
+def _row_to_activity(row: Mapping[str, object]) -> Activity:
+    return Activity(
+        id=_required(row, "id", UUID),
+        case_id=_required(row, "case_id", UUID),
+        description=_required(row, "description", str),
+        kind=_literal(row, "kind", ("intake", "follow_up", "question", "escalation")),
+        due_at=_required(row, "due_at", datetime),
+        created_at=_required(row, "created_at", datetime),
+        created_by=_optional(row, "created_by", UUID),
+        completed_at=_optional(row, "completed_at", datetime),
+    )
+
+
+def _row_to_artifact(row: Mapping[str, object]) -> Artifact:
+    return Artifact(
+        id=_required(row, "id", UUID),
+        file_name=_required(row, "file_name", str),
+        media_type=_required(row, "media_type", str),
+        size_bytes=_required_int(row, "size_bytes"),
+        content_text=_required(row, "content_text", str),
+        storage_key=_required(row, "storage_key", str),
+        uploaded_at=_required(row, "uploaded_at", datetime),
+        uploaded_by=_optional(row, "uploaded_by", UUID),
+        assigned_case_id=_optional(row, "assigned_case_id", UUID),
+    )
+
+
+def _row_to_suggestion(row: Mapping[str, object]) -> AssignmentSuggestion:
+    return AssignmentSuggestion(
+        artifact_id=_required(row, "artifact_id", UUID),
+        suggested_case_id=_optional(row, "suggested_case_id", UUID),
+        summary_reason=_required(row, "summary_reason", str),
+        confidence=_required_float(row, "confidence"),
+        created_at=_required(row, "created_at", datetime),
+    )
+
+
+def _row_to_mail_metadata(row: Mapping[str, object]) -> ArtifactMailMetadata:
+    return ArtifactMailMetadata(
+        artifact_id=_required(row, "artifact_id", UUID),
+        source_system=_literal(
+            row, "source_system", ("outlook_upload", "apple_mail_client", "desktop_mail_client")
+        ),
+        message_format=_literal(row, "message_format", ("outlook_msg", "rfc822_email")),
+        parse_status=_literal(row, "parse_status", ("parsed",)),
+        external_message_id=_optional(row, "external_message_id", str),
+        rfc_message_id=_optional(row, "rfc_message_id", str),
+        source_account=_optional(row, "source_account", str),
+        source_mailbox=_optional(row, "source_mailbox", str),
+        subject=_optional(row, "subject", str),
+        sender_name=_optional(row, "sender_name", str),
+        sender_email=_optional(row, "sender_email", str),
+        sender_domain=_optional(row, "sender_domain", str),
+        recipients=_participants(row.get("recipients_json"), "recipients_json"),
+        sent_at=_optional(row, "sent_at", datetime),
+        created_at=_required(row, "created_at", datetime),
+    )
+
+
+def _row_to_mail_conversation(row: Mapping[str, object]) -> MailConversation:
     return MailConversation(
-        id=row["id"],
-        source_kind=row["source_kind"],
-        external_conversation_id=row["external_conversation_id"],
-        normalized_subject=row["normalized_subject"],
-        latest_subject=row["latest_subject"],
-        latest_message_at=row["latest_message_at"],
-        participants=tuple(
-            MailParticipant(name=participant.get("name"), email=participant.get("email"))
-            for participant in row["participants_json"]
-        ),
-        message_count=int(row["message_count"]),
-        latest_artifact_id=row["latest_artifact_id"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        assigned_case_id=row["assigned_case_id"],
+        id=_required(row, "id", UUID),
+        source_kind=_required(row, "source_kind", str),
+        external_conversation_id=_optional(row, "external_conversation_id", str),
+        normalized_subject=_optional(row, "normalized_subject", str),
+        latest_subject=_optional(row, "latest_subject", str),
+        latest_message_at=_required(row, "latest_message_at", datetime),
+        participants=_participants(row.get("participants_json"), "participants_json"),
+        message_count=_required_int(row, "message_count"),
+        latest_artifact_id=_required(row, "latest_artifact_id", UUID),
+        created_at=_required(row, "created_at", datetime),
+        updated_at=_required(row, "updated_at", datetime),
+        assigned_case_id=_optional(row, "assigned_case_id", UUID),
     )
 
 
-def _row_to_mail_message(row: dict[str, object]) -> MailMessage:
+def _row_to_mail_message(row: Mapping[str, object]) -> MailMessage:
     return MailMessage(
-        artifact_id=row["artifact_id"],
-        conversation_id=row["conversation_id"],
-        source_kind=row["source_kind"],
-        source_account_id=row["source_account_id"],
-        source_folder_id=row["source_folder_id"],
-        source_message_id=row["source_message_id"],
-        source_conversation_id=row["source_conversation_id"],
-        internet_message_id=row["internet_message_id"],
-        dedupe_fingerprint=row["dedupe_fingerprint"],
-        direction=row["direction"],
-        received_at=row["received_at"],
-        created_at=row["created_at"],
+        artifact_id=_required(row, "artifact_id", UUID),
+        conversation_id=_required(row, "conversation_id", UUID),
+        source_kind=_required(row, "source_kind", str),
+        source_account_id=_optional(row, "source_account_id", str),
+        source_folder_id=_optional(row, "source_folder_id", str),
+        source_message_id=_optional(row, "source_message_id", str),
+        source_conversation_id=_optional(row, "source_conversation_id", str),
+        internet_message_id=_optional(row, "internet_message_id", str),
+        dedupe_fingerprint=_required(row, "dedupe_fingerprint", str),
+        direction=_optional_literal(row, "direction", ("inbound", "outbound")),
+        received_at=_optional(row, "received_at", datetime),
+        created_at=_required(row, "created_at", datetime),
     )
 
 
-def _row_to_mailbox_account_config(row: dict[str, object]) -> MailboxAccountConfig:
+def _row_to_mailbox_account_config(row: Mapping[str, object]) -> MailboxAccountConfig:
     return MailboxAccountConfig(
-        id=row["id"],
-        user_id=row["user_id"],
-        source_kind=row["source_kind"],
-        account_key=row["account_key"],
-        outlook_store_name=row["outlook_store_name"],
-        inbox_folder_key=row["inbox_folder_key"],
-        sent_folder_key=row["sent_folder_key"],
-        polling_interval_seconds=int(row["polling_interval_seconds"]),
-        active=bool(row["active"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        id=_required(row, "id", UUID),
+        user_id=_optional(row, "user_id", UUID),
+        source_kind=_required(row, "source_kind", str),
+        account_key=_required(row, "account_key", str),
+        outlook_store_name=_required(row, "outlook_store_name", str),
+        inbox_folder_key=_optional(row, "inbox_folder_key", str),
+        sent_folder_key=_optional(row, "sent_folder_key", str),
+        polling_interval_seconds=_required_int(row, "polling_interval_seconds"),
+        active=_required_bool(row, "active"),
+        created_at=_required(row, "created_at", datetime),
+        updated_at=_required(row, "updated_at", datetime),
     )
 
 
-def _row_to_mailbox_sync_checkpoint(row: dict[str, object]) -> MailboxSyncCheckpoint:
+def _row_to_mailbox_sync_checkpoint(row: Mapping[str, object]) -> MailboxSyncCheckpoint:
     return MailboxSyncCheckpoint(
-        account_config_id=row["account_config_id"],
-        folder_key=row["folder_key"],
-        last_message_key=row["last_message_key"],
-        last_message_at=row["last_message_at"],
-        updated_at=row["updated_at"],
+        account_config_id=_required(row, "account_config_id", UUID),
+        folder_key=_required(row, "folder_key", str),
+        last_message_key=_optional(row, "last_message_key", str),
+        last_message_at=_optional(row, "last_message_at", datetime),
+        updated_at=_required(row, "updated_at", datetime),
     )
