@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -764,6 +764,160 @@ def test_service_conversation_merge_and_existing_dedupe_paths(tmp_path) -> None:
     assert duplicate.conversation.id == first.conversation.id
 
 
+def test_service_matches_durable_identity_outside_recent_window_and_preserves_latest_metadata(
+    tmp_path,
+) -> None:
+    service, user, state = build_service(tmp_path)
+    base_time = datetime(2026, 4, 12, 10, 0, tzinfo=UTC)
+    first_extracted = replace(
+        _sample_extracted_data(subject="AW: Acme contract renewal"),
+        received_at=base_time,
+        source_account_id="account-a",
+        source_folder_id="Inbox",
+        source_message_id="message-0",
+        conversation_id="thread-angebot",
+    )
+    first = service.ingest_mail(
+        file_name="first.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"first",
+        extracted=first_extracted,
+        user=user,
+        now=base_time,
+    )
+    assert first.conversation is not None
+
+    for index in range(100):
+        unrelated = replace(
+            _sample_extracted_data(subject=f"Unrelated {index}"),
+            received_at=base_time + timedelta(minutes=index + 1),
+            source_account_id="account-a",
+            source_folder_id="Inbox",
+            source_message_id=f"unrelated-{index}",
+            conversation_id=f"unrelated-thread-{index}",
+        )
+        service.ingest_mail(
+            file_name=f"unrelated-{index}.msg",
+            media_type="application/vnd.ms-outlook",
+            content=f"unrelated-{index}".encode(),
+            extracted=unrelated,
+            user=user,
+            now=base_time + timedelta(minutes=index + 1),
+        )
+
+    reply = service.ingest_mail(
+        file_name="reply.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"reply",
+        extracted=replace(
+            first_extracted,
+            subject="WG: Re: Acme contract renewal",
+            received_at=base_time + timedelta(minutes=200),
+            source_message_id="message-101",
+            internet_message_id="<message-101@example.com>",
+        ),
+        user=user,
+        now=base_time + timedelta(minutes=201),
+    )
+
+    assert reply.conversation is not None
+    assert reply.conversation.id == first.conversation.id
+    assert reply.conversation.message_count == 2
+    assert reply.conversation.latest_subject == "WG: Re: Acme contract renewal"
+    assert reply.conversation.latest_message_at == base_time + timedelta(minutes=200)
+
+    older = service.ingest_mail(
+        file_name="older.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"older",
+        extracted=replace(
+            first_extracted,
+            subject="Re: Acme contract renewal",
+            received_at=base_time - timedelta(minutes=1),
+            source_message_id="message-older",
+            internet_message_id="<message-older@example.com>",
+        ),
+        user=user,
+        now=base_time + timedelta(minutes=202),
+    )
+    assert older.conversation is not None
+    assert older.conversation.id == first.conversation.id
+    assert older.conversation.latest_message_at == base_time + timedelta(minutes=200)
+    assert reply.artifact is not None
+    assert older.conversation.latest_artifact_id == reply.artifact.id
+
+    different_account = service.ingest_mail(
+        file_name="other-account.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"other-account",
+        extracted=replace(
+            _sample_extracted_data(subject="Re: Acme contract renewal"),
+            source_account_id="account-b",
+            source_folder_id="Inbox",
+            source_message_id="other-account",
+        ),
+        user=user,
+        now=base_time + timedelta(minutes=203),
+    )
+    different_participant = service.ingest_mail(
+        file_name="other-participant.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"other-participant",
+        extracted=replace(
+            _sample_extracted_data(subject="Re: Acme contract renewal"),
+            source_account_id="account-a",
+            source_folder_id="Inbox",
+            source_message_id="other-participant",
+            sender=MailParticipant(name="Different", email="different@example.com"),
+        ),
+        user=user,
+        now=base_time + timedelta(minutes=204),
+    )
+    assert different_account.conversation is not None
+    assert different_participant.conversation is not None
+    assert different_account.conversation.id != first.conversation.id
+    assert different_participant.conversation.id != first.conversation.id
+
+    case_id = next(iter(state.cases))
+    assert first.artifact is not None
+    service.assign_artifact_to_case(
+        artifact_id=first.artifact.id,
+        case_id=case_id,
+        next_step="Review the offer",
+        next_due_at=base_time + timedelta(days=1),
+        user=user,
+        now=base_time + timedelta(minutes=205),
+    )
+    assigned_reply = service.ingest_mail(
+        file_name="assigned-reply.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"assigned-reply",
+        extracted=replace(
+            first_extracted,
+            received_at=base_time + timedelta(minutes=206),
+            source_message_id="message-assigned-reply",
+            internet_message_id="<message-assigned-reply@example.com>",
+        ),
+        user=user,
+        now=base_time + timedelta(minutes=207),
+    )
+    assert assigned_reply.conversation is not None
+    assert assigned_reply.conversation.id == first.conversation.id
+    assert assigned_reply.conversation.assigned_case_id == case_id
+    assert assigned_reply.artifact is not None
+    other_case_id = next(candidate for candidate in state.cases if candidate != case_id)
+    with pytest.raises(ResolutionError, match="already assigned to another case"):
+        service.assign_artifact_to_case(
+            artifact_id=assigned_reply.artifact.id,
+            case_id=other_case_id,
+            next_step="Move the reply",
+            next_due_at=base_time + timedelta(days=2),
+            user=user,
+            now=base_time + timedelta(minutes=208),
+        )
+    assert state.artifacts[assigned_reply.artifact.id].assigned_case_id is None
+
+
 def test_service_search_candidate_messages_for_no_matches_and_partial_imports(tmp_path) -> None:
     imported = MailCandidate(
         candidate_id="imported",
@@ -852,6 +1006,8 @@ def test_service_pure_helpers_cover_edge_cases() -> None:
     )
     assert _normalize_subject(None) is None
     assert _normalize_subject(" RE: FW: Renewal  ") == "renewal"
+    assert _normalize_subject("AW: WG: Re: Angebot") == "angebot"
+    assert _normalize_subject("Re:port") == "re:port"
     assert _merge_participants(
         (MailParticipant(name="Max", email="max@example.com"),),
         (

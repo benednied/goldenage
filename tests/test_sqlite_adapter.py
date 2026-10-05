@@ -209,6 +209,42 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
     assert artifact_repo.get_mail_metadata(artifact_id, user) == metadata
     assert artifact_repo.get_mail_metadata(missing_artifact_id, user) is None
     assert artifact_repo.get_mail_conversation(conversation_id, user) == conversation
+    assert (
+        artifact_repo.find_mail_conversation(
+            source_kind="outlook_upload",
+            source_account_id="Mailbox",
+            source_folder_id="Sent",
+            source_conversation_id="conv",
+            normalized_subject=None,
+            participants=conversation.participants,
+            user=user,
+        )
+        == conversation
+    )
+    assert (
+        artifact_repo.find_mail_conversation(
+            source_kind="outlook_upload",
+            source_account_id="Mailbox",
+            source_folder_id="Sent",
+            source_conversation_id=None,
+            normalized_subject="acme renewal",
+            participants=conversation.participants,
+            user=user,
+        )
+        == conversation
+    )
+    assert (
+        artifact_repo.find_mail_conversation(
+            source_kind="outlook_upload",
+            source_account_id="Other mailbox",
+            source_folder_id="Inbox",
+            source_conversation_id=None,
+            normalized_subject="acme renewal",
+            participants=conversation.participants,
+            user=user,
+        )
+        is None
+    )
     assert artifact_repo.list_recent_mail_conversations(user, limit=5) == (conversation,)
     assert artifact_repo.get_mail_message(artifact_id, user) == message
     assert artifact_repo.get_mail_message(missing_artifact_id, user) is None

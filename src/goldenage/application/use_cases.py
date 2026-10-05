@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Literal
@@ -21,6 +20,7 @@ from goldenage.application.ports import (
     MailImportClient,
     MailImportRepository,
 )
+from goldenage.domain.mail import normalize_mail_subject, strip_mail_subject_prefixes
 from goldenage.domain.models import (
     Activity,
     Artifact,
@@ -770,22 +770,32 @@ class GoldenAgeService:
         if case_file is None:
             raise NotFoundError("Case not found.")
 
+        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
+        conversation = (
+            self._artifact_repository.get_mail_conversation(mail_message.conversation_id, user)
+            if mail_message is not None
+            else None
+        )
+        if (
+            conversation is not None
+            and conversation.assigned_case_id is not None
+            and conversation.assigned_case_id != case_id
+        ):
+            raise ResolutionError(
+                "This mail conversation is already assigned to another case. "
+                "Split or reassign the conversation explicitly before assigning this message."
+            )
+
         normalized_step = next_step.strip()
         if not normalized_step:
             raise ResolutionError("A next step description is required.")
 
         updated_artifact = replace(artifact, assigned_case_id=case_id)
         self._artifact_repository.save_artifact(updated_artifact)
-        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
-        if mail_message is not None:
-            conversation = self._artifact_repository.get_mail_conversation(
-                mail_message.conversation_id,
-                user,
+        if conversation is not None:
+            self._artifact_repository.save_mail_conversation(
+                replace(conversation, assigned_case_id=case_id, updated_at=now)
             )
-            if conversation is not None:
-                self._artifact_repository.save_mail_conversation(
-                    replace(conversation, assigned_case_id=case_id, updated_at=now)
-                )
         self._activity_repository.save_activity(
             Activity(
                 id=uuid4(),
@@ -829,6 +839,17 @@ class GoldenAgeService:
             raise ResolutionError("A case title is required.")
         if not normalized_step:
             raise ResolutionError("A next step description is required.")
+        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
+        conversation = (
+            self._artifact_repository.get_mail_conversation(mail_message.conversation_id, user)
+            if mail_message is not None
+            else None
+        )
+        if conversation is not None and conversation.assigned_case_id is not None:
+            raise ResolutionError(
+                "This mail conversation is already assigned to a case. "
+                "Split or reassign the conversation explicitly before creating another case."
+            )
         case_id = uuid4()
         self._case_repository.save_case(
             CaseFile(
@@ -890,6 +911,8 @@ class GoldenAgeService:
             repository=self._artifact_repository,
             user=user,
             source_kind=source_kind,
+            source_account_id=extracted.source_account_id or source_account,
+            source_folder_id=extracted.source_folder_id or source_mailbox,
             external_conversation_id=external_conversation_id,
             artifact=artifact,
             extracted=extracted,
@@ -998,21 +1021,10 @@ def _build_mail_metadata(
     )
 
 
-_SUBJECT_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:aw|re|fw|fwd|wg|sv|antwort|reply)(?:\[\d+\])?\s*:\s*)+",
-    re.IGNORECASE,
-)
-
-
 def _suggest_new_case_title(mail_metadata: ArtifactMailMetadata | None) -> str:
     if mail_metadata is None or mail_metadata.subject is None:
         return ""
-    title = mail_metadata.subject.strip()
-    previous = None
-    while title and title != previous:
-        previous = title
-        title = _SUBJECT_PREFIX_RE.sub("", title).strip()
-    return title
+    return strip_mail_subject_prefixes(mail_metadata.subject)
 
 
 def _normalize_mail_selector(selector: MailSelector) -> MailSelector:
@@ -1038,6 +1050,8 @@ def _conversation_for_message(
     repository: ArtifactRepository,
     user: UserContext,
     source_kind: str,
+    source_account_id: str | None,
+    source_folder_id: str | None,
     external_conversation_id: str | None,
     artifact: Artifact,
     extracted: ExtractedArtifactData,
@@ -1045,15 +1059,15 @@ def _conversation_for_message(
 ) -> MailConversation:
     latest_message_at = extracted.received_at or extracted.sent_at or artifact.uploaded_at
     participants = _mail_participants(extracted)
-    existing = None
-    for candidate in repository.list_recent_mail_conversations(user, limit=50):
-        if (
-            candidate.source_kind == source_kind
-            and candidate.external_conversation_id == external_conversation_id
-            and external_conversation_id is not None
-        ):
-            existing = candidate
-            break
+    existing = repository.find_mail_conversation(
+        source_kind=source_kind,
+        source_account_id=source_account_id,
+        source_folder_id=source_folder_id,
+        source_conversation_id=extracted.conversation_id,
+        normalized_subject=_normalize_subject(extracted.subject),
+        participants=participants,
+        user=user,
+    )
     if existing is None:
         return MailConversation(
             id=uuid4(),
@@ -1069,15 +1083,18 @@ def _conversation_for_message(
             updated_at=now,
             assigned_case_id=artifact.assigned_case_id,
         )
+    incoming_is_latest = latest_message_at > existing.latest_message_at
     return replace(
         existing,
-        latest_subject=extracted.subject or existing.latest_subject,
-        latest_message_at=max(existing.latest_message_at, latest_message_at),
+        latest_subject=(extracted.subject or existing.latest_subject)
+        if incoming_is_latest
+        else existing.latest_subject,
+        latest_message_at=latest_message_at if incoming_is_latest else existing.latest_message_at,
         participants=_merge_participants(existing.participants, participants),
         message_count=existing.message_count + 1,
-        latest_artifact_id=artifact.id,
+        latest_artifact_id=artifact.id if incoming_is_latest else existing.latest_artifact_id,
         updated_at=now,
-        assigned_case_id=artifact.assigned_case_id or existing.assigned_case_id,
+        assigned_case_id=existing.assigned_case_id or artifact.assigned_case_id,
     )
 
 
@@ -1108,12 +1125,7 @@ def _merge_participants(
 
 
 def _normalize_subject(subject: str | None) -> str | None:
-    if subject is None:
-        return None
-    normalized = subject.strip().lower()
-    normalized = re.sub(r"^((re|fw|fwd):\s*)+", "", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
-    return normalized or None
+    return normalize_mail_subject(subject)
 
 
 def _dedupe_fingerprint(

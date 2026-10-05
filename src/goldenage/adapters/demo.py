@@ -22,6 +22,7 @@ from goldenage.application.ports import (
     GiselaClient,
     MailImportRepository,
 )
+from goldenage.domain.mail import same_mail_participants, strip_mail_subject_prefixes
 from goldenage.domain.models import (
     Activity,
     Artifact,
@@ -193,7 +194,51 @@ class InMemoryArtifactRepository(ArtifactRepository):
         conversation = self._state.mail_conversations.get(conversation_id)
         if conversation is None:
             return None
+        if (
+            conversation.assigned_case_id is not None
+            and self._case_repository.get_case(conversation.assigned_case_id, user) is None
+        ):
+            return None
         return conversation if self.get_artifact(conversation.latest_artifact_id, user) else None
+
+    def find_mail_conversation(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_conversation_id: str | None,
+        normalized_subject: str | None,
+        participants: tuple[MailParticipant, ...],
+        user: UserContext,
+    ) -> MailConversation | None:
+        """Find a conversation through all durable message identities."""
+        for message in self._state.mail_messages.values():
+            if message.source_kind != source_kind:
+                continue
+            if not _mail_scope_matches(
+                message.source_account_id,
+                message.source_folder_id,
+                source_account_id,
+                source_folder_id,
+            ):
+                continue
+            if source_conversation_id is not None:
+                if message.source_conversation_id != source_conversation_id:
+                    continue
+            else:
+                conversation = self._state.mail_conversations.get(message.conversation_id)
+                if (
+                    conversation is None
+                    or normalized_subject is None
+                    or conversation.normalized_subject != normalized_subject
+                    or not same_mail_participants(conversation.participants, participants)
+                ):
+                    continue
+            conversation = self.get_mail_conversation(message.conversation_id, user)
+            if conversation is not None:
+                return conversation
+        return None
 
     def list_recent_mail_conversations(
         self,
@@ -204,7 +249,7 @@ class InMemoryArtifactRepository(ArtifactRepository):
         items = [
             conversation
             for conversation in self._state.mail_conversations.values()
-            if self.get_artifact(conversation.latest_artifact_id, user) is not None
+            if self.get_mail_conversation(conversation.id, user) is not None
         ]
         items.sort(key=lambda item: item.latest_message_at, reverse=True)
         return tuple(items[:limit])
@@ -265,7 +310,13 @@ class InMemoryArtifactRepository(ArtifactRepository):
                 and self.get_artifact(artifact_id, user) is not None
             )
         ]
-        artifacts.sort(key=lambda artifact: artifact.uploaded_at, reverse=True)
+        artifacts.sort(
+            key=lambda artifact: (
+                self._state.mail_messages[artifact.id].received_at or artifact.uploaded_at,
+                artifact.uploaded_at,
+            ),
+            reverse=True,
+        )
         return tuple(artifacts)
 
     def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
@@ -596,6 +647,20 @@ def _case_visible_to_user(case_file: CaseFile, user: UserContext) -> bool:
     return case_file.visible_group_id in user.visible_group_ids
 
 
+def _mail_scope_matches(
+    candidate_account_id: str | None,
+    candidate_folder_id: str | None,
+    incoming_account_id: str | None,
+    incoming_folder_id: str | None,
+) -> bool:
+    """Keep identity lookup inside one account, or one folder when no account exists."""
+    if incoming_account_id is not None:
+        return candidate_account_id == incoming_account_id
+    if incoming_folder_id is not None:
+        return candidate_account_id is None and candidate_folder_id == incoming_folder_id
+    return candidate_account_id is None and candidate_folder_id is None
+
+
 def _rank_cases(
     source_text: str, visible_cases: Sequence[CaseFile]
 ) -> list[tuple[float, CaseFile, str]]:
@@ -687,13 +752,7 @@ def _subject_match_score(subject: str, case_title: str) -> float:
 
 
 def _normalize_subject(subject: str) -> str:
-    normalized = subject.strip()
-    while True:
-        stripped = re.sub(r"^(re|fw|fwd|aw)\s*:\s*", "", normalized, flags=re.IGNORECASE)
-        if stripped == normalized:
-            break
-        normalized = stripped.strip()
-    return normalized
+    return strip_mail_subject_prefixes(subject)
 
 
 def _normalized_tokens(text: str) -> tuple[str, ...]:

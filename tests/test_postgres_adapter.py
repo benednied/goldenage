@@ -316,6 +316,26 @@ def test_artifact_repository_save_find_and_mailbox_methods(monkeypatch) -> None:
         dedupe_fingerprint="fingerprint",
         user=user,
     ) == postgres._row_to_mail_message(mail_message_row)
+    cursor.fetchall_rows = [_mail_conversation_row(conversation_id, artifact_id)]
+    assert repo.find_mail_conversation(
+        source_kind="outlook_msg",
+        source_account_id="account-1",
+        source_folder_id="Sent",
+        source_conversation_id="conv-1",
+        normalized_subject=None,
+        participants=(MailParticipant(name="Alex", email="alex@example.com"),),
+        user=user,
+    ) == postgres._row_to_mail_conversation(_mail_conversation_row(conversation_id, artifact_id))
+    assert repo.find_mail_conversation(
+        source_kind="outlook_msg",
+        source_account_id="account-1",
+        source_folder_id="Sent",
+        source_conversation_id=None,
+        normalized_subject="renewal",
+        participants=(MailParticipant(name="Alex", email="alex@example.com"),),
+        user=user,
+    ) == postgres._row_to_mail_conversation(_mail_conversation_row(conversation_id, artifact_id))
+    cursor.fetchall_rows = [artifact_row]
     repo.list_conversation_artifacts(conversation_id, user)
     repo.save_mailbox_account_config(postgres._row_to_mailbox_account_config(mailbox_account_row))
     assert repo.get_active_mailbox_account_config(user) == postgres._row_to_mailbox_account_config(

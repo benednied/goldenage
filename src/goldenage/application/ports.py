@@ -19,6 +19,7 @@ from goldenage.domain.models import (
     MailCandidate,
     MailConversation,
     MailMessage,
+    MailParticipant,
     MailSelector,
     MailSourceSystem,
     SearchResult,
@@ -104,6 +105,19 @@ class ArtifactRepository(Protocol):
         user: UserContext,
     ) -> MailConversation | None:
         """Return one visible mail conversation."""
+
+    def find_mail_conversation(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_conversation_id: str | None,
+        normalized_subject: str | None,
+        participants: tuple[MailParticipant, ...],
+        user: UserContext,
+    ) -> MailConversation | None:
+        """Find a visible conversation by durable scoped identity."""
 
     def list_recent_mail_conversations(
         self,

@@ -118,6 +118,42 @@ def test_in_memory_repositories_apply_visibility_and_mail_lookup_edges(tmp_path)
     assert artifact_repo.get_suggestion(artifact_id, visible_user) is not None
     assert artifact_repo.get_mail_metadata(artifact_id, visible_user) is not None
     assert artifact_repo.get_mail_conversation(conversation_id, visible_user) is not None
+    assert (
+        artifact_repo.find_mail_conversation(
+            source_kind="outlook_upload",
+            source_account_id="account",
+            source_folder_id="Inbox",
+            source_conversation_id="conv",
+            normalized_subject=None,
+            participants=state.mail_conversations[conversation_id].participants,
+            user=visible_user,
+        )
+        == state.mail_conversations[conversation_id]
+    )
+    assert (
+        artifact_repo.find_mail_conversation(
+            source_kind="outlook_upload",
+            source_account_id="account",
+            source_folder_id="Sent",
+            source_conversation_id=None,
+            normalized_subject="acme renewal",
+            participants=state.mail_conversations[conversation_id].participants,
+            user=visible_user,
+        )
+        == state.mail_conversations[conversation_id]
+    )
+    assert (
+        artifact_repo.find_mail_conversation(
+            source_kind="outlook_upload",
+            source_account_id="other-account",
+            source_folder_id="Inbox",
+            source_conversation_id=None,
+            normalized_subject="acme renewal",
+            participants=state.mail_conversations[conversation_id].participants,
+            user=visible_user,
+        )
+        is None
+    )
     assert artifact_repo.get_mail_message(artifact_id, visible_user) is not None
     assert artifact_repo.list_recent_mail_conversations(visible_user) == (
         state.mail_conversations[conversation_id],

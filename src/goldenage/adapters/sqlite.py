@@ -16,6 +16,7 @@ from goldenage.application.ports import (
     AuditRepository,
     CaseRepository,
 )
+from goldenage.domain.mail import same_mail_participants
 from goldenage.domain.models import (
     Activity,
     Artifact,
@@ -442,6 +443,66 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         with self._connect() as connection:
             row = connection.execute(sql, (str(conversation_id), *params)).fetchone()
         return _row_to_mail_conversation(row) if row else None
+
+    def find_mail_conversation(
+        self,
+        *,
+        source_kind: str,
+        source_account_id: str | None,
+        source_folder_id: str | None,
+        source_conversation_id: str | None,
+        normalized_subject: str | None,
+        participants: tuple[MailParticipant, ...],
+        user: UserContext,
+    ) -> MailConversation | None:
+        """Find a visible conversation through indexed durable message identity."""
+        if source_conversation_id is None and normalized_subject is None:
+            return None
+
+        if source_account_id is not None:
+            scope_sql = "mm.source_account_id = ?"
+            scope_params = (source_account_id,)
+        elif source_folder_id is not None:
+            scope_sql = "mm.source_account_id IS NULL AND mm.source_folder_id = ?"
+            scope_params = (source_folder_id,)
+        else:
+            scope_sql = "mm.source_account_id IS NULL AND mm.source_folder_id IS NULL"
+            scope_params = ()
+
+        if source_conversation_id is not None:
+            identity_sql = "mm.source_conversation_id = ?"
+            identity_params = (source_conversation_id,)
+        else:
+            identity_sql = "mc.normalized_subject = ?"
+            identity_params = (normalized_subject,)
+
+        clause, visibility_params = _group_visibility_clause(
+            user.visible_group_ids, "c.visible_group_id"
+        )
+        sql = f"""
+            SELECT DISTINCT mc.*
+            FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE mm.source_kind = ?
+              AND {scope_sql}
+              AND {identity_sql}
+              AND (c.id IS NULL OR {clause})
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                sql,
+                (source_kind, *scope_params, *identity_params, *visibility_params),
+            ).fetchall()
+
+        for row in rows:
+            conversation = _row_to_mail_conversation(row)
+            if source_conversation_id is not None or same_mail_participants(
+                conversation.participants, participants
+            ):
+                return conversation
+        return None
 
     def list_recent_mail_conversations(
         self,
