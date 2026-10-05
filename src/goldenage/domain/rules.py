@@ -15,7 +15,12 @@ class ResolutionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ResolutionPlan:
-    """Validated resolution intent for a due activity."""
+    """Validated resolution intent for a due activity.
+
+    Closing is intentionally only an intent here.  The application and
+    persistence layers must still verify that this activity is the case's
+    last unfinished activity while holding the transition transaction.
+    """
 
     completed_at: datetime
     follow_up_activity: Activity | None

@@ -10,3 +10,4 @@ This directory holds the current engineering defaults and the ADRs that explain 
 4. [`adr-0002-modular-monolith.md`](adr-0002-modular-monolith.md)
 5. [`adr-0003-demo-and-postgres-adapters.md`](adr-0003-demo-and-postgres-adapters.md)
 6. [`adr-0004-migration-identifiers.md`](adr-0004-migration-identifiers.md)
+7. [`adr-0005-case-closure-and-reopening.md`](adr-0005-case-closure-and-reopening.md)

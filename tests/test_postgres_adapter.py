@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from goldenage.adapters import postgres
+from goldenage.application.ports import WorkflowConflictError
 from goldenage.domain.models import (
     Activity,
     Artifact,
@@ -32,6 +33,7 @@ class FakeCursor:
         self.fetchone_rows = fetchone_rows or []
         self.fetchall_rows = fetchall_rows or []
         self.executed: list[tuple[str, dict[str, object] | None]] = []
+        self.rowcount = 1
 
     def __enter__(self) -> "FakeCursor":
         return self
@@ -152,6 +154,7 @@ def test_activity_repository_visibility_and_completion_branches(monkeypatch) -> 
     monkeypatch.setattr(repo, "_case_visible", lambda case_id, user: False)
 
     assert repo.list_due_activities(user, NOW)
+    assert "c.status = 'open'" in cursor.executed[0][0]
     assert repo.list_case_activities(uuid4(), user) == ()
     assert repo.get_activity(activity_id, user) is None
     assert repo.get_activity(activity_id, user) == postgres._row_to_activity(visible_row)
@@ -163,6 +166,61 @@ def test_activity_repository_visibility_and_completion_branches(monkeypatch) -> 
     assert repo.get_activity(activity_id, user) is None
     repo.save_activity(postgres._row_to_activity(visible_row))
     assert connection.commits == 1
+
+
+def test_postgres_workflow_transition_locks_case_and_rejects_sibling_closure(monkeypatch) -> None:
+    activity_id = uuid4()
+    case_id = uuid4()
+    user_id = uuid4()
+    audit_event = AuditEvent(
+        id=uuid4(),
+        actor_user_id=user_id,
+        event_type="activity_resolved",
+        subject_id=activity_id,
+        payload_json={"case_id": str(case_id)},
+        created_at=NOW,
+    )
+    cursor = FakeCursor(
+        fetchone_rows=[
+            {"status": "open"},
+            {"case_id": case_id, "completed_at": None},
+        ]
+    )
+    connection = FakeConnection(cursor)
+    repo = postgres.PostgresActivityRepository("postgresql://example")
+    monkeypatch.setattr(repo, "_connect", lambda: connection)
+
+    repo.resolve_activity(
+        activity_id=activity_id,
+        case_id=case_id,
+        completed_at=NOW,
+        close_case=False,
+        follow_up_activity=None,
+        audit_event=audit_event,
+    )
+    assert connection.commits == 1
+    assert "FOR UPDATE" in cursor.executed[0][0]
+    assert any("INSERT INTO audit_event" in statement for statement, _ in cursor.executed)
+
+    blocked_cursor = FakeCursor(
+        fetchone_rows=[
+            {"status": "open"},
+            {"case_id": case_id, "completed_at": None},
+            {"one": 1},
+        ]
+    )
+    blocked_connection = FakeConnection(blocked_cursor)
+    monkeypatch.setattr(repo, "_connect", lambda: blocked_connection)
+    with pytest.raises(WorkflowConflictError, match="other activities remain open"):
+        repo.resolve_activity(
+            activity_id=activity_id,
+            case_id=case_id,
+            completed_at=NOW,
+            close_case=True,
+            follow_up_activity=None,
+            audit_event=audit_event,
+        )
+    assert blocked_connection.commits == 0
 
 
 def test_artifact_repository_maps_mail_and_visibility_branches(monkeypatch) -> None:

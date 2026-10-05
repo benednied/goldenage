@@ -54,6 +54,31 @@ class ActivityRepository(Protocol):
     def save_activity(self, activity: Activity) -> None:
         """Persist an activity."""
 
+    def resolve_activity(
+        self,
+        *,
+        activity_id: UUID,
+        case_id: UUID,
+        completed_at: datetime,
+        close_case: bool,
+        follow_up_activity: Activity | None,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Complete an activity and its case transition atomically."""
+
+    def reopen_case(
+        self,
+        *,
+        case_id: UUID,
+        reopened_at: datetime,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Explicitly reopen a closed case and record the transition atomically."""
+
+
+class WorkflowConflictError(RuntimeError):
+    """Raised when a workflow transition no longer matches persisted state."""
+
 
 class ArtifactRepository(Protocol):
     """Persistence port for artifacts and suggestions."""

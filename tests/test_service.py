@@ -28,6 +28,7 @@ from goldenage.application.use_cases import (
     _suggest_new_case_title,
 )
 from goldenage.domain.models import (
+    Activity,
     ExtractedArtifactData,
     ImportedMailPayload,
     MailCandidate,
@@ -602,6 +603,103 @@ def test_service_resolves_activity_and_updates_case_state(tmp_path) -> None:
         skip_follow_up=False,
     )
     assert closed.case_file.status == "closed"
+
+
+def test_service_blocks_closure_until_all_case_activities_are_finished(tmp_path) -> None:
+    service, user, state = build_service(tmp_path)
+    first_activity_id = next(iter(state.activities))
+    case_id = state.activities[first_activity_id].case_id
+    now = datetime(2026, 4, 12, 10, 0, tzinfo=UTC)
+    second_activity = Activity(
+        id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbba1"),
+        case_id=case_id,
+        description="Confirm the signed appendix.",
+        kind="question",
+        due_at=now,
+        created_at=now,
+        created_by=user.id,
+    )
+    state.activities[second_activity.id] = second_activity
+
+    with pytest.raises(ResolutionError, match="other activities remain open"):
+        service.resolve_activity(
+            activity_id=first_activity_id,
+            user=user,
+            now=now,
+            next_step=None,
+            next_due_at=None,
+            close_case=True,
+            skip_follow_up=False,
+        )
+
+    assert state.cases[case_id].status == "open"
+    assert state.activities[first_activity_id].completed_at is None
+    assert state.activities[second_activity.id].completed_at is None
+    assert state.audit_events == []
+
+    service.resolve_activity(
+        activity_id=first_activity_id,
+        user=user,
+        now=now,
+        next_step=None,
+        next_due_at=None,
+        close_case=False,
+        skip_follow_up=True,
+    )
+    closed = service.resolve_activity(
+        activity_id=second_activity.id,
+        user=user,
+        now=now,
+        next_step=None,
+        next_due_at=None,
+        close_case=True,
+        skip_follow_up=False,
+    )
+
+    assert closed.case_file.status == "closed"
+    assert service.get_today_worklist(user=user, now=now) == ()
+    assert [event.event_type for event in state.audit_events] == [
+        "activity_resolved",
+        "activity_resolved",
+    ]
+
+
+def test_service_requires_explicit_reopen_for_stale_closed_case_work(tmp_path) -> None:
+    service, user, state = build_service(tmp_path)
+    activity_id = next(iter(state.activities))
+    activity = state.activities[activity_id]
+    case_id = activity.case_id
+    now = datetime(2026, 4, 12, 10, 0, tzinfo=UTC)
+    state.cases[case_id] = replace(state.cases[case_id], status="closed")
+
+    assert service.get_today_worklist(user=user, now=now) == ()
+    with pytest.raises(ResolutionError, match="Reopen it explicitly"):
+        service.resolve_activity(
+            activity_id=activity_id,
+            user=user,
+            now=now,
+            next_step=None,
+            next_due_at=None,
+            close_case=False,
+            skip_follow_up=True,
+        )
+    assert state.activities[activity_id].completed_at is None
+
+    reopened = service.reopen_case(case_id=case_id, user=user, now=now)
+    assert reopened.case_file.status == "open"
+    assert state.audit_events[-1].event_type == "case_reopened"
+    assert state.audit_events[-1].payload_json["reason"] == "explicit_reopen_command"
+
+    resolved = service.resolve_activity(
+        activity_id=activity_id,
+        user=user,
+        now=now,
+        next_step=None,
+        next_due_at=None,
+        close_case=False,
+        skip_follow_up=True,
+    )
+    assert resolved.activity_history[0].completed_at == now
 
 
 def test_service_defensive_repository_edge_paths(tmp_path) -> None:

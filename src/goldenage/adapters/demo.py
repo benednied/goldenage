@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parseaddr
@@ -21,6 +21,7 @@ from goldenage.application.ports import (
     ElizabethanSearchClient,
     GiselaClient,
     MailImportRepository,
+    WorkflowConflictError,
 )
 from goldenage.domain.models import (
     Activity,
@@ -98,7 +99,10 @@ class InMemoryActivityRepository(ActivityRepository):
             for activity in self._state.activities.values()
             if activity.completed_at is None
             and activity.due_at <= now
-            and self._case_repository.get_case(activity.case_id, user) is not None
+            and (
+                (case_file := self._case_repository.get_case(activity.case_id, user)) is not None
+                and case_file.status == "open"
+            )
         )
 
     def list_case_activities(self, case_id: UUID, user: UserContext) -> Sequence[Activity]:
@@ -118,6 +122,67 @@ class InMemoryActivityRepository(ActivityRepository):
 
     def save_activity(self, activity: Activity) -> None:
         self._state.activities[activity.id] = activity
+
+    def resolve_activity(
+        self,
+        *,
+        activity_id: UUID,
+        case_id: UUID,
+        completed_at: datetime,
+        close_case: bool,
+        follow_up_activity: Activity | None,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Apply the activity and case transition as one in-memory mutation."""
+        activity = self._state.activities.get(activity_id)
+        case_file = self._state.cases.get(case_id)
+        if activity is None or case_file is None or activity.case_id != case_id:
+            raise WorkflowConflictError("The activity or case no longer exists.")
+        if activity.completed_at is not None:
+            raise WorkflowConflictError("This activity was already resolved by another request.")
+        if case_file.status != "open":
+            raise WorkflowConflictError(
+                "This case is closed. Reopen it explicitly before resolving another activity."
+            )
+        if close_case and any(
+            other.case_id == case_id and other.id != activity_id and other.completed_at is None
+            for other in self._state.activities.values()
+        ):
+            raise WorkflowConflictError(
+                "The case cannot be closed while other activities remain open."
+            )
+
+        self._state.activities[activity_id] = replace(activity, completed_at=completed_at)
+        if follow_up_activity is not None:
+            self._state.activities[follow_up_activity.id] = follow_up_activity
+        self._state.cases[case_id] = replace(
+            case_file,
+            status="closed" if close_case else "open",
+            last_activity_at=completed_at,
+        )
+        self._state.audit_events.append(audit_event)
+
+    def reopen_case(
+        self,
+        *,
+        case_id: UUID,
+        reopened_at: datetime,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Apply an explicit reopen command and its audit event together."""
+        case_file = self._state.cases.get(case_id)
+        if case_file is None:
+            raise WorkflowConflictError("The case no longer exists.")
+        if case_file.status != "closed":
+            raise WorkflowConflictError(
+                "This case is already open; no reopen transition was recorded."
+            )
+        self._state.cases[case_id] = replace(
+            case_file,
+            status="open",
+            last_activity_at=reopened_at,
+        )
+        self._state.audit_events.append(audit_event)
 
 
 class InMemoryArtifactRepository(ArtifactRepository):

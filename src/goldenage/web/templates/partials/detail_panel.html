@@ -24,31 +24,63 @@
         Due {{ format_datetime(detail.active_activity.due_at, local_timezone) }}
       </p>
 
+      {% if detail.case_file.status == "open" %}
+        <form
+          method="post"
+          action="/activities/{{ detail.active_activity.id }}/resolve"
+          hx-post="/activities/{{ detail.active_activity.id }}/resolve"
+          hx-target="#workspace"
+          hx-swap="innerHTML"
+          class="workflow-form"
+        >
+          <label>
+            What happens next?
+            <input type="text" name="next_step" placeholder="Call back with revised clause wording" />
+          </label>
+          <label>
+            Follow-up due
+            <input type="datetime-local" name="next_due_at" />
+          </label>
+          {% if detail.open_activities|length > 1 %}
+            <p class="muted">Closing is unavailable while other activities remain open.</p>
+          {% else %}
+            <label class="checkbox-row">
+              <input type="checkbox" name="close_case" />
+              <span>Close the case after this final activity.</span>
+            </label>
+          {% endif %}
+          <label class="checkbox-row">
+            <input type="checkbox" name="skip_follow_up" />
+            <span>Record that no follow-up is needed.</span>
+          </label>
+          <button type="submit">Resolve with a clear next state</button>
+        </form>
+      {% else %}
+        <p class="message message-error">
+          This case is closed. Reopen it explicitly before resolving remaining work.
+        </p>
+        <form
+          method="post"
+          action="/cases/{{ detail.case_file.id }}/reopen"
+          hx-post="/cases/{{ detail.case_file.id }}/reopen"
+          hx-target="#workspace"
+          hx-swap="innerHTML"
+        >
+          <button type="submit">Reopen case explicitly</button>
+        </form>
+      {% endif %}
+    </section>
+  {% elif detail.case_file.status == "closed" %}
+    <section class="detail-section">
+      <p class="muted">This case is closed. Reopening is an explicit audited action.</p>
       <form
         method="post"
-        action="/activities/{{ detail.active_activity.id }}/resolve"
-        hx-post="/activities/{{ detail.active_activity.id }}/resolve"
+        action="/cases/{{ detail.case_file.id }}/reopen"
+        hx-post="/cases/{{ detail.case_file.id }}/reopen"
         hx-target="#workspace"
         hx-swap="innerHTML"
-        class="workflow-form"
       >
-        <label>
-          What happens next?
-          <input type="text" name="next_step" placeholder="Call back with revised clause wording" />
-        </label>
-        <label>
-          Follow-up due
-          <input type="datetime-local" name="next_due_at" />
-        </label>
-        <label class="checkbox-row">
-          <input type="checkbox" name="close_case" />
-          <span>Close the case instead of scheduling follow-up.</span>
-        </label>
-        <label class="checkbox-row">
-          <input type="checkbox" name="skip_follow_up" />
-          <span>Record that no follow-up is needed.</span>
-        </label>
-        <button type="submit">Resolve with a clear next state</button>
+        <button type="submit">Reopen case explicitly</button>
       </form>
     </section>
   {% endif %}
@@ -69,6 +101,21 @@
       <p class="muted">No open activities.</p>
     {% endif %}
   </section>
+
+  {% if detail.activity_history %}
+    <section class="detail-section">
+      <h3>Activity history</h3>
+      <ul class="mini-list">
+        {% for activity in detail.activity_history %}
+          <li>
+            <strong>{% if activity.completed_at %}Completed{% else %}Open{% endif %}</strong>
+            <span>{{ activity.description }}</span>
+            <small>{{ format_datetime(activity.completed_at or activity.due_at, local_timezone) }}</small>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
 
   <section class="detail-section">
     <h3>Recent artifacts</h3>

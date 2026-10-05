@@ -15,6 +15,7 @@ from goldenage.application.ports import (
     ArtifactRepository,
     AuditRepository,
     CaseRepository,
+    WorkflowConflictError,
 )
 from goldenage.domain.models import (
     Activity,
@@ -123,6 +124,7 @@ class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
             JOIN case_file c ON c.id = a.case_id
             WHERE a.completed_at IS NULL
               AND a.due_at <= ?
+              AND c.status = 'open'
               AND {clause}
             ORDER BY a.due_at ASC, a.created_at ASC
         """
@@ -185,6 +187,155 @@ class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
         with self._connect() as connection:
             connection.execute(sql, payload)
             connection.commit()
+
+    def resolve_activity(
+        self,
+        *,
+        activity_id: UUID,
+        case_id: UUID,
+        completed_at: datetime,
+        close_case: bool,
+        follow_up_activity: Activity | None,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Complete an activity, update its case, and audit atomically."""
+        with self._connect() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                case_row = connection.execute(
+                    "SELECT status FROM case_file WHERE id = ?",
+                    (str(case_id),),
+                ).fetchone()
+                if case_row is None:
+                    raise WorkflowConflictError("The activity or case no longer exists.")
+                if case_row["status"] != "open":
+                    raise WorkflowConflictError(
+                        "This case is closed. Reopen it explicitly before resolving another activity."
+                    )
+                activity_row = connection.execute(
+                    """
+                    SELECT case_id, completed_at
+                    FROM activity
+                    WHERE id = ?
+                    """,
+                    (str(activity_id),),
+                ).fetchone()
+                if (
+                    activity_row is None
+                    or activity_row["case_id"] != str(case_id)
+                    or activity_row["completed_at"] is not None
+                ):
+                    raise WorkflowConflictError(
+                        "This activity was already resolved by another request."
+                    )
+                if close_case:
+                    remaining = connection.execute(
+                        """
+                        SELECT 1
+                        FROM activity
+                        WHERE case_id = ? AND id <> ? AND completed_at IS NULL
+                        LIMIT 1
+                        """,
+                        (str(case_id), str(activity_id)),
+                    ).fetchone()
+                    if remaining is not None:
+                        raise WorkflowConflictError(
+                            "The case cannot be closed while other activities remain open."
+                        )
+
+                updated = connection.execute(
+                    """
+                    UPDATE activity
+                    SET completed_at = ?
+                    WHERE id = ? AND case_id = ? AND completed_at IS NULL
+                    """,
+                    (_serialize_datetime(completed_at), str(activity_id), str(case_id)),
+                )
+                if updated.rowcount != 1:
+                    raise WorkflowConflictError(
+                        "This activity was already resolved by another request."
+                    )
+                if follow_up_activity is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO activity (
+                            id, case_id, description, kind, due_at, completed_at,
+                            created_at, created_by
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(follow_up_activity.id),
+                            str(follow_up_activity.case_id),
+                            follow_up_activity.description,
+                            follow_up_activity.kind,
+                            _serialize_datetime(follow_up_activity.due_at),
+                            _serialize_datetime(follow_up_activity.completed_at),
+                            _serialize_datetime(follow_up_activity.created_at),
+                            (
+                                str(follow_up_activity.created_by)
+                                if follow_up_activity.created_by is not None
+                                else None
+                            ),
+                        ),
+                    )
+                updated_case = connection.execute(
+                    """
+                    UPDATE case_file
+                    SET status = ?, last_activity_at = ?
+                    WHERE id = ? AND status = 'open'
+                    """,
+                    (
+                        "closed" if close_case else "open",
+                        _serialize_datetime(completed_at),
+                        str(case_id),
+                    ),
+                )
+                if updated_case.rowcount != 1:
+                    raise WorkflowConflictError(
+                        "The case changed while this activity was being resolved."
+                    )
+                _insert_audit_event(connection, audit_event)
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+    def reopen_case(
+        self,
+        *,
+        case_id: UUID,
+        reopened_at: datetime,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Explicitly reopen a case and audit it in the same transaction."""
+        with self._connect() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT status FROM case_file WHERE id = ?",
+                    (str(case_id),),
+                ).fetchone()
+                if row is None:
+                    raise WorkflowConflictError("The case no longer exists.")
+                if row["status"] != "closed":
+                    raise WorkflowConflictError(
+                        "This case is already open; no reopen transition was recorded."
+                    )
+                updated = connection.execute(
+                    """
+                    UPDATE case_file
+                    SET status = 'open', last_activity_at = ?
+                    WHERE id = ? AND status = 'closed'
+                    """,
+                    (_serialize_datetime(reopened_at), str(case_id)),
+                )
+                if updated.rowcount != 1:
+                    raise WorkflowConflictError("The case changed before it could be reopened.")
+                _insert_audit_event(connection, audit_event)
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
 
 class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
@@ -931,6 +1082,25 @@ def _serialize_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _insert_audit_event(connection: sqlite3.Connection, event: AuditEvent) -> None:
+    """Insert a workflow audit event using the caller's open transaction."""
+    connection.execute(
+        """
+        INSERT INTO audit_event (
+            id, actor_user_id, event_type, subject_id, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(event.id),
+            str(event.actor_user_id) if event.actor_user_id is not None else None,
+            event.event_type,
+            str(event.subject_id),
+            json.dumps(event.payload_json),
+            _serialize_datetime(event.created_at),
+        ),
+    )
 
 
 def _deserialize_datetime(raw_value: str | None) -> datetime | None:
