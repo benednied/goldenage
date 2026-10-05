@@ -103,7 +103,6 @@ def create_app() -> FastAPI:
     """Application factory."""
     settings = load_settings()
     context = _build_context(settings)
-    runtime = _require_agent_runtime(context)
 
     app = FastAPI(title="GoldenAge")
     upload_limits = UploadLimits.from_environment()
@@ -494,6 +493,7 @@ def create_app() -> FastAPI:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
+        runtime = _require_agent_runtime(context)
         try:
             if conversation_id:
                 chat_state = runtime.get_chat_state(
@@ -532,6 +532,7 @@ def create_app() -> FastAPI:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
+        runtime = _require_agent_runtime(context)
         now = _now(context)
         try:
             conversation = (
