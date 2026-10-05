@@ -23,9 +23,11 @@ commit SHAs; their trailing version comments identify the reviewed release.
 
 Open the failed `quality` job, reproduce the named command locally, correct the
 failure, and push the correction. A new push cancels the obsolete pull-request
-run. Do not add future checks (coverage, PostgreSQL, packaging, or security) to
-branch protection until their jobs have run successfully and their exact GitHub
-check names are known.
+run. Do not add future checks (coverage, PostgreSQL, or packaging) to branch
+protection until their jobs have run successfully and their exact GitHub check
+names are known. Security workflows are documented separately in
+[`docs/security.md`](security.md); require their exact successful check names
+only after the first default-branch runs have completed.
 
 ## GitHub administrator handoff
 
@@ -56,8 +58,11 @@ ruleset or classic branch protection rather than creating competing rules):
    gh api repos/OWNER/REPO/branches/DEFAULT/protection
    ```
 
-The checkout is deliberately limited to the four baseline checks. Coverage,
-database, distribution, and security gates remain separate follow-up work.
+The checkout keeps the four baseline quality checks separate from the security
+workflows. Advisory scanning and redacted secret scanning run from
+`.github/workflows/dependency-security.yml` and
+`.github/workflows/secret-scan.yml`; their settings, exception policy, and
+administrator handoff are in [`docs/security.md`](security.md).
 
 The quality job also runs `python -m goldenage.migration_validation` when the
 migration validator is present. This permits the CI and migration-convention PRs

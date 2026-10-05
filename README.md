@@ -250,9 +250,18 @@ uv run --extra dev ruff check . --fix
 uv run --extra dev ruff format .
 ```
 
+## Security
+
+Dependency updates, lockfile advisory scans, redacted history/PR secret scans,
+and private vulnerability reporting are documented in
+[`SECURITY.md`](SECURITY.md) and [`docs/security.md`](docs/security.md). Do not
+report suspected vulnerabilities in public issues or include credentials in
+issues, pull requests, fixtures, or logs.
+
 ## Repository Guide
 
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): local setup, checks, and the contribution workflow
+- [`SECURITY.md`](SECURITY.md): supported versions and the private vulnerability reporting route
 - [Bug report form](.github/ISSUE_TEMPLATE/bug_report.yml) and [feature request form](.github/ISSUE_TEMPLATE/feature_request.yml): start a reproducible report or a product request
 - [Pull-request template](.github/pull_request_template.md): review information for proposed changes
 - [`docs/README.md`](docs/README.md): documentation index
