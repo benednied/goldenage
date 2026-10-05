@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import secrets
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -36,6 +37,7 @@ from goldenage.adapters.mail import (
     build_desktop_mail_import_client,
 )
 from goldenage.adapters.outlook_mailbox import (
+    MailboxWorkerHealth,
     OutlookMailboxMessage,
     OutlookMailboxWorker,
     WindowsOutlookMailboxSource,
@@ -64,7 +66,7 @@ from goldenage.application.use_cases import (
 )
 from goldenage.bootstrap_sqlite import ensure_sqlite_bootstrapped
 from goldenage.config import Settings, load_settings
-from goldenage.domain.models import MailSelector, UserContext
+from goldenage.domain.models import MailboxAccountConfig, MailSelector, UserContext
 from goldenage.domain.rules import ResolutionError, due_label
 from goldenage.web.upload_security import (
     UploadLimitMiddleware,
@@ -105,6 +107,14 @@ def create_app() -> FastAPI:
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
+
+    @app.get("/health/mailbox")
+    async def mailbox_health() -> dict[str, object]:
+        if context.outlook_worker is None:
+            return asdict(MailboxWorkerHealth(state="stopped", thread_alive=False)) | {
+                "state": "disabled"
+            }
+        return asdict(context.outlook_worker.health)
 
     @app.on_event("startup")
     async def startup_event() -> None:
@@ -863,13 +873,13 @@ def _build_context(settings: Settings) -> AppContext:
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:
 
-        def ingest_outlook_message(message: OutlookMailboxMessage) -> None:
+        def ingest_outlook_message(message: OutlookMailboxMessage) -> bool:
             user = _current_user_for_repositories(
                 default_user=default_user,
                 local_user_repository=local_user_repository,
             )
             if user is None:
-                return
+                return False
             extracted = normalize_outlook_message(message)
             service.ingest_mail(
                 file_name=_mailbox_file_name(message),
@@ -879,12 +889,31 @@ def _build_context(settings: Settings) -> AppContext:
                 user=user,
                 now=datetime.now(UTC),
             )
+            return True
 
+        account_config = _ensure_mailbox_account_config(
+            artifact_repository,
+            settings=settings,
+            default_user=default_user,
+        )
+        source_kwargs: dict[str, object] = {}
+        source_parameters = inspect.signature(WindowsOutlookMailboxSource).parameters
+        if "checkpoint_repository" in source_parameters:
+            source_kwargs["checkpoint_repository"] = (
+                artifact_repository if account_config is not None else None
+            )
+        if "account_config" in source_parameters:
+            source_kwargs["account_config"] = account_config
         source = WindowsOutlookMailboxSource(
             settings,
             on_message=ingest_outlook_message,
+            **source_kwargs,
         )
-        outlook_worker = OutlookMailboxWorker(source)
+        worker_kwargs: dict[str, object] = {}
+        worker_parameters = inspect.signature(OutlookMailboxWorker).parameters
+        if "shutdown_timeout_seconds" in worker_parameters:
+            worker_kwargs["shutdown_timeout_seconds"] = settings.outlook_shutdown_timeout_seconds
+        outlook_worker = OutlookMailboxWorker(source, **worker_kwargs)
     return AppContext(
         settings=settings,
         service=service,
@@ -893,6 +922,51 @@ def _build_context(settings: Settings) -> AppContext:
         outlook_worker=outlook_worker,
         upload_limits=UploadLimits.from_environment(),
     )
+
+
+def _ensure_mailbox_account_config(
+    artifact_repository: object,
+    *,
+    settings: Settings,
+    default_user: UserContext | None,
+) -> MailboxAccountConfig | None:
+    """Reuse the shared mailbox account/checkpoint tables for worker state."""
+    required = (
+        "get_active_mailbox_account_config",
+        "save_mailbox_account_config",
+        "list_mailbox_sync_checkpoints",
+        "save_mailbox_sync_checkpoint",
+    )
+    if not all(callable(getattr(artifact_repository, name, None)) for name in required):
+        return None
+    lookup_user = default_user or UserContext(
+        id=uuid5(NAMESPACE_URL, f"goldenage:outlook-user:{settings.outlook_account_name}"),
+        email="outlook-worker@goldenage.invalid",
+        display_name="Outlook worker",
+    )
+    repository = artifact_repository
+    existing = repository.get_active_mailbox_account_config(lookup_user)  # type: ignore[attr-defined]
+    if existing is not None:
+        return existing
+    now = datetime.now(UTC)
+    account_name = settings.outlook_account_name
+    if account_name is None:
+        return None
+    config = MailboxAccountConfig(
+        id=uuid5(NAMESPACE_URL, f"goldenage:outlook-account:{account_name}"),
+        user_id=default_user.id if default_user is not None else None,
+        source_kind="outlook_mailbox_message",
+        account_key=account_name,
+        outlook_store_name=account_name,
+        inbox_folder_key=None,
+        sent_folder_key=None,
+        polling_interval_seconds=max(settings.outlook_poll_seconds, 1),
+        active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    repository.save_mailbox_account_config(config)  # type: ignore[attr-defined]
+    return config
 
 
 async def _bounded_form(request: Request, limits: UploadLimits):

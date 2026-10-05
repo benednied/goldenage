@@ -1,6 +1,8 @@
 import sys
+import threading
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -22,7 +24,7 @@ from goldenage.adapters.outlook_mailbox import (
     normalize_outlook_message,
 )
 from goldenage.config import Settings
-from goldenage.domain.models import MailParticipant
+from goldenage.domain.models import MailboxAccountConfig, MailboxSyncCheckpoint, MailParticipant
 
 
 def test_normalize_outlook_mailbox_message_maps_threading_fields() -> None:
@@ -269,7 +271,115 @@ def test_outlook_mailbox_worker_starts_once_and_delegates_stop() -> None:
     assert calls == ["watch", "stop"]
 
 
-def _settings(account_name: str | None) -> Settings:
+def test_outlook_source_pages_through_backlog_and_resumes_from_checkpoint() -> None:
+    messages = _fake_messages(100)
+    folder = _FakeFolder(messages)
+    repository = _CheckpointRepository()
+    account = _mailbox_account_config()
+    received: list[str] = []
+    source = WindowsOutlookMailboxSource(
+        _settings(account_name="Mailbox", scan_limit=25),
+        lambda message: received.append(message.message_key),
+        checkpoint_repository=repository,
+        account_config=account,
+    )
+
+    source._process_folder(
+        folder=folder,
+        account_name="Mailbox",
+        direction="inbound",
+        checkpoint=None,
+    )
+
+    assert received == [f"message-{index:03d}" for index in range(100)]
+    checkpoint = repository.checkpoints["folder"]
+    assert checkpoint.last_message_key == "message-099"
+
+    received.clear()
+    resumed_source = WindowsOutlookMailboxSource(
+        _settings(account_name="Mailbox", scan_limit=25),
+        lambda message: received.append(message.message_key),
+        checkpoint_repository=repository,
+        account_config=account,
+    )
+    resumed_source._process_folder(
+        folder=folder,
+        account_name="Mailbox",
+        direction="inbound",
+        checkpoint=checkpoint,
+    )
+    assert received == []
+
+
+def test_outlook_source_retries_failures_without_acknowledging_past_quarantine() -> None:
+    messages = _fake_messages(5)
+    repository = _CheckpointRepository()
+    attempts: list[str] = []
+
+    def on_message(message: OutlookMailboxMessage) -> None:
+        attempts.append(message.message_key)
+        if message.message_key == "message-002":
+            raise RuntimeError("mail body must not appear in health")
+
+    source = WindowsOutlookMailboxSource(
+        _settings(account_name="Mailbox", scan_limit=25, max_attempts=2),
+        on_message,
+        checkpoint_repository=repository,
+        account_config=_mailbox_account_config(),
+    )
+    source._process_folder(
+        folder=_FakeFolder(messages),
+        account_name="Mailbox",
+        direction="inbound",
+        checkpoint=None,
+    )
+
+    assert attempts == [
+        "message-000",
+        "message-001",
+        "message-002",
+        "message-002",
+        "message-003",
+        "message-004",
+    ]
+    assert repository.checkpoints["folder"].last_message_key == "message-001"
+    health = source.health
+    assert health.last_failure_message_key == "message-002"
+    assert health.quarantined_message_keys == ("message-002",)
+    assert "mail body" not in (health.last_failure_error or "")
+    source._process_folder(
+        folder=_FakeFolder(messages),
+        account_name="Mailbox",
+        direction="inbound",
+        checkpoint=repository.checkpoints["folder"],
+    )
+    assert repository.checkpoints["folder"].last_message_key == "message-001"
+
+
+def test_outlook_worker_restart_joins_old_source_and_exposes_dead_state() -> None:
+    source = _BlockingSource()
+    worker = OutlookMailboxWorker(source, shutdown_timeout_seconds=1)
+
+    worker.start()
+    assert worker.health.state == "running"
+    worker.stop()
+    assert worker.health.state == "stopped"
+    assert worker.health.thread_alive is False
+
+    worker.start()
+    assert worker.health.state == "running"
+    worker.restart()
+    assert worker.health.state == "running"
+    worker.stop()
+    assert source.starts == 3
+
+
+def _settings(
+    account_name: str | None,
+    *,
+    scan_limit: int = 25,
+    max_attempts: int = 3,
+) -> Settings:
     return Settings(
         database_url=None,
         local_first_mode=None,
@@ -279,7 +389,7 @@ def _settings(account_name: str | None) -> Settings:
         local_timezone="UTC",
         mail_client_mode=None,
         mail_fixture_path=None,
-        outlook_scan_per_folder_limit=25,
+        outlook_scan_per_folder_limit=scan_limit,
         outlook_sync_enabled=True,
         outlook_account_name=account_name,
         outlook_poll_seconds=1,
@@ -287,4 +397,93 @@ def _settings(account_name: str | None) -> Settings:
         apple_mail_fixture_path=None,
         auth_secret="secret",
         auth_cookie_secure=False,
+        outlook_delivery_max_attempts=max_attempts,
+        outlook_retry_backoff_seconds=0,
+    )
+
+
+class _FakeItems:
+    def __init__(self, messages: tuple[SimpleNamespace, ...]) -> None:
+        self._messages = messages
+        self.Count = len(messages)
+
+    def Sort(self, field: str, descending: bool) -> None:
+        assert field == "[ReceivedTime]"
+        assert descending is True
+
+    def Item(self, index: int) -> SimpleNamespace:
+        return self._messages[index - 1]
+
+
+class _FakeFolder:
+    EntryID = "folder"
+
+    def __init__(self, messages: tuple[SimpleNamespace, ...]) -> None:
+        self.Items = _FakeItems(messages)
+
+
+class _CheckpointRepository:
+    def __init__(self) -> None:
+        self.checkpoints: dict[str, MailboxSyncCheckpoint] = {}
+
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        del config
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> tuple[MailboxSyncCheckpoint, ...]:
+        del account_config_id
+        return tuple(self.checkpoints.values())
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        self.checkpoints[checkpoint.folder_key] = checkpoint
+
+
+class _BlockingSource:
+    def __init__(self) -> None:
+        self.started = False
+        self.starts = 0
+        self._stop_event = threading.Event()
+
+    def reset(self) -> None:
+        self._stop_event.clear()
+
+    def watch_forever(self) -> None:
+        self.started = True
+        self.starts += 1
+        while not self._stop_event.is_set():
+            self._stop_event.wait(0.001)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+
+def _fake_messages(count: int) -> tuple[SimpleNamespace, ...]:
+    return tuple(
+        SimpleNamespace(
+            Class=43,
+            EntryID=f"message-{index:03d}",
+            Body=f"body-{index}",
+            SentOn=datetime(2026, 4, 12, 9, index % 60, tzinfo=UTC),
+            ReceivedTime=datetime(2026, 4, 12, 9, index % 60, tzinfo=UTC),
+        )
+        for index in reversed(range(count))
+    )
+
+
+def _mailbox_account_config() -> MailboxAccountConfig:
+    now = datetime(2026, 4, 12, 9, 30, tzinfo=UTC)
+    return MailboxAccountConfig(
+        id=uuid4(),
+        user_id=None,
+        source_kind="outlook_mailbox_message",
+        account_key="Mailbox",
+        outlook_store_name="Mailbox",
+        inbox_folder_key="folder",
+        sent_folder_key=None,
+        polling_interval_seconds=1,
+        active=True,
+        created_at=now,
+        updated_at=now,
     )

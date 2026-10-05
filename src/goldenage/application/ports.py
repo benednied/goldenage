@@ -16,6 +16,8 @@ from goldenage.domain.models import (
     CaseFile,
     ExtractedArtifactData,
     ImportedMailPayload,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     MailCandidate,
     MailConversation,
     MailMessage,
@@ -139,6 +141,24 @@ class ArtifactRepository(Protocol):
     ) -> Sequence[Artifact]:
         """Return artifacts belonging to a visible mail conversation."""
 
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        """Persist one mailbox runtime configuration."""
+
+    def get_active_mailbox_account_config(
+        self,
+        user: UserContext,
+    ) -> MailboxAccountConfig | None:
+        """Return the active mailbox configuration visible to the user."""
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        """Persist a successful mailbox delivery position."""
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> Sequence[MailboxSyncCheckpoint]:
+        """Return durable delivery positions for one mailbox configuration."""
+
 
 class AuditRepository(Protocol):
     """Persistence port for audit events."""
@@ -182,6 +202,22 @@ class MailboxSource(Protocol):
 
     def stop(self) -> None:
         """Stop watching the mailbox."""
+
+
+class MailboxCheckpointRepository(Protocol):
+    """Durable account and delivery-position storage for mailbox workers."""
+
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        """Persist one mailbox runtime configuration."""
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> Sequence[MailboxSyncCheckpoint]:
+        """Return durable delivery positions for one mailbox configuration."""
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        """Persist a successful mailbox delivery position."""
 
 
 class MailImportRepository(Protocol):
