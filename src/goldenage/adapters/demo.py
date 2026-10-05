@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parseaddr
@@ -17,6 +17,7 @@ from goldenage.application.ports import (
     ArtifactContentExtractor,
     ArtifactRepository,
     AuditRepository,
+    AutomationRepository,
     CaseRepository,
     ElizabethanSearchClient,
     GiselaClient,
@@ -28,6 +29,9 @@ from goldenage.domain.models import (
     ArtifactMailMetadata,
     AssignmentSuggestion,
     AuditEvent,
+    Automation,
+    AutomationRun,
+    AutomationTrigger,
     CaseFile,
     ExtractedArtifactData,
     MailboxAccountConfig,
@@ -60,6 +64,9 @@ class DemoState:
     mailbox_sync_checkpoints: dict[tuple[UUID, str], MailboxSyncCheckpoint]
     suggestions: dict[UUID, AssignmentSuggestion]
     audit_events: list[AuditEvent]
+    automations: dict[UUID, Automation] = field(default_factory=dict)
+    automation_triggers: dict[UUID, AutomationTrigger] = field(default_factory=dict)
+    automation_runs: dict[UUID, AutomationRun] = field(default_factory=dict)
 
 
 class InMemoryCaseRepository(CaseRepository):
@@ -304,6 +311,115 @@ class InMemoryAuditRepository(AuditRepository):
 
     def save_event(self, event: AuditEvent) -> None:
         self._state.audit_events.append(event)
+
+
+class InMemoryAutomationRepository(AutomationRepository):
+    """In-memory automation persistence for demo mode and unit tests."""
+
+    def __init__(self, state: DemoState) -> None:
+        self._state = state
+
+    def save_automation(self, automation: Automation) -> None:
+        self._state.automations[automation.id] = automation
+
+    def get_automation(self, automation_id: UUID, user: UserContext) -> Automation | None:
+        automation = self._state.automations.get(automation_id)
+        return automation if automation and automation.owner_user_id == user.id else None
+
+    def list_automations(self, user: UserContext) -> Sequence[Automation]:
+        return tuple(
+            automation
+            for automation in self._state.automations.values()
+            if automation.owner_user_id == user.id
+        )
+
+    def save_trigger(self, trigger: AutomationTrigger) -> None:
+        self._state.automation_triggers[trigger.id] = trigger
+
+    def list_triggers(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[AutomationTrigger]:
+        if self.get_automation(automation_id, user) is None:
+            return ()
+        return tuple(
+            trigger
+            for trigger in self._state.automation_triggers.values()
+            if trigger.automation_id == automation_id
+        )
+
+    def create_run(self, run: AutomationRun) -> AutomationRun:
+        for existing in self._state.automation_runs.values():
+            if (
+                existing.automation_id == run.automation_id
+                and existing.idempotency_key == run.idempotency_key
+            ):
+                return existing
+        self._state.automation_runs[run.id] = run
+        return run
+
+    def get_run(self, run_id: UUID, user: UserContext) -> AutomationRun | None:
+        run = self._state.automation_runs.get(run_id)
+        return run if run and run.owner_user_id == user.id else None
+
+    def find_run_by_key(
+        self,
+        automation_id: UUID,
+        idempotency_key: str,
+        user: UserContext,
+    ) -> AutomationRun | None:
+        if self.get_automation(automation_id, user) is None:
+            return None
+        return next(
+            (
+                run
+                for run in self._state.automation_runs.values()
+                if run.automation_id == automation_id and run.idempotency_key == idempotency_key
+            ),
+            None,
+        )
+
+    def list_runs(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+        *,
+        limit: int = 50,
+    ) -> Sequence[AutomationRun]:
+        if self.get_automation(automation_id, user) is None:
+            return ()
+        runs = [
+            run
+            for run in self._state.automation_runs.values()
+            if run.automation_id == automation_id
+        ]
+        runs.sort(key=lambda run: run.created_at, reverse=True)
+        return tuple(runs[:limit])
+
+    def list_active_runs(self, automation_id: UUID) -> Sequence[AutomationRun]:
+        return tuple(
+            run
+            for run in self._state.automation_runs.values()
+            if run.automation_id == automation_id and run.status in {"queued", "running"}
+        )
+
+    def recover_interrupted_runs(self, now: datetime) -> Sequence[AutomationRun]:
+        recovered = []
+        for run in tuple(self._state.automation_runs.values()):
+            if run.status in {"queued", "running"}:
+                recovered_run = replace(
+                    run,
+                    status="interrupted",
+                    finished_at=now,
+                    warning_message="Process restarted before this run completed.",
+                )
+                self._state.automation_runs[run.id] = recovered_run
+                recovered.append(recovered_run)
+        return tuple(recovered)
+
+    def update_run(self, run: AutomationRun) -> None:
+        self._state.automation_runs[run.id] = run
 
 
 class InMemoryMailImportRepository(MailImportRepository):

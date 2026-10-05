@@ -14,6 +14,18 @@ MailSourceSystem = Literal["outlook_upload", "apple_mail_client", "desktop_mail_
 MailMessageFormat = Literal["outlook_msg", "rfc822_email"]
 ParseStatus = Literal["parsed"]
 MailDirection = Literal["inbound", "outbound"]
+AutomationTriggerKind = Literal["manual", "schedule", "mail", "artifact"]
+AutomationRunStatus = Literal[
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "warning",
+    "skipped",
+    "interrupted",
+]
+AutomationMissedRunPolicy = Literal["skip", "run_once"]
+AutomationOverlapPolicy = Literal["skip", "queue"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,4 +295,66 @@ class AuditEvent:
     event_type: str
     subject_id: UUID
     payload_json: dict[str, object]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Automation:
+    """Trusted local Python automation owned by one user."""
+
+    id: UUID
+    owner_user_id: UUID
+    name: str
+    code: str
+    code_version: str
+    enabled: bool
+    effective_user_id: UUID
+    filesystem_paths: tuple[str, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationTrigger:
+    """A durable manual, schedule, mailbox, or artifact binding."""
+
+    id: UUID
+    automation_id: UUID
+    kind: AutomationTriggerKind
+    enabled: bool
+    schedule_expression: str | None
+    schedule_timezone: str | None
+    missed_run_policy: AutomationMissedRunPolicy
+    overlap_policy: AutomationOverlapPolicy
+    event_type: str | None
+    sender_filter: str
+    recipient_filter: str
+    subject_filter: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationRun:
+    """Durable execution provenance and bounded output."""
+
+    id: UUID
+    automation_id: UUID
+    trigger_id: UUID | None
+    owner_user_id: UUID
+    effective_user_id: UUID
+    idempotency_key: str
+    status: AutomationRunStatus
+    code_version: str
+    configured_paths: tuple[str, ...]
+    trigger_label: str
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    stdout: str
+    stderr: str
+    result_json: dict[str, object]
+    error_message: str | None
+    warning_message: str | None
+    attempt: int
     created_at: datetime
