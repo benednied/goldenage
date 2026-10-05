@@ -5,6 +5,7 @@ This directory contains dated implementation notes. These files are intentionall
 ## Current Entries
 
 - [`2026-04-12-bootstrap-slice.md`](2026-04-12-bootstrap-slice.md): lessons and constraints from the first working implementation slice
+- [`2026-10-05-int-01-integration-plan.md`](2026-10-05-int-01-integration-plan.md): branch/PR evidence boundary and small-package integration plan for INT-01
 
 ## Rule
 
