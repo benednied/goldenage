@@ -121,7 +121,7 @@ class PostgresCaseRepository(_PostgresRepositoryBase, CaseRepository):
 class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
     """Activity repository backed by PostgreSQL."""
 
-    def list_due_activities(self, user: UserContext, now: datetime) -> Sequence[Activity]:
+    def list_due_activities(self, user: UserContext, cutoff: datetime) -> Sequence[Activity]:
         sql = """
             SELECT a.id, a.case_id, a.description, a.kind, a.due_at, a.created_at,
                    a.created_by, a.completed_at
@@ -132,7 +132,7 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
               AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]))
             ORDER BY a.due_at ASC, a.created_at ASC
         """
-        params = {"cutoff": now, "group_ids": list(user.visible_group_ids)}
+        params = {"cutoff": cutoff, "group_ids": list(user.visible_group_ids)}
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, params)
             return tuple(_row_to_activity(row) for row in cursor.fetchall())

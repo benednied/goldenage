@@ -92,12 +92,12 @@ class InMemoryActivityRepository(ActivityRepository):
         self._state = state
         self._case_repository = case_repository
 
-    def list_due_activities(self, user: UserContext, now: datetime) -> Sequence[Activity]:
+    def list_due_activities(self, user: UserContext, cutoff: datetime) -> Sequence[Activity]:
         return tuple(
             activity
             for activity in self._state.activities.values()
             if activity.completed_at is None
-            and activity.due_at <= now
+            and activity.due_at <= cutoff
             and self._case_repository.get_case(activity.case_id, user) is not None
         )
 

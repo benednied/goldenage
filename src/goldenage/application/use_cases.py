@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -130,9 +130,22 @@ class GoldenAgeService:
         self._mail_import_client = mail_import_client
         self._mail_import_repository = mail_import_repository
 
-    def get_today_worklist(self, *, user: UserContext, now: datetime) -> tuple[WorklistItem, ...]:
-        """Return due activities sorted by urgency and timestamp."""
-        due_activities = self._activity_repository.list_due_activities(user, now)
+    def get_today_worklist(
+        self,
+        *,
+        user: UserContext,
+        cutoff: datetime,
+        now: datetime,
+        calendar_timezone: tzinfo,
+    ) -> tuple[WorklistItem, ...]:
+        """Return due activities, labeling their dates in the user's calendar zone.
+
+        ``cutoff`` is the UTC timestamp used by persistence to retain the daily
+        worklist's end-of-day inclusion rule. ``now`` is the actual reference
+        instant, and ``calendar_timezone`` controls user-facing date labels.
+        """
+        due_activities = self._activity_repository.list_due_activities(user, cutoff)
+        calendar_now = now.astimezone(calendar_timezone)
         visible_cases = {
             case_file.id: case_file for case_file in self._case_repository.list_cases(user)
         }
@@ -145,7 +158,7 @@ class GoldenAgeService:
                 WorklistItem(
                     activity=activity,
                     case_file=case_file,
-                    due_status=due_label(activity.due_at, now),
+                    due_status=due_label(activity.due_at, calendar_now),
                 )
             )
         return tuple(sorted(items, key=lambda item: (item.activity.due_at, item.case_file.title)))

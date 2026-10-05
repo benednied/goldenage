@@ -114,7 +114,7 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
 class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
     """Activity repository backed by SQLite."""
 
-    def list_due_activities(self, user: UserContext, now: datetime) -> Sequence[Activity]:
+    def list_due_activities(self, user: UserContext, cutoff: datetime) -> Sequence[Activity]:
         clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
         sql = f"""
             SELECT a.id, a.case_id, a.description, a.kind, a.due_at, a.created_at,
@@ -127,7 +127,7 @@ class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
             ORDER BY a.due_at ASC, a.created_at ASC
         """
         with self._connect() as connection:
-            rows = connection.execute(sql, (_serialize_datetime(now), *params)).fetchall()
+            rows = connection.execute(sql, (_serialize_datetime(cutoff), *params)).fetchall()
         return tuple(_row_to_activity(row) for row in rows)
 
     def list_case_activities(self, case_id: UUID, user: UserContext) -> Sequence[Activity]:

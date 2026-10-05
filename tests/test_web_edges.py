@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -39,7 +40,6 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     ldap_response = demo_client.post("/login/ldap")
     assert ldap_response.status_code == 400
     assert "LDAP sign-in is not configured yet." in ldap_response.text
-
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
     local_client = TestClient(web_app.create_app(), follow_redirects=False)
@@ -63,6 +63,37 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     )
     assert bad_picture.status_code == 400
     assert "Profile picture uploads must be image files." in bad_picture.text
+
+
+def test_worklist_classifies_due_dates_in_local_calendar_and_keeps_cutoff(
+    monkeypatch,
+) -> None:
+    local_zone = ZoneInfo("Europe/Berlin")
+    reference_time = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+    monkeypatch.setenv("GOLDENAGE_LOCAL_TIMEZONE", "Europe/Berlin")
+    monkeypatch.setattr(web_app, "_now", lambda context: reference_time)
+
+    original_build_demo_state = web_app.build_demo_state
+
+    def frozen_demo_state():
+        state, user = original_build_demo_state()
+        due_dates = (
+            datetime(2026, 10, 4, 0, 30, tzinfo=local_zone).astimezone(UTC),
+            datetime(2026, 10, 4, 23, 30, tzinfo=local_zone).astimezone(UTC),
+            datetime(2026, 10, 5, 0, 0, tzinfo=local_zone).astimezone(UTC),
+        )
+        for activity, due_at in zip(state.activities.values(), due_dates, strict=True):
+            state.activities[activity.id] = replace(activity, due_at=due_at)
+        return state, user
+
+    monkeypatch.setattr(web_app, "build_demo_state", frozen_demo_state)
+    client = TestClient(web_app.create_app())
+
+    response = client.get("/worklist")
+
+    assert response.status_code == 200
+    assert response.text.count('class="work-item due-today"') == 2
+    assert 'class="work-item due-upcoming"' not in response.text
 
 
 def test_static_ux_contracts_keep_focus_order_and_responsive_layout() -> None:

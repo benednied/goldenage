@@ -1,6 +1,7 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -143,15 +144,45 @@ def build_service(
 
 def test_today_worklist_contains_overdue_and_later_today_but_not_tomorrow(tmp_path) -> None:
     service, user, _ = build_service(tmp_path)
-    current_day = datetime.now(UTC).date()
-    end_of_day = datetime.combine(current_day, datetime.max.time(), tzinfo=UTC)
+    reference_time = datetime.now(UTC)
+    cutoff = datetime.combine(reference_time.date(), time.max, tzinfo=UTC)
 
-    items = service.get_today_worklist(user=user, now=end_of_day)
+    items = service.get_today_worklist(
+        user=user,
+        cutoff=cutoff,
+        now=reference_time,
+        calendar_timezone=UTC,
+    )
 
     descriptions = [item.activity.description for item in items]
     assert "Call Max about the amended pricing appendix." in descriptions
     assert "Review the outstanding compliance questionnaire." in descriptions
     assert "Prepare the response to the disputed invoice." not in descriptions
+
+
+def test_today_worklist_labels_local_date_with_utc_cutoff(tmp_path) -> None:
+    service, user, state = build_service(tmp_path)
+    local_zone = ZoneInfo("Europe/Berlin")
+    reference_time = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+    local_cutoff = datetime.combine(
+        reference_time.astimezone(local_zone).date(), time.max, local_zone
+    )
+    cutoff = local_cutoff.astimezone(UTC)
+    activity_id = next(iter(state.activities))
+    state.activities[activity_id] = replace(
+        state.activities[activity_id],
+        due_at=datetime(2026, 10, 4, 0, 30, tzinfo=local_zone).astimezone(UTC),
+    )
+
+    items = service.get_today_worklist(
+        user=user,
+        cutoff=cutoff,
+        now=reference_time,
+        calendar_timezone=local_zone,
+    )
+
+    item = next(item for item in items if item.activity.id == activity_id)
+    assert item.due_status == "today"
 
 
 def test_upload_subject_match_proposes_case(tmp_path) -> None:
@@ -609,7 +640,15 @@ def test_service_defensive_repository_edge_paths(tmp_path) -> None:
 
     del state.cases[missing_case_id]
     service._activity_repository.list_due_activities = lambda user, now: (stale_activity,)
-    assert service.get_today_worklist(user=user, now=now) == ()
+    assert (
+        service.get_today_worklist(
+            user=user,
+            cutoff=now,
+            now=now,
+            calendar_timezone=UTC,
+        )
+        == ()
+    )
     service._activity_repository.get_activity = lambda activity_id, user: stale_activity
     with pytest.raises(NotFoundError, match="Case"):
         service.resolve_activity(

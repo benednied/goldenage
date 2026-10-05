@@ -42,7 +42,7 @@ class CaseRepository(Protocol):
 class ActivityRepository(Protocol):
     """Persistence port for activities."""
 
-    def list_due_activities(self, user: UserContext, now: datetime) -> Sequence[Activity]:
+    def list_due_activities(self, user: UserContext, cutoff: datetime) -> Sequence[Activity]:
         """Return incomplete activities relevant for the dashboard."""
 
     def list_case_activities(self, case_id: UUID, user: UserContext) -> Sequence[Activity]:

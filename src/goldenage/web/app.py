@@ -965,6 +965,8 @@ def _page_context(
     mail_import_state: object | None = None,
 ) -> dict[str, object]:
     hydrated_intake = _hydrate_intake_state(context, intake_state=intake_state, user=user)
+    worklist_reference = _now(context)
+    calendar_timezone = ZoneInfo(context.settings.local_timezone)
     return {
         "request": request,
         "page_title": "GoldenAge",
@@ -973,7 +975,9 @@ def _page_context(
         "profile_image_url": _profile_image_url(user),
         "worklist": context.service.get_today_worklist(
             user=user,
-            now=_worklist_cutoff(context),
+            cutoff=_worklist_cutoff(context, reference_time=worklist_reference),
+            now=worklist_reference,
+            calendar_timezone=calendar_timezone,
         ),
         "detail": detail,
         "detail_error": None,
@@ -1241,10 +1245,15 @@ def _now(context: AppContext) -> datetime:
     return datetime.now(ZoneInfo(context.settings.local_timezone)).astimezone(UTC)
 
 
-def _worklist_cutoff(context: AppContext) -> datetime:
+def _worklist_cutoff(
+    context: AppContext,
+    *,
+    reference_time: datetime | None = None,
+) -> datetime:
+    """Return the UTC end of the user's current local calendar day."""
     local_zone = ZoneInfo(context.settings.local_timezone)
-    local_now = datetime.now(local_zone)
-    local_end_of_day = datetime.combine(local_now.date(), time.max, tzinfo=local_zone)
+    local_date = (reference_time or _now(context)).astimezone(local_zone).date()
+    local_end_of_day = datetime.combine(local_date, time.max, tzinfo=local_zone)
     return local_end_of_day.astimezone(UTC)
 
 

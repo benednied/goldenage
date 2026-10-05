@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -13,6 +14,84 @@ def test_due_label_distinguishes_overdue_today_and_upcoming() -> None:
     assert due_label(datetime(2026, 4, 11, 18, 0, tzinfo=UTC), now) == "overdue"
     assert due_label(datetime(2026, 4, 12, 23, 0, tzinfo=UTC), now) == "today"
     assert due_label(datetime(2026, 4, 13, 9, 0, tzinfo=UTC), now) == "upcoming"
+
+
+@pytest.mark.parametrize(
+    ("now", "due_at", "expected"),
+    [
+        (
+            datetime(2026, 1, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 1, 14, 22, 0, tzinfo=UTC),
+            "overdue",
+        ),
+        (
+            datetime(2026, 1, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 1, 15, 0, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            "today",
+        ),
+        (
+            datetime(2026, 1, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 1, 15, 5, 30, tzinfo=UTC),
+            "today",
+        ),
+        (
+            datetime(2026, 1, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 1, 15, 22, 0, tzinfo=UTC),
+            "today",
+        ),
+        (
+            datetime(2026, 1, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 1, 15, 23, 0, tzinfo=UTC),
+            "upcoming",
+        ),
+        (
+            datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 7, 14, 20, 0, tzinfo=UTC),
+            "overdue",
+        ),
+        (
+            datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 7, 15, 0, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            "today",
+        ),
+        (
+            datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 7, 15, 6, 0, tzinfo=UTC),
+            "today",
+        ),
+        (
+            datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 7, 15, 21, 0, tzinfo=UTC),
+            "today",
+        ),
+        (
+            datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 7, 15, 22, 0, tzinfo=UTC),
+            "upcoming",
+        ),
+        (
+            datetime(2026, 3, 29, 4, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 3, 29, 0, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+            "today",
+        ),
+        (
+            datetime(2026, 10, 25, 4, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 10, 25, 0, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+            "today",
+        ),
+        (
+            datetime(2026, 10, 4, 23, 59, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 10, 4, 0, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+            "today",
+        ),
+    ],
+)
+def test_due_label_uses_frozen_local_calendar_date(
+    now: datetime,
+    due_at: datetime,
+    expected: str,
+) -> None:
+    assert due_label(due_at, now) == expected
 
 
 def test_resolution_requires_exactly_one_path() -> None:
