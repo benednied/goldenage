@@ -553,6 +553,34 @@ class GoldenAgeService:
             extracted=extracted,
         )
 
+    def retry_artifact_analysis(
+        self,
+        *,
+        artifact_id: UUID,
+        user: UserContext,
+        now: datetime,
+    ) -> IntakeState:
+        """Retry analysis for an already stored artifact without re-importing it."""
+        artifact = self._artifact_repository.get_artifact(artifact_id, user)
+        if artifact is None:
+            raise NotFoundError("Artifact not found.")
+        mail_metadata = self._artifact_repository.get_mail_metadata(artifact_id, user)
+        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
+        conversation = None
+        if mail_message is not None:
+            conversation = self._artifact_repository.get_mail_conversation(
+                mail_message.conversation_id,
+                user,
+            )
+        return self._analyze_ingested_artifact(
+            artifact=artifact,
+            mail_metadata=mail_metadata,
+            conversation=conversation,
+            user=user,
+            now=now,
+            audit_event_type="artifact_analysis_retried",
+        )
+
     def get_recent_intake(self, *, user: UserContext, limit: int = 10) -> IntakeState:
         """Return recent mail conversations for the intake panel."""
         return IntakeState(
@@ -632,20 +660,83 @@ class GoldenAgeService:
         audit_event_type: str,
         extracted: ExtractedArtifactData | None = None,
     ) -> IntakeState:
-        artifact_id = uuid4()
-        storage_key = self._artifact_store.store(artifact_id, file_name, content)
         extracted = extracted or self._content_extractor.extract(file_name, media_type, content)
+        source_kind = extracted.source_kind or source_system
+        source_account_id = extracted.source_account_id or source_account
+        source_folder_id = extracted.source_folder_id or source_mailbox
+        internet_message_id = extracted.internet_message_id or extracted.rfc_message_id
+        dedupe_fingerprint = _dedupe_fingerprint(
+            source_kind=source_kind,
+            source_account_id=source_account_id,
+            source_folder_id=source_folder_id,
+            source_message_id=extracted.source_message_id or external_message_id,
+            internet_message_id=internet_message_id or rfc_message_id,
+            subject=extracted.subject,
+            sent_at=extracted.sent_at,
+            content_text=extracted.content_text,
+        )
+        existing = self._artifact_repository.find_mail_message_by_source(
+            source_kind=source_kind,
+            source_account_id=source_account_id,
+            source_folder_id=source_folder_id,
+            source_message_id=extracted.source_message_id or external_message_id,
+            internet_message_id=internet_message_id or rfc_message_id,
+            dedupe_fingerprint=dedupe_fingerprint,
+            user=user,
+        )
+        if existing is not None:
+            return self._state_for_existing_mail(
+                existing=existing,
+                user=user,
+                now=now,
+                source_system=source_system,
+                audit_event_type=audit_event_type,
+            )
+
+        artifact_id = uuid4()
+        conversation = _conversation_for_message(
+            repository=self._artifact_repository,
+            user=user,
+            source_kind=source_kind,
+            external_conversation_id=extracted.conversation_id
+            or _normalize_subject(extracted.subject),
+            artifact=Artifact(
+                id=artifact_id,
+                file_name=file_name,
+                media_type=media_type,
+                size_bytes=len(content),
+                content_text=extracted.content_text,
+                storage_key="",
+                uploaded_at=now,
+                uploaded_by=user.id,
+            ),
+            extracted=extracted,
+            now=now,
+        )
+        message = MailMessage(
+            artifact_id=artifact_id,
+            conversation_id=conversation.id,
+            source_kind=source_kind,
+            source_account_id=source_account_id,
+            source_folder_id=source_folder_id,
+            source_message_id=extracted.source_message_id or external_message_id,
+            source_conversation_id=extracted.conversation_id,
+            internet_message_id=internet_message_id or rfc_message_id,
+            dedupe_fingerprint=dedupe_fingerprint,
+            direction=extracted.direction,
+            received_at=extracted.received_at,
+            created_at=now,
+        )
         artifact = Artifact(
             id=artifact_id,
             file_name=file_name,
             media_type=media_type,
             size_bytes=len(content),
             content_text=extracted.content_text,
-            storage_key=storage_key,
+            storage_key="",
             uploaded_at=now,
             uploaded_by=user.id,
         )
-        self._artifact_repository.save_artifact(artifact)
         mail_metadata = _build_mail_metadata(
             artifact_id=artifact_id,
             extracted=extracted,
@@ -656,25 +747,126 @@ class GoldenAgeService:
             source_mailbox=source_mailbox,
             now=now,
         )
-        if mail_metadata is not None:
-            self._artifact_repository.save_mail_metadata(mail_metadata)
-        conversation = self._save_mail_thread(
+        try:
+            storage_key = self._artifact_store.store(artifact_id, file_name, content)
+        except Exception:
+            # LocalArtifactStore removes partial writes itself. Other stores
+            # cannot provide a key when store() fails, so leave their failure
+            # contract unchanged and avoid creating any database rows.
+            raise
+        artifact = replace(artifact, storage_key=storage_key)
+        try:
+            duplicate = self._artifact_repository.save_mail_ingestion(
+                user=user,
+                artifact=artifact,
+                mail_metadata=mail_metadata,
+                conversation=conversation,
+                message=message,
+            )
+        except Exception:
+            self._cleanup_staged_storage(storage_key)
+            raise
+        if duplicate is not None:
+            self._cleanup_staged_storage(storage_key)
+            return self._state_for_existing_mail(
+                existing=duplicate,
+                user=user,
+                now=now,
+                source_system=source_system,
+                audit_event_type=audit_event_type,
+            )
+        return self._analyze_ingested_artifact(
             artifact=artifact,
-            extracted=extracted,
-            source_system=source_system,
-            source_account=source_account,
-            source_mailbox=source_mailbox,
-            now=now,
+            mail_metadata=mail_metadata,
+            conversation=conversation,
             user=user,
+            now=now,
+            audit_event_type=audit_event_type,
+            external_message_id=external_message_id,
+            source_system=source_system,
         )
-        suggestion = self._gisela_client.analyze_artifact(
-            artifact,
-            mail_metadata,
-            self._case_repository.list_cases(user),
-            now,
+
+    def _state_for_existing_mail(
+        self,
+        *,
+        existing: MailMessage,
+        user: UserContext,
+        now: datetime,
+        source_system: MailSourceSystem,
+        audit_event_type: str,
+    ) -> IntakeState:
+        artifact = self._artifact_repository.get_artifact(existing.artifact_id, user)
+        if artifact is None:
+            raise ResolutionError("This mail message was already imported.")
+        mail_metadata = self._artifact_repository.get_mail_metadata(artifact.id, user)
+        conversation = self._artifact_repository.get_mail_conversation(
+            existing.conversation_id,
+            user,
         )
-        self._artifact_repository.save_suggestion(suggestion)
-        self._record_audit(
+        self._safe_record_audit(
+            actor_user_id=user.id,
+            event_type="mail_message_deduplicated",
+            subject_id=artifact.id,
+            payload={"source_system": source_system},
+            now=now,
+        )
+        suggestion = self._artifact_repository.get_suggestion(artifact.id, user)
+        if suggestion is None:
+            return self._analyze_ingested_artifact(
+                artifact=artifact,
+                mail_metadata=mail_metadata,
+                conversation=conversation,
+                user=user,
+                now=now,
+                audit_event_type="artifact_analysis_retried",
+            )
+        return self._mail_intake_state(
+            artifact=artifact,
+            suggestion=suggestion,
+            conversation=conversation,
+            user=user,
+            message="This mail message is already in intake.",
+        )
+
+    def _analyze_ingested_artifact(
+        self,
+        *,
+        artifact: Artifact,
+        mail_metadata: ArtifactMailMetadata | None,
+        conversation: MailConversation | None,
+        user: UserContext,
+        now: datetime,
+        audit_event_type: str,
+        external_message_id: str | None = None,
+        source_system: MailSourceSystem | None = None,
+    ) -> IntakeState:
+        try:
+            suggestion = self._gisela_client.analyze_artifact(
+                artifact,
+                mail_metadata,
+                self._case_repository.list_cases(user),
+                now,
+            )
+            self._artifact_repository.save_suggestion(suggestion)
+        except Exception as exc:
+            self._safe_record_audit(
+                actor_user_id=user.id,
+                event_type="artifact_analysis_failed",
+                subject_id=artifact.id,
+                payload={"error_type": type(exc).__name__, "retryable": True},
+                now=now,
+            )
+            return self._mail_intake_state(
+                artifact=artifact,
+                suggestion=None,
+                conversation=conversation,
+                user=user,
+                message="Analysis failed. The document is saved and can be retried.",
+                message_kind="error",
+                ingest_status="analysis_failed",
+            )
+
+        self._safe_record_audit(
             actor_user_id=user.id,
             event_type=audit_event_type,
             subject_id=artifact.id,
@@ -691,21 +883,71 @@ class GoldenAgeService:
             },
             now=now,
         )
-        intake_state = self._intake_state_for_artifact(artifact, suggestion, user=user)
-        if intake_state.search_mode:
-            return intake_state
-        return IntakeState(
-            artifact=intake_state.artifact,
-            suggestion=intake_state.suggestion,
+        return self._mail_intake_state(
+            artifact=artifact,
+            suggestion=suggestion,
+            conversation=conversation,
+            user=user,
             message="Document analyzed. Confirm or reject the proposed case.",
+        )
+
+    def _mail_intake_state(
+        self,
+        *,
+        artifact: Artifact,
+        suggestion: AssignmentSuggestion | None,
+        conversation: MailConversation | None,
+        user: UserContext,
+        message: str,
+        message_kind: MessageKind = "info",
+        ingest_status: str | None = None,
+    ) -> IntakeState:
+        intake_state = self._intake_state_for_artifact(artifact, suggestion, user=user)
+        return IntakeState(
+            artifact=artifact,
+            suggestion=suggestion,
+            search_mode=intake_state.search_mode,
+            search_query=intake_state.search_query,
+            search_results=intake_state.search_results,
+            message=message,
+            message_kind=message_kind,
             conversation=conversation,
             conversation_artifacts=(
                 tuple(self._artifact_repository.list_conversation_artifacts(conversation.id, user))
                 if conversation is not None
                 else ()
             ),
+            ingest_status=ingest_status,
             new_case_title_suggestion=intake_state.new_case_title_suggestion,
         )
+
+    def _cleanup_staged_storage(self, storage_key: str) -> None:
+        try:
+            self._artifact_store.delete(storage_key)
+        except FileNotFoundError:
+            pass
+
+    def _safe_record_audit(
+        self,
+        *,
+        actor_user_id: UUID | None,
+        event_type: str,
+        subject_id: UUID,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> None:
+        try:
+            self._record_audit(
+                actor_user_id=actor_user_id,
+                event_type=event_type,
+                subject_id=subject_id,
+                payload=payload,
+                now=now,
+            )
+        except Exception:
+            # Ingestion is already durable at this point. A later retry can
+            # repair analysis, while audit outages must not invite re-import.
+            pass
 
     def get_intake_state(self, *, artifact_id: UUID, user: UserContext) -> IntakeState:
         """Load persisted intake state."""
@@ -944,6 +1186,16 @@ class GoldenAgeService:
         mail_metadata = self._artifact_repository.get_mail_metadata(artifact.id, user)
         new_case_title_suggestion = _suggest_new_case_title(mail_metadata)
         if suggestion is None or suggestion.suggested_case_id is None:
+            if suggestion is None:
+                return IntakeState(
+                    artifact=artifact,
+                    suggestion=None,
+                    search_mode=True,
+                    message="Analysis is pending or failed. Retry analysis or use the bounded search flow.",
+                    message_kind="error",
+                    ingest_status="analysis_failed",
+                    new_case_title_suggestion=new_case_title_suggestion,
+                )
             return IntakeState(
                 artifact=artifact,
                 suggestion=suggestion,

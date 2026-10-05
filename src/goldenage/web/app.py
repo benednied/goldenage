@@ -609,6 +609,27 @@ def create_app() -> FastAPI:
             ),
         )
 
+    @app.post("/artifacts/{artifact_id}/analysis/retry", response_class=HTMLResponse)
+    async def retry_artifact_analysis(request: Request, artifact_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            intake_state = context.service.retry_artifact_analysis(
+                artifact_id=_uuid(artifact_id),
+                user=user,
+                now=_now(context),
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/intake_panel.html",
+            context=_page_context(
+                request, context, detail=None, intake_state=intake_state, user=user
+            ),
+        )
+
     @app.post("/artifacts/{artifact_id}/suggestion/reject", response_class=HTMLResponse)
     async def reject_suggestion(request: Request, artifact_id: str) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
@@ -1036,6 +1057,7 @@ def _hydrate_intake_state(
         search_query=intake_state.search_query,
         search_results=intake_state.search_results,
         message=intake_state.message,
+        message_kind=intake_state.message_kind,
         conversation=intake_state.conversation,
         conversation_artifacts=intake_state.conversation_artifacts,
         recent_conversations=fallback.recent_conversations,

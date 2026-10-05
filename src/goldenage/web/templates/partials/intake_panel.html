@@ -44,6 +44,19 @@
       {% endif %}
     </div>
 
+    {% if intake_state.ingest_status == "analysis_failed" %}
+      <form
+        method="post"
+        action="/artifacts/{{ intake_state.artifact.id }}/analysis/retry"
+        hx-post="/artifacts/{{ intake_state.artifact.id }}/analysis/retry"
+        hx-target="#intake-panel"
+        hx-swap="innerHTML"
+        class="workflow-form"
+      >
+        <button type="submit">Retry analysis</button>
+      </form>
+    {% endif %}
+
     {% if intake_state.conversation %}
       <p class="muted">
         Thread with {{ intake_state.conversation.message_count }} mail{% if intake_state.conversation.message_count != 1 %}s{% endif %}
