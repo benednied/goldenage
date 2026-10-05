@@ -13,7 +13,8 @@ already be recorded in existing databases.
 
 ## Decision
 
-Migration namespaces are separate for PostgreSQL (`sql/`) and SQLite (`sql/sqlite/`).
+Migration namespaces are separate for PostgreSQL (`src/goldenage/resources/sql/`) and
+SQLite (`src/goldenage/resources/sql/sqlite/`).
 Every future migration must use the filename form `NNNN_lowercase_description.sql`,
 where `NNNN` is a four-digit, zero-padded integer. A new ID must be greater than the
 historical baseline and unique within its dialect. Names consequently sort after all

@@ -40,7 +40,63 @@ jobs:
           uv run --no-sync ruff check .
           uv run --no-sync ruff format --check .
           uv run --no-sync ty check
-          if test -f src/goldenage/migration_validation.py; then
-            uv run --no-sync python -m goldenage.migration_validation
-          fi
+          uv run --no-sync python -m goldenage.migration_validation
           uv run --no-sync pytest -q
+
+  distribution:
+    name: distribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: goldenage-ci
+          POSTGRES_DB: goldenage
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d goldenage"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check "uv==0.6.14"
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Build and inspect distributions
+        run: |
+          uv build --out-dir dist
+          uv run --no-sync python tools/check_distribution.py dist
+          mkdir -p "$RUNNER_TEMP/goldenage-from-sdist"
+          sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$sdist"
+          tar -xzf "$sdist" --strip-components=1 -C "$RUNNER_TEMP/goldenage-from-sdist"
+          uv build --wheel "$RUNNER_TEMP/goldenage-from-sdist" --out-dir "$RUNNER_TEMP/goldenage-wheel-from-sdist"
+          uv run --no-sync python tools/check_distribution.py "$RUNNER_TEMP/goldenage-wheel-from-sdist"
+
+      - name: Smoke-test wheel built from the checkout
+        run: |
+          uv venv --python 3.14 "$RUNNER_TEMP/goldenage-wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/goldenage-wheel-venv/bin/python" dist/*.whl
+          "$RUNNER_TEMP/goldenage-wheel-venv/bin/python" tools/distribution_smoke.py \
+            --postgres-dsn "postgresql://postgres:goldenage-ci@127.0.0.1:5432/goldenage"
+
+      - name: Smoke-test wheel built from the source distribution
+        run: |
+          uv venv --python 3.14 "$RUNNER_TEMP/goldenage-sdist-wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/goldenage-sdist-wheel-venv/bin/python" \
+            "$RUNNER_TEMP/goldenage-wheel-from-sdist"/*.whl
+          "$RUNNER_TEMP/goldenage-sdist-wheel-venv/bin/python" tools/distribution_smoke.py \
+            --postgres-dsn "postgresql://postgres:goldenage-ci@127.0.0.1:5432/goldenage"

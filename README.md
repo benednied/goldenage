@@ -84,8 +84,11 @@ GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3 \
 ./.venv/bin/python -m goldenage.bootstrap_sqlite
 ```
 
-The bootstrap creates `var/` and applies `sql/sqlite/` migrations. App startup also
-applies outstanding SQLite migrations, so the bootstrap command is safe to repeat.
+The bootstrap creates `var/` and applies the SQLite migrations bundled in the
+GoldenAge package. App startup also applies outstanding SQLite migrations, so the
+bootstrap command is safe to repeat from any working directory. Use
+`--schema-path` only when an explicit external migration directory or SQL file is
+required.
 Start the server with the same command as demo mode and open
 <http://127.0.0.1:8000/worklist>. It serves profile images from the local artifact
 directory, replaces the fixed `Alex Example` user with a first-user onboarding flow,
@@ -201,16 +204,17 @@ Troubleshooting:
 
 In PostgreSQL mode, that command:
 
-- applies SQL migrations in [`sql/`](sql)
+- applies the PostgreSQL migrations bundled in the installed GoldenAge package
 - seeds the fixed demo user
 - seeds the baseline cases and activities used by the first slice
 
 ## Creating Migrations
 
-PostgreSQL migrations live in [`sql/`](sql); SQLite migrations live in
-[`sql/sqlite/`](sql/sqlite). They are separate namespaces, but each uses the format
-`NNNN_lowercase_description.sql` and a unique next ID. Check the target branch directly
-before creating or merging a migration, then run:
+PostgreSQL migrations live in [`src/goldenage/resources/sql/`](src/goldenage/resources/sql);
+SQLite migrations live in [`src/goldenage/resources/sql/sqlite/`](src/goldenage/resources/sql/sqlite).
+They are separate namespaces, but each uses the format `NNNN_lowercase_description.sql`
+and a unique next ID. Check the target branch directly before creating or merging a
+migration, then run:
 
 ```bash
 ./.venv/bin/python -m goldenage.migration_validation
@@ -220,8 +224,8 @@ The check preserves the shipped historical prefix collisions as explicit excepti
 rejects malformed, duplicate, or backward-sorting new IDs. Never rename or edit an
 applied migration: deliver a correction as a new forward migration. See
 [`ADR-0004`](docs/70-decisions/adr-0004-migration-identifiers.md) for the baseline and
-concurrent-PR collision procedure. Add this command to the existing quality job when
-that job is available.
+concurrent-PR collision procedure. The CI quality job runs this check as part of every
+pull request and default-branch build.
 
 ## Verification
 
@@ -232,12 +236,15 @@ uv run --extra dev ty check
 ./.venv/bin/python -m goldenage.migration_validation
 ./.venv/bin/python -m compileall src tests
 ./.venv/bin/pytest -q
+uv build
 ```
 
 ## Continuous Integration
 
-Pull requests and pushes to the default branch run the locked Python 3.14
-quality job: Ruff lint, Ruff format verification, `ty`, and `pytest`. Run the
+Pull requests and pushes to the default branch run locked Python 3.14 quality
+and distribution jobs. The quality job runs Ruff lint, Ruff format verification,
+`ty`, migration validation, and `pytest`; the distribution job builds and
+installs both archive paths and runs the packaged-resource smoke test. Run the
 same checks locally before opening a pull request; the exact commands and
 failure-handling guidance are in [`docs/ci.md`](docs/ci.md). Branch-protection
 configuration requires GitHub repository administration and is documented
@@ -259,6 +266,7 @@ uv run --extra dev ruff format .
 - [`docs/70-decisions/`](docs/70-decisions): canonical technical decisions and ADRs
 - [`docs/learnings/`](docs/learnings): dated implementation notes and discovered constraints
 - [`plans/implementation-plan.md`](plans/implementation-plan.md): current implementation plan
-- [`sql/`](sql): bootstrap SQL migrations
+- [`src/goldenage/resources/sql/`](src/goldenage/resources/sql): PostgreSQL bootstrap SQL migrations
+- [`src/goldenage/resources/sql/sqlite/`](src/goldenage/resources/sql/sqlite): SQLite bootstrap SQL migrations
 - [`src/goldenage/`](src/goldenage): application code by clean-architecture layer
 - [`tests/`](tests): unit, service, and web-flow tests
