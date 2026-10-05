@@ -275,9 +275,7 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         updated_at=NOW,
     )
     artifact_repo.save_mailbox_sync_checkpoint(mailbox_checkpoint)
-    assert artifact_repo.list_mailbox_sync_checkpoints(mailbox_config.id) == (
-        mailbox_checkpoint,
-    )
+    assert artifact_repo.list_mailbox_sync_checkpoints(mailbox_config.id) == (mailbox_checkpoint,)
 
     account = user_repo.get_first_user()
     assert user_repo.get_first_user() == account

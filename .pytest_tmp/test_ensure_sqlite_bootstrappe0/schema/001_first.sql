@@ -1,0 +1,1 @@
+CREATE TABLE first_table(id integer primary key);
