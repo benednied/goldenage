@@ -9,6 +9,7 @@ import time as time_module
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -167,12 +168,12 @@ def create_app() -> FastAPI:
         email: str = Form(default=""),
         password: str = Form(default=""),
     ) -> HTMLResponse:
-        await _require_csrf(request, settings=settings)
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
         local_user_repository = context.local_user_repository
         if local_user_repository is None:
             raise HTTPException(status_code=500, detail="Local-first login is not configured.")
+        await _require_csrf(request, settings=settings)
         account = local_user_repository.get_user_by_email(email)
         if account is None or not _verify_password(password, account.password_hash):
             return templates.TemplateResponse(
@@ -193,6 +194,13 @@ def create_app() -> FastAPI:
 
     @app.post("/login/ldap", response_class=HTMLResponse)
     async def login_ldap(request: Request) -> HTMLResponse:
+        if not settings.use_local_first_sqlite:
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context=_login_context(request, message="LDAP sign-in is not configured yet."),
+                status_code=400,
+            )
         await _require_csrf(request, settings=settings)
         return templates.TemplateResponse(
             request=request,
@@ -229,9 +237,12 @@ def create_app() -> FastAPI:
     async def create_onboarding_user(
         request: Request,
     ) -> HTMLResponse:
-        form = await _require_csrf(request, settings=settings, limits=upload_limits)
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
+        local_user_repository = context.local_user_repository
+        if local_user_repository is None:
+            raise HTTPException(status_code=500, detail="Local-first onboarding is not configured.")
+        form = await _require_csrf(request, settings=settings, limits=upload_limits)
         if _current_user(context, request=request) is not None:
             return RedirectResponse(url="/worklist", status_code=302)
 
@@ -283,9 +294,6 @@ def create_app() -> FastAPI:
                 status_code=400,
             )
 
-        local_user_repository = context.local_user_repository
-        if local_user_repository is None:
-            raise HTTPException(status_code=500, detail="Local-first onboarding is not configured.")
         account = local_user_repository.create_user(
             account_id=uuid4(),
             email=normalized_email,
@@ -1284,6 +1292,8 @@ async def _require_csrf(
     fetch_site = request.headers.get("sec-fetch-site", "").lower()
     if fetch_site in {"cross-site", "cross-origin"}:
         raise HTTPException(status_code=403, detail="CSRF validation failed.")
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="CSRF validation failed.")
 
     form: FormData | None = None
     content_type = request.headers.get("content-type", "").lower()
@@ -1307,6 +1317,45 @@ async def _require_csrf(
         raise HTTPException(status_code=403, detail="CSRF validation failed.")
     request.state.csrf_token = cookie_token
     return form
+
+
+def _same_origin(request: Request) -> bool:
+    """Return whether an explicit Origin header belongs to this application."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        parsed_origin = urlsplit(origin)
+        origin_port = parsed_origin.port or _default_port(parsed_origin.scheme)
+    except ValueError:
+        return False
+    if (
+        parsed_origin.scheme not in {"http", "https"}
+        or parsed_origin.username is not None
+        or parsed_origin.password is not None
+        or parsed_origin.path
+        or parsed_origin.query
+        or parsed_origin.fragment
+        or parsed_origin.hostname is None
+    ):
+        return False
+    try:
+        request_url = urlsplit(str(request.base_url))
+        request_port = request_url.port or _default_port(request_url.scheme)
+    except ValueError:
+        return False
+    if request_url.hostname is None:
+        return False
+    return (
+        parsed_origin.scheme == request_url.scheme
+        and parsed_origin.hostname.lower() == request_url.hostname.lower()
+        and origin_port == request_port
+    )
+
+
+def _default_port(scheme: str) -> int | None:
+    """Return the standard port for an HTTP origin scheme."""
+    return {"http": 80, "https": 443}.get(scheme)
 
 
 async def _store_profile_picture(

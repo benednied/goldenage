@@ -37,8 +37,9 @@ Every state-changing form, including login and onboarding, carries a hidden
 `csrf_token` field. HTMX requests also inherit `X-CSRF-Token` from the page.
 The server requires a matching cookie plus form field or header, validates the
 token signature against the current authentication cookie, and rejects
-cross-site Fetch Metadata. Tokens are rotated when a login or password change
-creates a new session. Tokens never appear in URLs.
+cross-site Fetch Metadata. If the browser sends an `Origin` header, it must
+match the application's origin as well. Tokens are rotated when a login or
+password change creates a new session. Tokens never appear in URLs.
 
 Authentication sessions expire after `GOLDENAGE_AUTH_SESSION_MAX_AGE` seconds,
 are invalidated by signing-secret rotation, and are bound to the current local

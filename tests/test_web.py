@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from goldenage.adapters.demo import OutlookMsgExtractor
 from goldenage.adapters.outlook_mailbox import OutlookMailboxMessage
 from goldenage.domain.models import ExtractedArtifactData, MailParticipant
+from goldenage.web import app as web_app
 from goldenage.web.app import create_app
 
 
@@ -52,6 +53,12 @@ VALID_PNG = (
 VALID_MSG = _minimal_compound_file()
 
 
+def _csrf_data(client: TestClient) -> dict[str, str]:
+    token = client.cookies.get(web_app.CSRF_COOKIE_NAME)
+    assert isinstance(token, str)
+    return {web_app.CSRF_FIELD_NAME: token}
+
+
 @pytest.fixture(autouse=True)
 def disable_outlook_sync_by_default(monkeypatch) -> None:
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "0")
@@ -87,8 +94,12 @@ def test_demo_mail_import_requires_explicit_fixture_or_mode(monkeypatch) -> None
     monkeypatch.delenv("GOLDENAGE_MAIL_FIXTURE_PATH", raising=False)
     monkeypatch.delenv("GOLDENAGE_MAIL_CLIENT_MODE", raising=False)
     client = TestClient(create_app())
+    client.get("/worklist")
 
-    response = client.post("/mail/desktop-mail/search", data={"result_limit": "10"})
+    response = client.post(
+        "/mail/desktop-mail/search",
+        data={"result_limit": "10", **_csrf_data(client)},
+    )
 
     assert response.status_code == 200
     assert "Mail Import" not in response.text
@@ -175,9 +186,11 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
     monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
     client = TestClient(create_app())
+    client.get("/worklist")
 
     upload_response = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("acme.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
@@ -188,7 +201,10 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
 
     artifact_id = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text).group(1)
 
-    reject_response = client.post(f"/artifacts/{artifact_id}/suggestion/reject")
+    reject_response = client.post(
+        f"/artifacts/{artifact_id}/suggestion/reject",
+        data=_csrf_data(client),
+    )
     assert reject_response.status_code == 200
     assert "Search cases" in reject_response.text
 
@@ -197,6 +213,7 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
         data={
             "artifact_id": artifact_id,
             "query": "Acme contract Mustermann",
+            **_csrf_data(client),
         },
     )
     assert search_response.status_code == 200
@@ -232,9 +249,11 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
     monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
     client = TestClient(create_app())
+    client.get("/worklist")
 
     upload_response = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("acme.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
@@ -250,6 +269,7 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
             "case_id": case_id,
             "next_step": "Review the mail",
             "next_due_at": "2026-04-13T09:00",
+            **_csrf_data(client),
         },
     )
     assert assign_response.status_code == 200
@@ -287,9 +307,11 @@ def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypat
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
     monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
     client = TestClient(create_app())
+    client.get("/worklist")
 
     upload_response = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("acme.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
@@ -324,9 +346,11 @@ def test_recent_conversation_opens_fallback_triage_when_no_suggestion(
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
     monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
     client = TestClient(create_app())
+    client.get("/worklist")
 
     upload_response = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("unmatched.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
 
@@ -357,9 +381,11 @@ def test_non_msg_upload_shows_not_supported_and_logs_to_console(
     monkeypatch.delenv("GOLDENAGE_LOCAL_FIRST_DB", raising=False)
     monkeypatch.delenv("GOLDENAGE_SQLITE_PATH", raising=False)
     client = TestClient(create_app())
+    client.get("/worklist")
 
     response = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("acme.txt", b"plain text", "text/plain")},
     )
 
@@ -391,6 +417,7 @@ def test_local_first_sqlite_onboarding_creates_first_user(tmp_path, monkeypatch)
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
         files={"profile_picture": ("profile.png", VALID_PNG, "image/png")},
     )
@@ -422,12 +449,14 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(sqlite_path))
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
     client = TestClient(create_app())
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
 
@@ -446,6 +475,7 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
             "sent_after": "2026-04-12T09:30",
             "result_limit": "7",
             "unread_only": "on",
+            **_csrf_data(client),
         },
     )
     assert mail_response.status_code == 200
@@ -454,7 +484,7 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     assert 'value="Inbox"' in mail_response.text
     assert 'value="2026-04-12T09:30"' in mail_response.text
 
-    logout_response = client.post("/logout")
+    logout_response = client.post("/logout", data=_csrf_data(client))
     assert logout_response.status_code == 200
     assert "Sign in to GoldenAge" in logout_response.text
 
@@ -462,9 +492,14 @@ def test_local_first_settings_and_logout_flow(tmp_path, monkeypatch) -> None:
     assert worklist_response.status_code == 200
     assert "Sign in to GoldenAge" in worklist_response.text
 
+    client.get("/login")
     login_response = client.post(
         "/login/local",
-        data={"email": "bened@example.com", "password": "secret-passphrase"},
+        data={
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+            **_csrf_data(client),
+        },
     )
     assert login_response.status_code == 200
     assert "Bened Example" in login_response.text
@@ -509,12 +544,14 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
     monkeypatch.setenv("GOLDENAGE_MAIL_FIXTURE_PATH", str(fixture_path))
     client = TestClient(create_app())
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
 
@@ -527,6 +564,7 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
             "subject_filter": "renewal",
             "result_limit": "10",
             "unread_only": "on",
+            **_csrf_data(client),
         },
     )
 
@@ -539,7 +577,7 @@ def test_local_first_desktop_mail_search_and_import_flow(tmp_path, monkeypatch) 
 
     import_response = client.post(
         "/mail/desktop-mail/import",
-        data={"candidate_id": "mail-1"},
+        data={"candidate_id": "mail-1", **_csrf_data(client)},
     )
 
     assert import_response.status_code == 200
@@ -596,6 +634,7 @@ def test_demo_mode_enables_desktop_mail_import_with_fixture(tmp_path, monkeypatc
             "subject_filter": "renewal",
             "result_limit": "10",
             "unread_only": "on",
+            **_csrf_data(client),
         },
     )
 
@@ -615,12 +654,14 @@ def test_local_first_password_change_updates_login_credentials(tmp_path, monkeyp
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(sqlite_path))
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
     client = TestClient(create_app())
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
 
@@ -630,22 +671,32 @@ def test_local_first_password_change_updates_login_credentials(tmp_path, monkeyp
             "current_password": "secret-passphrase",
             "new_password": "new-passphrase",
             "confirm_password": "new-passphrase",
+            **_csrf_data(client),
         },
     )
     assert response.status_code == 200
     assert "Password changed." in response.text
 
-    client.post("/logout")
+    client.post("/logout", data=_csrf_data(client))
+    client.get("/login")
     old_login_response = client.post(
         "/login/local",
-        data={"email": "bened@example.com", "password": "secret-passphrase"},
+        data={
+            "email": "bened@example.com",
+            "password": "secret-passphrase",
+            **_csrf_data(client),
+        },
     )
     assert old_login_response.status_code == 401
     assert "Invalid email or password." in old_login_response.text
 
     new_login_response = client.post(
         "/login/local",
-        data={"email": "bened@example.com", "password": "new-passphrase"},
+        data={
+            "email": "bened@example.com",
+            "password": "new-passphrase",
+            **_csrf_data(client),
+        },
     )
     assert new_login_response.status_code == 200
     assert "Bened Example" in new_login_response.text
@@ -670,6 +721,7 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(sqlite_path))
     monkeypatch.setenv("GOLDENAGE_ARTIFACT_DIR", str(artifact_dir))
     client = TestClient(create_app())
+    client.get("/onboarding")
 
     onboard_response = client.post(
         "/onboarding",
@@ -677,12 +729,14 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
     assert onboard_response.status_code == 200
 
     upload_response = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("empty.msg", VALID_MSG, "application/vnd.ms-outlook")},
     )
     assert upload_response.status_code == 200
@@ -705,6 +759,7 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
             "primary_contact": "Max Mustermann",
             "next_step": "Review the new matter and respond",
             "next_due_at": "2026-04-13T09:00",
+            **_csrf_data(client),
         },
     )
     assert create_response.status_code == 200
@@ -748,8 +803,10 @@ def test_upload_keeps_original_name_out_of_storage_path(tmp_path, monkeypatch, f
     )
     app = create_app()
     with TestClient(app) as client:
+        client.get("/worklist")
         response = client.post(
             "/artifacts/upload",
+            data=_csrf_data(client),
             files={"file": (file_name, content, "application/vnd.ms-outlook")},
         )
         assert response.status_code == 200
