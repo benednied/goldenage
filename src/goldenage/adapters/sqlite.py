@@ -8,13 +8,16 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from goldenage.application.ports import (
     ActivityRepository,
     ArtifactRepository,
     AuditRepository,
     CaseRepository,
+    CommandNotFoundError,
+    CommandRepository,
+    CommandResult,
 )
 from goldenage.domain.models import (
     Activity,
@@ -32,6 +35,7 @@ from goldenage.domain.models import (
     MailSourceSystem,
     UserContext,
 )
+from goldenage.domain.rules import CommandConflictError
 
 
 class SQLiteRepositoryError(RuntimeError):
@@ -46,9 +50,10 @@ class _SQLiteRepositoryBase:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database_path)
+        connection = sqlite3.connect(self._database_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 30000")
         return connection
 
     def _case_visible(self, case_id: UUID, user: UserContext) -> bool:
@@ -57,6 +62,413 @@ class _SQLiteRepositoryBase:
         with self._connect() as connection:
             row = connection.execute(sql, (str(case_id), *params)).fetchone()
             return row is not None
+
+
+class SQLiteCommandRepository(_SQLiteRepositoryBase, CommandRepository):
+    """SQLite command boundary for retry-safe workflow mutations."""
+
+    def find_command(
+        self,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        request_fingerprint: str,
+    ) -> CommandResult | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT request_fingerprint, result_case_id, result_activity_id
+                FROM command_execution
+                WHERE actor_user_id = ? AND operation = ? AND command_id = ?
+                """,
+                (str(actor_user_id), operation, str(command_id)),
+            ).fetchone()
+        return _command_result_from_row(row, request_fingerprint, replayed=True)
+
+    def assign_artifact(
+        self,
+        *,
+        actor: UserContext,
+        artifact_id: UUID,
+        case_id: UUID,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        reassign: bool,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        operation = "reassign_artifact_to_case" if reassign else "assign_artifact_to_case"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            replay = self._start_command(
+                connection,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                request_fingerprint=request_fingerprint,
+                created_at=now,
+            )
+            if replay is not None:
+                return replay
+
+            artifact = self._visible_artifact(connection, artifact_id, actor)
+            if artifact is None:
+                raise CommandNotFoundError("Artifact not found.")
+            case_file = self._visible_case(connection, case_id, actor)
+            if case_file is None:
+                raise CommandNotFoundError("Case not found.")
+            if artifact.assigned_case_id is not None and not reassign:
+                raise CommandConflictError(
+                    "Artifact is already assigned; use an explicit reassignment command."
+                )
+            if artifact.assigned_case_id is None and reassign:
+                raise CommandConflictError("An unassigned artifact cannot be reassigned.")
+
+            self._assign_artifact_rows(
+                connection,
+                artifact_id=artifact_id,
+                case_id=case_id,
+                activity_id=UUID(str(uuid5(command_id, "activity"))),
+                next_step=next_step,
+                next_due_at=next_due_at,
+                now=now,
+                actor_user_id=actor.id,
+                case_file=case_file,
+            )
+            self._save_audit(connection, audit_event)
+            return self._finish_command(
+                connection,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                case_id=case_id,
+                activity_id=uuid5(command_id, "activity"),
+            )
+
+    def create_case_from_artifact(
+        self,
+        *,
+        actor: UserContext,
+        artifact_id: UUID,
+        title: str,
+        company: str | None,
+        primary_contact: str | None,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        operation = "create_case_from_artifact"
+        case_id = uuid5(command_id, "case")
+        activity_id = uuid5(command_id, "activity")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            replay = self._start_command(
+                connection,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                request_fingerprint=request_fingerprint,
+                created_at=now,
+            )
+            if replay is not None:
+                return replay
+
+            artifact = self._visible_artifact(connection, artifact_id, actor)
+            if artifact is None:
+                raise CommandNotFoundError("Artifact not found.")
+            if artifact.assigned_case_id is not None:
+                raise CommandConflictError(
+                    "Artifact is already assigned and cannot create another case."
+                )
+
+            connection.execute(
+                """
+                INSERT INTO case_file (
+                    id, title, company, primary_contact, status, last_activity_at, visible_group_id
+                ) VALUES (?, ?, ?, ?, 'open', ?, NULL)
+                """,
+                (str(case_id), title, company, primary_contact, _serialize_datetime(now)),
+            )
+            self._assign_artifact_rows(
+                connection,
+                artifact_id=artifact_id,
+                case_id=case_id,
+                activity_id=activity_id,
+                next_step=next_step,
+                next_due_at=next_due_at,
+                now=now,
+                actor_user_id=actor.id,
+                case_file=CaseFile(
+                    id=case_id,
+                    title=title,
+                    company=company,
+                    primary_contact=primary_contact,
+                    status="open",
+                    last_activity_at=now,
+                ),
+            )
+            self._save_audit(connection, audit_event)
+            return self._finish_command(
+                connection,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                case_id=case_id,
+                activity_id=activity_id,
+            )
+
+    def resolve_activity(
+        self,
+        *,
+        actor: UserContext,
+        activity_id: UUID,
+        completed_at: datetime,
+        follow_up_activity: Activity | None,
+        close_case: bool,
+        skip_follow_up: bool,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        operation = "resolve_activity"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            replay = self._start_command(
+                connection,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                request_fingerprint=request_fingerprint,
+                created_at=now,
+            )
+            if replay is not None:
+                return replay
+
+            activity = self._visible_activity(connection, activity_id, actor)
+            if activity is None:
+                raise CommandNotFoundError("Activity not found.")
+            case_file = self._visible_case(connection, activity.case_id, actor)
+            if case_file is None:
+                raise CommandNotFoundError("Case not found.")
+            updated = connection.execute(
+                """
+                UPDATE activity
+                SET completed_at = ?
+                WHERE id = ? AND completed_at IS NULL
+                """,
+                (_serialize_datetime(completed_at), str(activity_id)),
+            )
+            if updated.rowcount != 1:
+                raise CommandConflictError(
+                    "This activity was resolved by another command; retry with its original command id."
+                )
+            if follow_up_activity is not None:
+                self._insert_activity(connection, follow_up_activity)
+            connection.execute(
+                "UPDATE case_file SET status = ?, last_activity_at = ? WHERE id = ?",
+                (
+                    "closed" if close_case else "open",
+                    _serialize_datetime(now),
+                    str(case_file.id),
+                ),
+            )
+            self._save_audit(connection, audit_event)
+            return self._finish_command(
+                connection,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                case_id=case_file.id,
+                activity_id=follow_up_activity.id if follow_up_activity else None,
+            )
+
+    def _start_command(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        request_fingerprint: str,
+        created_at: datetime,
+    ) -> CommandResult | None:
+        key = (str(actor_user_id), operation, str(command_id))
+        row = connection.execute(
+            """
+            SELECT request_fingerprint, result_case_id, result_activity_id
+            FROM command_execution
+            WHERE actor_user_id = ? AND operation = ? AND command_id = ?
+            """,
+            key,
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO command_execution (
+                    actor_user_id, operation, command_id, request_fingerprint, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (*key, request_fingerprint, _serialize_datetime(created_at)),
+            )
+            return None
+        return _command_result_from_row(row, request_fingerprint, replayed=True)
+
+    def _finish_command(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        case_id: UUID,
+        activity_id: UUID | None,
+    ) -> CommandResult:
+        connection.execute(
+            """
+            UPDATE command_execution
+            SET result_case_id = ?, result_activity_id = ?
+            WHERE actor_user_id = ? AND operation = ? AND command_id = ?
+            """,
+            (
+                str(case_id),
+                str(activity_id) if activity_id is not None else None,
+                str(actor_user_id),
+                operation,
+                str(command_id),
+            ),
+        )
+        connection.commit()
+        return CommandResult(case_id=case_id, activity_id=activity_id)
+
+    def _visible_case(
+        self, connection: sqlite3.Connection, case_id: UUID, user: UserContext
+    ) -> CaseFile | None:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
+        row = connection.execute(
+            f"""
+            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id
+            FROM case_file WHERE id = ? AND {clause}
+            """,
+            (str(case_id), *params),
+        ).fetchone()
+        return _row_to_case_file(row) if row else None
+
+    def _visible_artifact(
+        self, connection: sqlite3.Connection, artifact_id: UUID, user: UserContext
+    ) -> Artifact | None:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        row = connection.execute(
+            f"""
+            SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
+                   a.uploaded_at, a.uploaded_by, a.assigned_case_id
+            FROM artifact a LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            WHERE a.id = ? AND (a.assigned_case_id IS NULL OR {clause})
+            """,
+            (str(artifact_id), *params),
+        ).fetchone()
+        return _row_to_artifact(row) if row else None
+
+    def _visible_activity(
+        self, connection: sqlite3.Connection, activity_id: UUID, user: UserContext
+    ) -> Activity | None:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        row = connection.execute(
+            f"""
+            SELECT a.id, a.case_id, a.description, a.kind, a.due_at, a.created_at,
+                   a.created_by, a.completed_at
+            FROM activity a JOIN case_file c ON c.id = a.case_id
+            WHERE a.id = ? AND {clause}
+            """,
+            (str(activity_id), *params),
+        ).fetchone()
+        return _row_to_activity(row) if row else None
+
+    def _assign_artifact_rows(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        artifact_id: UUID,
+        case_id: UUID,
+        activity_id: UUID,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        actor_user_id: UUID,
+        case_file: CaseFile,
+    ) -> None:
+        connection.execute(
+            "UPDATE artifact SET assigned_case_id = ? WHERE id = ?",
+            (str(case_id), str(artifact_id)),
+        )
+        connection.execute(
+            """
+            UPDATE mail_conversation
+            SET assigned_case_id = ?, updated_at = ?
+            WHERE id = (SELECT conversation_id FROM mail_message WHERE artifact_id = ?)
+            """,
+            (str(case_id), _serialize_datetime(now), str(artifact_id)),
+        )
+        self._insert_activity(
+            connection,
+            Activity(
+                id=activity_id,
+                case_id=case_id,
+                description=next_step,
+                kind="intake",
+                due_at=next_due_at,
+                created_at=now,
+                created_by=actor_user_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE case_file SET status = 'open', last_activity_at = ? WHERE id = ?",
+            (_serialize_datetime(now), str(case_file.id)),
+        )
+
+    @staticmethod
+    def _insert_activity(connection: sqlite3.Connection, activity: Activity) -> None:
+        connection.execute(
+            """
+            INSERT INTO activity (
+                id, case_id, description, kind, due_at, completed_at, created_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(activity.id),
+                str(activity.case_id),
+                activity.description,
+                activity.kind,
+                _serialize_datetime(activity.due_at),
+                _serialize_datetime(activity.completed_at),
+                _serialize_datetime(activity.created_at),
+                str(activity.created_by) if activity.created_by is not None else None,
+            ),
+        )
+
+    @staticmethod
+    def _save_audit(connection: sqlite3.Connection, event: AuditEvent) -> None:
+        connection.execute(
+            """
+            INSERT INTO audit_event (
+                id, actor_user_id, event_type, subject_id, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(event.id),
+                str(event.actor_user_id) if event.actor_user_id is not None else None,
+                event.event_type,
+                str(event.subject_id),
+                json.dumps(event.payload_json),
+                _serialize_datetime(event.created_at),
+            ),
+        )
 
 
 class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
@@ -937,6 +1349,25 @@ def _deserialize_datetime(raw_value: str | None) -> datetime | None:
     if raw_value is None:
         return None
     return datetime.fromisoformat(raw_value)
+
+
+def _command_result_from_row(
+    row: sqlite3.Row | None,
+    request_fingerprint: str,
+    *,
+    replayed: bool,
+) -> CommandResult | None:
+    if row is None:
+        return None
+    if row["request_fingerprint"] != request_fingerprint:
+        raise CommandConflictError("Command id was already used for a different request.")
+    if row["result_case_id"] is None:
+        raise CommandConflictError("Command is still in progress; retry after it commits.")
+    return CommandResult(
+        case_id=UUID(row["result_case_id"]),
+        activity_id=(UUID(row["result_activity_id"]) if row["result_activity_id"] else None),
+        replayed=replayed,
+    )
 
 
 def _row_to_case_file(row: sqlite3.Row) -> CaseFile:

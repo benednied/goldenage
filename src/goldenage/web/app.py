@@ -46,12 +46,14 @@ from goldenage.adapters.postgres import (
     PostgresArtifactRepository,
     PostgresAuditRepository,
     PostgresCaseRepository,
+    PostgresCommandRepository,
 )
 from goldenage.adapters.sqlite import (
     SQLiteActivityRepository,
     SQLiteArtifactRepository,
     SQLiteAuditRepository,
     SQLiteCaseRepository,
+    SQLiteCommandRepository,
     SQLiteLocalUserRepository,
     SQLiteMailImportRepository,
 )
@@ -816,6 +818,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = SQLiteActivityRepository(settings.sqlite_path)
         artifact_repository = SQLiteArtifactRepository(settings.sqlite_path)
         audit_repository = SQLiteAuditRepository(settings.sqlite_path)
+        command_repository = SQLiteCommandRepository(settings.sqlite_path)
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
         default_user = None
@@ -824,6 +827,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = PostgresActivityRepository(settings.database_url)
         artifact_repository = PostgresArtifactRepository(settings.database_url)
         audit_repository = PostgresAuditRepository(settings.database_url)
+        command_repository = PostgresCommandRepository(settings.database_url)
         default_user = UserContext(
             id=_uuid("11111111-1111-1111-1111-111111111111"),
             email="alex@example.com",
@@ -837,6 +841,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = InMemoryActivityRepository(state, case_repository)
         artifact_repository = InMemoryArtifactRepository(state, case_repository)
         audit_repository = InMemoryAuditRepository(state)
+        command_repository = None
         default_user = user
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
@@ -859,6 +864,7 @@ def _build_context(settings: Settings) -> AppContext:
             outlook_scan_per_folder_limit=settings.outlook_scan_per_folder_limit,
         ),
         mail_import_repository=mail_import_repository,
+        command_repository=command_repository,
     )
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:

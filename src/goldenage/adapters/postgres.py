@@ -5,13 +5,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from goldenage.application.ports import (
     ActivityRepository,
     ArtifactRepository,
     AuditRepository,
     CaseRepository,
+    CommandNotFoundError,
+    CommandRepository,
+    CommandResult,
 )
 from goldenage.domain.models import (
     Activity,
@@ -27,6 +30,7 @@ from goldenage.domain.models import (
     MailParticipant,
     UserContext,
 )
+from goldenage.domain.rules import CommandConflictError
 
 try:
     import psycopg
@@ -66,6 +70,449 @@ class _PostgresRepositoryBase:
                 return False
             visible_group_id = row["visible_group_id"]
             return visible_group_id is None or visible_group_id in user.visible_group_ids
+
+
+class PostgresCommandRepository(_PostgresRepositoryBase, CommandRepository):
+    """PostgreSQL command boundary using row locks and conditional writes."""
+
+    def find_command(
+        self,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        request_fingerprint: str,
+    ) -> CommandResult | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT request_fingerprint, result_case_id, result_activity_id
+                FROM command_execution
+                WHERE actor_user_id = %(actor_user_id)s
+                  AND operation = %(operation)s
+                  AND command_id = %(command_id)s
+                """,
+                {
+                    "actor_user_id": actor_user_id,
+                    "operation": operation,
+                    "command_id": command_id,
+                },
+            )
+            return _pg_command_result(cursor.fetchone(), request_fingerprint, replayed=True)
+
+    def assign_artifact(
+        self,
+        *,
+        actor: UserContext,
+        artifact_id: UUID,
+        case_id: UUID,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        reassign: bool,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        operation = "reassign_artifact_to_case" if reassign else "assign_artifact_to_case"
+        with self._connect() as connection, connection.cursor() as cursor:
+            replay = self._start_pg_command(
+                cursor,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                request_fingerprint=request_fingerprint,
+                created_at=now,
+            )
+            if replay is not None:
+                return replay
+            artifact = self._visible_artifact(cursor, artifact_id, actor)
+            if artifact is None:
+                raise CommandNotFoundError("Artifact not found.")
+            case_file = self._visible_case(cursor, case_id, actor)
+            if case_file is None:
+                raise CommandNotFoundError("Case not found.")
+            if artifact.assigned_case_id is not None and not reassign:
+                raise CommandConflictError(
+                    "Artifact is already assigned; use an explicit reassignment command."
+                )
+            if artifact.assigned_case_id is None and reassign:
+                raise CommandConflictError("An unassigned artifact cannot be reassigned.")
+            self._assign_artifact_rows(
+                cursor,
+                artifact_id=artifact_id,
+                case_id=case_id,
+                activity_id=uuid5(command_id, "activity"),
+                next_step=next_step,
+                next_due_at=next_due_at,
+                now=now,
+                actor_user_id=actor.id,
+                case_file=case_file,
+            )
+            self._save_audit(cursor, audit_event)
+            return self._finish_pg_command(
+                cursor,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                case_id=case_id,
+                activity_id=uuid5(command_id, "activity"),
+            )
+
+    def create_case_from_artifact(
+        self,
+        *,
+        actor: UserContext,
+        artifact_id: UUID,
+        title: str,
+        company: str | None,
+        primary_contact: str | None,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        operation = "create_case_from_artifact"
+        case_id = uuid5(command_id, "case")
+        activity_id = uuid5(command_id, "activity")
+        with self._connect() as connection, connection.cursor() as cursor:
+            replay = self._start_pg_command(
+                cursor,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                request_fingerprint=request_fingerprint,
+                created_at=now,
+            )
+            if replay is not None:
+                return replay
+            artifact = self._visible_artifact(cursor, artifact_id, actor)
+            if artifact is None:
+                raise CommandNotFoundError("Artifact not found.")
+            if artifact.assigned_case_id is not None:
+                raise CommandConflictError(
+                    "Artifact is already assigned and cannot create another case."
+                )
+            cursor.execute(
+                """
+                INSERT INTO case_file (
+                    id, title, company, primary_contact, status, last_activity_at, visible_group_id
+                ) VALUES (
+                    %(id)s, %(title)s, %(company)s, %(primary_contact)s, 'open', %(last_activity_at)s, NULL
+                )
+                """,
+                {
+                    "id": case_id,
+                    "title": title,
+                    "company": company,
+                    "primary_contact": primary_contact,
+                    "last_activity_at": now,
+                },
+            )
+            self._assign_artifact_rows(
+                cursor,
+                artifact_id=artifact_id,
+                case_id=case_id,
+                activity_id=activity_id,
+                next_step=next_step,
+                next_due_at=next_due_at,
+                now=now,
+                actor_user_id=actor.id,
+                case_file=CaseFile(
+                    id=case_id,
+                    title=title,
+                    company=company,
+                    primary_contact=primary_contact,
+                    status="open",
+                    last_activity_at=now,
+                ),
+            )
+            self._save_audit(cursor, audit_event)
+            return self._finish_pg_command(
+                cursor,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                case_id=case_id,
+                activity_id=activity_id,
+            )
+
+    def resolve_activity(
+        self,
+        *,
+        actor: UserContext,
+        activity_id: UUID,
+        completed_at: datetime,
+        follow_up_activity: Activity | None,
+        close_case: bool,
+        skip_follow_up: bool,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        operation = "resolve_activity"
+        with self._connect() as connection, connection.cursor() as cursor:
+            replay = self._start_pg_command(
+                cursor,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                request_fingerprint=request_fingerprint,
+                created_at=now,
+            )
+            if replay is not None:
+                return replay
+            activity = self._visible_activity(cursor, activity_id, actor)
+            if activity is None:
+                raise CommandNotFoundError("Activity not found.")
+            case_file = self._visible_case(cursor, activity.case_id, actor)
+            if case_file is None:
+                raise CommandNotFoundError("Case not found.")
+            cursor.execute(
+                """
+                UPDATE activity
+                SET completed_at = %(completed_at)s
+                WHERE id = %(activity_id)s AND completed_at IS NULL
+                """,
+                {"completed_at": completed_at, "activity_id": activity_id},
+            )
+            if cursor.rowcount != 1:
+                raise CommandConflictError(
+                    "This activity was resolved by another command; retry with its original command id."
+                )
+            if follow_up_activity is not None:
+                self._insert_activity(cursor, follow_up_activity)
+            cursor.execute(
+                """
+                UPDATE case_file
+                SET status = %(status)s, last_activity_at = %(last_activity_at)s
+                WHERE id = %(case_id)s
+                """,
+                {
+                    "status": "closed" if close_case else "open",
+                    "last_activity_at": now,
+                    "case_id": case_file.id,
+                },
+            )
+            self._save_audit(cursor, audit_event)
+            return self._finish_pg_command(
+                cursor,
+                actor_user_id=actor.id,
+                operation=operation,
+                command_id=command_id,
+                case_id=case_file.id,
+                activity_id=follow_up_activity.id if follow_up_activity else None,
+            )
+
+    @staticmethod
+    def _start_pg_command(
+        cursor,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        request_fingerprint: str,
+        created_at: datetime,
+    ) -> CommandResult | None:
+        params = {
+            "actor_user_id": actor_user_id,
+            "operation": operation,
+            "command_id": command_id,
+            "request_fingerprint": request_fingerprint,
+            "created_at": created_at,
+        }
+        cursor.execute(
+            """
+            INSERT INTO command_execution (
+                actor_user_id, operation, command_id, request_fingerprint, created_at
+            ) VALUES (
+                %(actor_user_id)s, %(operation)s, %(command_id)s, %(request_fingerprint)s, %(created_at)s
+            ) ON CONFLICT (actor_user_id, operation, command_id) DO NOTHING
+            """,
+            params,
+        )
+        cursor.execute(
+            """
+            SELECT request_fingerprint, result_case_id, result_activity_id
+            FROM command_execution
+            WHERE actor_user_id = %(actor_user_id)s
+              AND operation = %(operation)s
+              AND command_id = %(command_id)s
+            FOR UPDATE
+            """,
+            params,
+        )
+        return _pg_command_result(cursor.fetchone(), request_fingerprint, replayed=True)
+
+    @staticmethod
+    def _finish_pg_command(
+        cursor,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        case_id: UUID,
+        activity_id: UUID | None,
+    ) -> CommandResult:
+        cursor.execute(
+            """
+            UPDATE command_execution
+            SET result_case_id = %(case_id)s, result_activity_id = %(activity_id)s
+            WHERE actor_user_id = %(actor_user_id)s
+              AND operation = %(operation)s
+              AND command_id = %(command_id)s
+            """,
+            {
+                "actor_user_id": actor_user_id,
+                "operation": operation,
+                "command_id": command_id,
+                "case_id": case_id,
+                "activity_id": activity_id,
+            },
+        )
+        return CommandResult(case_id=case_id, activity_id=activity_id)
+
+    @staticmethod
+    def _visible_case(cursor, case_id: UUID, user: UserContext) -> CaseFile | None:
+        cursor.execute(
+            """
+            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id
+            FROM case_file
+            WHERE id = %(case_id)s
+              AND (visible_group_id IS NULL OR visible_group_id = ANY(%(group_ids)s::uuid[]))
+            FOR UPDATE
+            """,
+            {"case_id": case_id, "group_ids": list(user.visible_group_ids)},
+        )
+        row = cursor.fetchone()
+        return _row_to_case_file(row) if row else None
+
+    @staticmethod
+    def _visible_artifact(cursor, artifact_id: UUID, user: UserContext) -> Artifact | None:
+        cursor.execute(
+            """
+            SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
+                   a.uploaded_at, a.uploaded_by, a.assigned_case_id
+            FROM artifact a LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            WHERE a.id = %(artifact_id)s
+              AND (
+                    a.assigned_case_id IS NULL
+              OR c.visible_group_id IS NULL
+                 OR c.visible_group_id = ANY(%(group_ids)s::uuid[])
+              )
+            FOR UPDATE OF a
+            """,
+            {"artifact_id": artifact_id, "group_ids": list(user.visible_group_ids)},
+        )
+        row = cursor.fetchone()
+        return _row_to_artifact(row) if row else None
+
+    @staticmethod
+    def _visible_activity(cursor, activity_id: UUID, user: UserContext) -> Activity | None:
+        cursor.execute(
+            """
+            SELECT a.id, a.case_id, a.description, a.kind, a.due_at, a.created_at,
+                   a.created_by, a.completed_at
+            FROM activity a JOIN case_file c ON c.id = a.case_id
+            WHERE a.id = %(activity_id)s
+              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]))
+            FOR UPDATE OF a
+            """,
+            {"activity_id": activity_id, "group_ids": list(user.visible_group_ids)},
+        )
+        row = cursor.fetchone()
+        return _row_to_activity(row) if row else None
+
+    @staticmethod
+    def _assign_artifact_rows(
+        cursor,
+        *,
+        artifact_id: UUID,
+        case_id: UUID,
+        activity_id: UUID,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        actor_user_id: UUID,
+        case_file: CaseFile,
+    ) -> None:
+        cursor.execute(
+            "UPDATE artifact SET assigned_case_id = %(case_id)s WHERE id = %(artifact_id)s",
+            {"case_id": case_id, "artifact_id": artifact_id},
+        )
+        cursor.execute(
+            """
+            UPDATE mail_conversation
+            SET assigned_case_id = %(case_id)s, updated_at = %(updated_at)s
+            WHERE id = (
+                SELECT conversation_id FROM mail_message WHERE artifact_id = %(artifact_id)s
+            )
+            """,
+            {"case_id": case_id, "updated_at": now, "artifact_id": artifact_id},
+        )
+        PostgresCommandRepository._insert_activity(
+            cursor,
+            Activity(
+                id=activity_id,
+                case_id=case_id,
+                description=next_step,
+                kind="intake",
+                due_at=next_due_at,
+                created_at=now,
+                created_by=actor_user_id,
+            ),
+        )
+        cursor.execute(
+            "UPDATE case_file SET status = 'open', last_activity_at = %(now)s WHERE id = %(case_id)s",
+            {"now": now, "case_id": case_file.id},
+        )
+
+    @staticmethod
+    def _insert_activity(cursor, activity: Activity) -> None:
+        cursor.execute(
+            """
+            INSERT INTO activity (
+                id, case_id, description, kind, due_at, completed_at, created_at, created_by
+            ) VALUES (
+                %(id)s, %(case_id)s, %(description)s, %(kind)s, %(due_at)s,
+                %(completed_at)s, %(created_at)s, %(created_by)s
+            )
+            """,
+            {
+                "id": activity.id,
+                "case_id": activity.case_id,
+                "description": activity.description,
+                "kind": activity.kind,
+                "due_at": activity.due_at,
+                "completed_at": activity.completed_at,
+                "created_at": activity.created_at,
+                "created_by": activity.created_by,
+            },
+        )
+
+    @staticmethod
+    def _save_audit(cursor, event: AuditEvent) -> None:
+        cursor.execute(
+            """
+            INSERT INTO audit_event (
+                id, actor_user_id, event_type, subject_id, payload_json, created_at
+            ) VALUES (
+                %(id)s, %(actor_user_id)s, %(event_type)s, %(subject_id)s,
+                %(payload_json)s, %(created_at)s
+            )
+            """,
+            {
+                "id": event.id,
+                "actor_user_id": event.actor_user_id,
+                "event_type": event.event_type,
+                "subject_id": event.subject_id,
+                "payload_json": Jsonb(event.payload_json),
+                "created_at": event.created_at,
+            },
+        )
 
 
 class PostgresCaseRepository(_PostgresRepositoryBase, CaseRepository):
@@ -624,6 +1071,25 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, payload)
             connection.commit()
+
+
+def _pg_command_result(
+    row: dict[str, object] | None,
+    request_fingerprint: str,
+    *,
+    replayed: bool,
+) -> CommandResult | None:
+    if row is None:
+        return None
+    if row["request_fingerprint"] != request_fingerprint:
+        raise CommandConflictError("Command id was already used for a different request.")
+    if row["result_case_id"] is None:
+        raise CommandConflictError("Command is still in progress; retry after it commits.")
+    return CommandResult(
+        case_id=row["result_case_id"],
+        activity_id=row["result_activity_id"],
+        replayed=replayed,
+    )
 
 
 def _row_to_case_file(row: dict[str, object]) -> CaseFile:
