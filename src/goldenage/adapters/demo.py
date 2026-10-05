@@ -31,6 +31,7 @@ from goldenage.domain.models import (
     CaseFile,
     ExtractedArtifactData,
     MailboxAccountConfig,
+    MailboxRecovery,
     MailboxSyncCheckpoint,
     MailCandidate,
     MailConversation,
@@ -148,6 +149,21 @@ class InMemoryArtifactRepository(ArtifactRepository):
             for artifact in self._state.artifacts.values()
             if artifact.assigned_case_id == case_id
         )
+
+    def list_case_artifacts_page(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        artifacts = sorted(
+            self.list_case_artifacts(case_id, user),
+            key=lambda artifact: artifact.uploaded_at,
+            reverse=True,
+        )
+        return tuple(artifacts[max(offset, 0) : max(offset, 0) + max(limit, 0)])
 
     def list_unassigned_artifacts(
         self,
@@ -304,6 +320,56 @@ class InMemoryAuditRepository(AuditRepository):
 
     def save_event(self, event: AuditEvent) -> None:
         self._state.audit_events.append(event)
+
+    def list_case_events(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> Sequence[AuditEvent]:
+        case_file = self._state.cases.get(case_id)
+        if case_file is None or not _case_visible_to_user(case_file, user):
+            return ()
+        events = [
+            event
+            for event in self._state.audit_events
+            if _audit_event_case_id(event, self._state) == case_id
+        ]
+        events.sort(key=lambda event: event.created_at, reverse=True)
+        start = max(offset, 0)
+        return tuple(events[start : start + max(limit, 0)])
+
+
+class InMemoryMailboxRecoveryRepository:
+    """Persistent-shaped recovery store for the demo runtime."""
+
+    def __init__(self) -> None:
+        self._recoveries: dict[UUID, MailboxRecovery] = {}
+
+    def save_recovery(self, recovery: MailboxRecovery) -> None:
+        self._recoveries[recovery.id] = recovery
+
+    def list_recoveries(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[MailboxRecovery]:
+        items = [
+            recovery
+            for recovery in self._recoveries.values()
+            if recovery.user_id == user.id and recovery.status == "failed"
+        ]
+        items.sort(key=lambda recovery: recovery.failed_at, reverse=True)
+        return tuple(items[: max(limit, 0)])
+
+    def get_recovery(self, recovery_id: UUID, user: UserContext) -> MailboxRecovery | None:
+        recovery = self._recoveries.get(recovery_id)
+        if recovery is None or recovery.user_id != user.id or recovery.status != "failed":
+            return None
+        return recovery
 
 
 class InMemoryMailImportRepository(MailImportRepository):
@@ -594,6 +660,25 @@ def _case_visible_to_user(case_file: CaseFile, user: UserContext) -> bool:
     if case_file.visible_group_id is None:
         return True
     return case_file.visible_group_id in user.visible_group_ids
+
+
+def _audit_event_case_id(event: AuditEvent, state: DemoState) -> UUID | None:
+    """Resolve the case associated with an audit row without broadening access."""
+    raw_case_id = event.payload_json.get("case_id")
+    if isinstance(raw_case_id, str):
+        try:
+            return UUID(raw_case_id)
+        except ValueError:
+            pass
+    if event.subject_id in state.cases:
+        return event.subject_id
+    activity = state.activities.get(event.subject_id)
+    if activity is not None:
+        return activity.case_id
+    artifact = state.artifacts.get(event.subject_id)
+    if artifact is not None:
+        return artifact.assigned_case_id
+    return None
 
 
 def _rank_cases(

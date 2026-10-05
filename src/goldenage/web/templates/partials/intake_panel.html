@@ -32,6 +32,50 @@
   </div>
 {% endif %}
 
+{% if mail_import_state.recoveries %}
+  <section class="detail-section intake-state recovery-panel">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Recovery</p>
+        <h3>Failed imports</h3>
+      </div>
+    </div>
+    <p class="muted">These imports did not finish. Retry only the messages you recognize.</p>
+    <ul class="search-results">
+      {% for recovery in mail_import_state.recoveries %}
+        <li>
+          <div class="result-card">
+            <div class="result-copy">
+              <h4>{{ recovery.file_name }}</h4>
+              <small>
+                {{ recovery.account_name or "Mailbox" }} ·
+                {{ recovery.mailbox_name or "Folder unknown" }} ·
+                {{ format_datetime(recovery.failed_at, local_timezone) }}
+              </small>
+              <p class="muted">{{ recovery.error_message }}</p>
+            </div>
+            <form
+              method="post"
+              action="/mail/recovery/{{ recovery.id }}/retry"
+              hx-post="/mail/recovery/{{ recovery.id }}/retry"
+              hx-target="#intake-panel"
+              hx-swap="innerHTML"
+            >
+              <button type="submit">Retry import</button>
+            </form>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
+{% if mail_import_state.worker_status %}
+  <p class="muted" role="status">
+    Mailbox worker: {{ mail_import_state.worker_status }}.
+  </p>
+{% endif %}
+
 {% if intake_state.artifact %}
   <section class="detail-section intake-state intake-active">
     <div class="artifact-header">

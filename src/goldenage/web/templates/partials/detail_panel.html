@@ -13,7 +13,7 @@
   <div class="detail-meta">
     <span>{{ detail.case_file.company or "No company" }}</span>
     <span>{{ detail.case_file.primary_contact or "No contact" }}</span>
-    <span class="pill">{{ detail.case_file.status }}</span>
+    <span class="pill">{{ detail.case_state_label }}</span>
   </div>
 
   {% if detail.active_activity %}
@@ -66,12 +66,27 @@
         {% endfor %}
       </ul>
     {% else %}
-      <p class="muted">No open activities.</p>
+      <p class="muted">{{ detail.case_state_label }}. No open activities.</p>
     {% endif %}
   </section>
 
+  {% if detail.completed_activities %}
+    <section class="detail-section">
+      <h3>Completed work</h3>
+      <ul class="mini-list">
+        {% for activity in detail.completed_activities %}
+          <li>
+            <strong>{{ activity.kind }}</strong>
+            <span>{{ activity.description }}</span>
+            <small>Completed {{ format_datetime(activity.completed_at, local_timezone) }}</small>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   <section class="detail-section">
-    <h3>Recent artifacts</h3>
+    <h3>{% if detail.artifact_offset %}Older artifacts{% else %}Recent artifacts{% endif %}</h3>
     {% if detail.recent_artifacts %}
       <ul class="mini-list">
         {% for artifact in detail.recent_artifacts %}
@@ -90,6 +105,67 @@
       </ul>
     {% else %}
       <p class="muted">No artifacts assigned yet.</p>
+    {% endif %}
+    {% if detail.has_newer_artifacts or detail.has_older_artifacts %}
+      <nav class="history-nav" aria-label="Artifact history navigation">
+        {% if detail.has_newer_artifacts %}
+          <a
+            href="/cases/{{ detail.case_file.id }}/panel?artifact_offset={{ [detail.artifact_offset - detail.artifact_limit, 0]|max }}"
+            hx-get="/cases/{{ detail.case_file.id }}/panel?artifact_offset={{ [detail.artifact_offset - detail.artifact_limit, 0]|max }}"
+            hx-target="#detail-panel"
+            hx-swap="innerHTML"
+          >Newer artifacts</a>
+        {% endif %}
+        {% if detail.has_older_artifacts %}
+          <a
+            href="/cases/{{ detail.case_file.id }}/panel?artifact_offset={{ detail.artifact_offset + detail.artifact_limit }}"
+            hx-get="/cases/{{ detail.case_file.id }}/panel?artifact_offset={{ detail.artifact_offset + detail.artifact_limit }}"
+            hx-target="#detail-panel"
+            hx-swap="innerHTML"
+          >Older artifacts</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  </section>
+
+  <section class="detail-section">
+    <h3>Case history</h3>
+    {% if detail.history %}
+      <ol class="history-list">
+        {% for item in detail.history %}
+          <li>
+            <div class="history-heading">
+              <strong>{{ item.action }}</strong>
+              <small>{{ format_datetime(item.event.created_at, local_timezone) }}</small>
+            </div>
+            <div class="muted">{{ item.actor_label }}</div>
+            {% if item.reason %}<p>{{ item.reason }}</p>{% endif %}
+            {% if item.detail %}<p class="muted">{{ item.detail }}</p>{% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="muted">No recorded history for this case.</p>
+    {% endif %}
+    {% if detail.has_newer_history or detail.has_older_history %}
+      <nav class="history-nav" aria-label="Case history navigation">
+        {% if detail.has_newer_history %}
+          <a
+            href="/cases/{{ detail.case_file.id }}/panel?history_offset={{ [detail.history_offset - detail.history_limit, 0]|max }}"
+            hx-get="/cases/{{ detail.case_file.id }}/panel?history_offset={{ [detail.history_offset - detail.history_limit, 0]|max }}"
+            hx-target="#detail-panel"
+            hx-swap="innerHTML"
+          >Newer history</a>
+        {% endif %}
+        {% if detail.has_older_history %}
+          <a
+            href="/cases/{{ detail.case_file.id }}/panel?history_offset={{ detail.history_offset + detail.history_limit }}"
+            hx-get="/cases/{{ detail.case_file.id }}/panel?history_offset={{ detail.history_offset + detail.history_limit }}"
+            hx-target="#detail-panel"
+            hx-swap="innerHTML"
+          >Older history</a>
+        {% endif %}
+      </nav>
     {% endif %}
   </section>
 

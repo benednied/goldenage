@@ -16,6 +16,7 @@ from goldenage.domain.models import (
     CaseFile,
     ExtractedArtifactData,
     ImportedMailPayload,
+    MailboxRecovery,
     MailCandidate,
     MailConversation,
     MailMessage,
@@ -66,6 +67,16 @@ class ArtifactRepository(Protocol):
 
     def list_case_artifacts(self, case_id: UUID, user: UserContext) -> Sequence[Artifact]:
         """Return artifacts linked to a case."""
+
+    def list_case_artifacts_page(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        """Return one bounded, visible page of case artifacts."""
 
     def list_unassigned_artifacts(
         self,
@@ -145,6 +156,34 @@ class AuditRepository(Protocol):
 
     def save_event(self, event: AuditEvent) -> None:
         """Persist an audit event."""
+
+    def list_case_events(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> Sequence[AuditEvent]:
+        """Return one bounded page of audit events visible for a case."""
+
+
+class MailboxRecoveryRepository(Protocol):
+    """Persistence for failed mailbox imports and authorized retries."""
+
+    def save_recovery(self, recovery: MailboxRecovery) -> None:
+        """Persist a failed import or its latest retry state."""
+
+    def list_recoveries(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[MailboxRecovery]:
+        """Return recoverable imports owned by the caller."""
+
+    def get_recovery(self, recovery_id: UUID, user: UserContext) -> MailboxRecovery | None:
+        """Return one recoverable import owned by the caller."""
 
 
 class ArtifactStore(Protocol):

@@ -284,3 +284,34 @@ class AuditEvent:
     subject_id: UUID
     payload_json: dict[str, object]
     created_at: datetime
+
+
+MailboxRecoveryStatus = Literal["failed", "recovered"]
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxRecovery:
+    """A failed mailbox import that can be retried by its owning user.
+
+    The normalized extractor payload is retained as JSON so a retry does not
+    need to query the native mail client again. Raw message bytes are kept in
+    the persistent adapter only; callers should render metadata, not payload.
+    """
+
+    id: UUID
+    user_id: UUID
+    source_system: MailSourceSystem
+    external_message_id: str | None
+    rfc_message_id: str | None
+    account_name: str | None
+    mailbox_name: str | None
+    file_name: str
+    media_type: str
+    content: bytes
+    extracted_json: dict[str, object]
+    error_message: str
+    status: MailboxRecoveryStatus
+    failed_at: datetime
+    retry_count: int = 0
+    recovered_artifact_id: UUID | None = None
+    recovered_at: datetime | None = None
