@@ -160,7 +160,11 @@ def create_app() -> FastAPI:
         local_user_repository = context.local_user_repository
         if local_user_repository is not None:
             account = local_user_repository.get_user_by_email(email)
-            user = account.to_user_context() if account is not None else None
+            user = (
+                account.to_user_context()
+                if account is not None and _verify_password(password, account.password_hash)
+                else None
+            )
         elif context.auth_provider is not None:
             user = context.auth_provider.authenticate(identifier=email, secret=password)
         else:
