@@ -1,0 +1,38 @@
+version: 2
+
+updates:
+  # Dependabot's uv ecosystem updates both pyproject.toml and the committed
+  # uv.lock. The quality workflow runs uv sync --frozen, so a stale lockfile
+  # cannot be merged silently.
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      python-patch-and-minor:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # Keep action updates visible and reviewable as well. Action references in
+  # workflows remain pinned to immutable commits; Dependabot updates the SHA
+  # and its release comment together.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns:
+          - "*"

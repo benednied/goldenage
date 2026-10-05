@@ -1,0 +1,10 @@
+# Advisory exceptions are deliberately empty. An exception is allowed only
+# for a documented false positive and must include all of the following in
+# `reason`: owner=<GitHub handle>, evidence=<link or file>, and a short reason.
+# `ignoreUntil` is mandatory and is checked by scripts/validate_advisory_exceptions.py.
+#
+# Example (do not copy without reviewing the advisory):
+# [[IgnoredVulns]]
+# id = "GHSA-0000-0000-0000"
+# ignoreUntil = "2099-12-31"
+# reason = "owner=@maintainer; evidence=https://example.invalid/review; false positive because ..."

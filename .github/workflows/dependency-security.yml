@@ -1,0 +1,53 @@
+name: Dependency security
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: dependency-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# The reusable OSV workflow needs security-events to publish SARIF. Fork pull
+# requests still receive GitHub's read-only token treatment; no repository
+# secret is used by this workflow.
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  validate-advisory-policy:
+    name: validate advisory exception policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate advisory exception metadata
+        env:
+          PYTHONPATH: src
+        run: python3 scripts/validate_advisory_exceptions.py
+
+  osv-scan:
+    name: scan uv.lock
+    needs: validate-advisory-policy
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@c7c7bcb0773cc4678a674ada03a66cc5c4325476 # v2.6.0
+    with:
+      scan-args: |-
+        --lockfile=uv.lock
+      fail-on-vuln: true
+      upload-sarif: true
+      results-file-name: osv-results.sarif
+    permissions:
+      actions: read
+      contents: read
+      security-events: write

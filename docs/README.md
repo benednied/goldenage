@@ -5,6 +5,7 @@ This directory contains durable project knowledge. Read this folder before readi
 ## Start Here
 
 - [`ci.md`](ci.md): CI checks and GitHub branch-protection administrator handoff
+- [`security.md`](security.md): SEC-06 security controls, scan policy, and GitHub administrator handoff
 - [`70-decisions/README.md`](70-decisions/README.md): canonical engineering decisions and ADR index
 - [`learnings/README.md`](learnings/README.md): what we learned while building the first slice
 

@@ -12,9 +12,9 @@ to the detailed technical decisions.
   identifiable example data in issues, pull requests, test fixtures, logs, or
   screenshots. Replace them with clearly fictional values.
 - Do not report a suspected vulnerability in a public issue. Use the private
-  security reporting route documented by the project maintainers. The repository
-  administrator must enable and publish that route before external reports can
-  be accepted.
+  vulnerability reporting route in [`SECURITY.md`](SECURITY.md). The repository
+  administrator must enable and test the GitHub “Report a vulnerability” route
+  before external reports can be accepted.
 
 ## Set Up a Local Environment
 
