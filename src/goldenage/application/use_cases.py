@@ -39,6 +39,7 @@ from goldenage.domain.models import (
     UserContext,
 )
 from goldenage.domain.rules import ResolutionError, build_resolution_plan, due_label
+from goldenage.domain.visibility import new_case_visibility_group_id
 
 DESKTOP_MAIL_SOURCE: MailSourceSystem = "desktop_mail_client"
 LEGACY_APPLE_MAIL_SOURCE: MailSourceSystem = "apple_mail_client"
@@ -838,6 +839,7 @@ class GoldenAgeService:
                 primary_contact=primary_contact.strip() or None,
                 status="open",
                 last_activity_at=now,
+                visible_group_id=new_case_visibility_group_id(user),
             )
         )
         return self.assign_artifact_to_case(

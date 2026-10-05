@@ -67,6 +67,7 @@ def test_ensure_sqlite_bootstrapped_preserves_historical_names_when_upgrading(tm
             "0002_apple_mail_import.sql",
             "0002_mailbox_ingestion.sql",
             "0003_migration_validation_probe.sql",
+            "0003_scope_mail_message_dedupe.sql",
         ]
         assert connection.execute("SELECT COUNT(*) FROM migration_validation_probe").fetchone() == (
             0,

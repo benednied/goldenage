@@ -227,14 +227,14 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             connection.commit()
 
     def get_artifact(self, artifact_id: UUID, user: UserContext) -> Artifact | None:
-        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        clause, params = _artifact_visibility_clause(user, artifact_alias="a", case_alias="c")
         sql = f"""
             SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
                    a.uploaded_at, a.uploaded_by, a.assigned_case_id, c.visible_group_id
             FROM artifact a
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE a.id = ?
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND {clause}
         """
         with self._connect() as connection:
             row = connection.execute(sql, (str(artifact_id), *params)).fetchone()
@@ -311,7 +311,14 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         """
         with self._connect() as connection:
             row = connection.execute(sql, (str(artifact_id),)).fetchone()
-        return _row_to_suggestion(row) if row else None
+        if row is None:
+            return None
+        suggestion = _row_to_suggestion(row)
+        if suggestion.suggested_case_id is not None and not self._case_visible(
+            suggestion.suggested_case_id, user
+        ):
+            return None
+        return suggestion
 
     def save_mail_metadata(self, metadata: ArtifactMailMetadata) -> None:
         sql = """
@@ -430,14 +437,14 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         conversation_id: UUID,
         user: UserContext,
     ) -> MailConversation | None:
-        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        clause, params = _conversation_visibility_clause(user)
         sql = f"""
             SELECT mc.*
             FROM mail_conversation mc
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
             WHERE mc.id = ?
-              AND (c.id IS NULL OR {clause})
+              AND {clause}
         """
         with self._connect() as connection:
             row = connection.execute(sql, (str(conversation_id), *params)).fetchone()
@@ -449,13 +456,13 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         *,
         limit: int = 10,
     ) -> Sequence[MailConversation]:
-        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        clause, params = _conversation_visibility_clause(user)
         sql = f"""
             SELECT mc.*
             FROM mail_conversation mc
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
-            WHERE c.id IS NULL OR {clause}
+            WHERE {clause}
             ORDER BY mc.latest_message_at DESC
             LIMIT ?
         """
@@ -468,11 +475,13 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             INSERT INTO mail_message (
                 artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
                 source_message_id, source_conversation_id, internet_message_id,
-                dedupe_fingerprint, direction, received_at, created_at
+                dedupe_fingerprint, dedupe_scope_user_id, direction, received_at, created_at
             ) VALUES (
                 :artifact_id, :conversation_id, :source_kind, :source_account_id,
                 :source_folder_id, :source_message_id, :source_conversation_id,
-                :internet_message_id, :dedupe_fingerprint, :direction, :received_at, :created_at
+                :internet_message_id, :dedupe_fingerprint,
+                (SELECT uploaded_by FROM artifact WHERE id = :artifact_id),
+                :direction, :received_at, :created_at
             )
             ON CONFLICT(artifact_id) DO UPDATE SET
                 conversation_id = excluded.conversation_id,
@@ -483,6 +492,7 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
                 source_conversation_id = excluded.source_conversation_id,
                 internet_message_id = excluded.internet_message_id,
                 dedupe_fingerprint = excluded.dedupe_fingerprint,
+                dedupe_scope_user_id = excluded.dedupe_scope_user_id,
                 direction = excluded.direction,
                 received_at = excluded.received_at,
                 created_at = excluded.created_at
@@ -508,15 +518,24 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
     def get_mail_message(self, artifact_id: UUID, user: UserContext) -> MailMessage | None:
         if self.get_artifact(artifact_id, user) is None:
             return None
+        conversation_clause, conversation_params = _conversation_visibility_clause(user)
         sql = """
-            SELECT artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
-                   source_message_id, source_conversation_id, internet_message_id,
-                   dedupe_fingerprint, direction, received_at, created_at
-            FROM mail_message
-            WHERE artifact_id = ?
+            SELECT mm.artifact_id, mm.conversation_id, mm.source_kind, mm.source_account_id,
+                   mm.source_folder_id, mm.source_message_id, mm.source_conversation_id,
+                   mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
+                   mm.created_at
+            FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE mm.artifact_id = ?
+              AND {conversation_clause}
         """
         with self._connect() as connection:
-            row = connection.execute(sql, (str(artifact_id),)).fetchone()
+            row = connection.execute(
+                sql.format(conversation_clause=conversation_clause),
+                (str(artifact_id), *conversation_params),
+            ).fetchone()
         return _row_to_mail_message(row) if row else None
 
     def find_mail_message_by_source(
@@ -530,15 +549,26 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         dedupe_fingerprint: str,
         user: UserContext,
     ) -> MailMessage | None:
-        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        conversation_clause, conversation_params = _conversation_visibility_clause(
+            user,
+            latest_artifact_alias="la",
+        )
+        artifact_clause, artifact_params = _artifact_visibility_clause(
+            user,
+            artifact_alias="a",
+            case_alias="ac",
+        )
         sql = f"""
             SELECT mm.artifact_id, mm.conversation_id, mm.source_kind, mm.source_account_id,
                    mm.source_folder_id, mm.source_message_id, mm.source_conversation_id,
                    mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
                    mm.created_at
             FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
             JOIN artifact a ON a.id = mm.artifact_id
-            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            LEFT JOIN artifact la ON la.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, la.assigned_case_id)
+            LEFT JOIN case_file ac ON ac.id = a.assigned_case_id
             WHERE mm.source_kind = ?
               AND (
                     (? IS NOT NULL AND ? IS NOT NULL AND ? IS NOT NULL
@@ -547,7 +577,8 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
                  OR (? IS NOT NULL AND mm.internet_message_id = ?)
                  OR mm.dedupe_fingerprint = ?
               )
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND {conversation_clause}
+              AND {artifact_clause}
             LIMIT 1
         """
         query_params = (
@@ -561,7 +592,8 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             internet_message_id,
             internet_message_id,
             dedupe_fingerprint,
-            *params,
+            *conversation_params,
+            *artifact_params,
         )
         with self._connect() as connection:
             row = connection.execute(sql, query_params).fetchone()
@@ -572,19 +604,34 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         conversation_id: UUID,
         user: UserContext,
     ) -> Sequence[Artifact]:
-        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
+        conversation_clause, conversation_params = _conversation_visibility_clause(
+            user,
+            latest_artifact_alias="la",
+        )
+        artifact_clause, artifact_params = _artifact_visibility_clause(
+            user,
+            artifact_alias="a",
+            case_alias="ac",
+        )
         sql = f"""
             SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
                    a.uploaded_at, a.uploaded_by, a.assigned_case_id
             FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
             JOIN artifact a ON a.id = mm.artifact_id
-            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            LEFT JOIN artifact la ON la.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, la.assigned_case_id)
+            LEFT JOIN case_file ac ON ac.id = a.assigned_case_id
             WHERE mm.conversation_id = ?
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND {conversation_clause}
+              AND {artifact_clause}
             ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
         """
         with self._connect() as connection:
-            rows = connection.execute(sql, (str(conversation_id), *params)).fetchall()
+            rows = connection.execute(
+                sql,
+                (str(conversation_id), *conversation_params, *artifact_params),
+            ).fetchall()
         return tuple(_row_to_artifact(row) for row in rows)
 
 
@@ -925,6 +972,48 @@ def _group_visibility_clause(
     params = tuple(str(group_id) for group_id in group_ids)
     placeholders = ", ".join("?" for _ in params)
     return f"({column_name} IS NULL OR {column_name} IN ({placeholders}))", params
+
+
+def _artifact_visibility_clause(
+    user: UserContext,
+    *,
+    artifact_alias: str,
+    case_alias: str,
+) -> tuple[str, tuple[str, ...]]:
+    """Return the SQLite predicate for one artifact visibility check."""
+    case_clause, group_params = _group_visibility_clause(
+        user.visible_group_ids,
+        f"{case_alias}.visible_group_id",
+    )
+    return (
+        f"(({artifact_alias}.assigned_case_id IS NULL "
+        f"AND ({artifact_alias}.uploaded_by IS NULL OR {artifact_alias}.uploaded_by = ?)) "
+        f"OR ({artifact_alias}.assigned_case_id IS NOT NULL "
+        f"AND {case_alias}.id IS NOT NULL AND {case_clause}))",
+        (str(user.id), *group_params),
+    )
+
+
+def _conversation_visibility_clause(
+    user: UserContext,
+    *,
+    latest_artifact_alias: str = "a",
+) -> tuple[str, tuple[str, ...]]:
+    """Return the SQLite predicate for a conversation and its latest artifact."""
+    case_clause, group_params = _group_visibility_clause(
+        user.visible_group_ids,
+        "c.visible_group_id",
+    )
+    artifact_clause, artifact_params = _artifact_visibility_clause(
+        user,
+        artifact_alias=latest_artifact_alias,
+        case_alias="c",
+    )
+    return (
+        f"((mc.assigned_case_id IS NOT NULL AND c.id IS NOT NULL AND {case_clause}) "
+        f"OR (mc.assigned_case_id IS NULL AND {artifact_clause}))",
+        (*group_params, *artifact_params),
+    )
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
