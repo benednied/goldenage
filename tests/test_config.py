@@ -18,6 +18,7 @@ def test_load_settings_reads_environment_aliases_and_typed_values(monkeypatch, t
     monkeypatch.setenv("GOLDENAGE_OUTLOOK_POLL_SECONDS", "invalid")
     monkeypatch.setenv("GOLDENAGE_AUTH_SECRET", "secret")
     monkeypatch.setenv("GOLDENAGE_AUTH_COOKIE_SECURE", "on")
+    monkeypatch.setenv("GOLDENAGE_AUTH_PROVIDER", " postgres_local ")
 
     settings = config.load_settings()
 
@@ -37,6 +38,7 @@ def test_load_settings_reads_environment_aliases_and_typed_values(monkeypatch, t
     assert settings.apple_mail_fixture_path == tmp_path / "mail.json"
     assert settings.auth_secret == "secret"
     assert settings.auth_cookie_secure is True
+    assert settings.auth_provider == "postgres_local"
 
 
 def test_load_settings_loads_dotenv_without_overriding_existing_environment(

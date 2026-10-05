@@ -55,7 +55,7 @@ Choose exactly one runtime mode:
 | --- | --- | --- |
 | Demo | Leave `DATABASE_URL` and `GOLDENAGE_LOCAL_FIRST_MODE` unset. | In memory; recreated at every server start. |
 | SQLite | `GOLDENAGE_LOCAL_FIRST_MODE=sqlite3` and `GOLDENAGE_SQLITE_PATH=var/goldenage.sqlite3` | The SQLite file and `var/artifacts/` persist locally. |
-| PostgreSQL | `DATABASE_URL=postgresql://goldenage:goldenage-local-password@127.0.0.1:5432/goldenage`; leave `GOLDENAGE_LOCAL_FIRST_MODE` unset. | The Compose volume persists locally. |
+| PostgreSQL | `DATABASE_URL=postgresql://goldenage:goldenage-local-password@127.0.0.1:5432/goldenage`, `GOLDENAGE_AUTH_PROVIDER=postgres_local`; leave `GOLDENAGE_LOCAL_FIRST_MODE` unset. | The Compose volume persists locally. |
 
 `GOLDENAGE_LOCAL_FIRST_MODE=sqlite` or `sqlite3` takes precedence over
 `DATABASE_URL`. If neither is set, GoldenAge starts the demo adapters. The full list
@@ -109,7 +109,7 @@ docker compose ps
 ```
 
 Continue only when the `postgres` service reports `healthy`. Then apply migrations,
-optionally seed the deterministic demo data, and start the app:
+optionally seed the deterministic baseline data, and start the app:
 
 ```bash
 ./.venv/bin/python -m goldenage.bootstrap_postgres --seed-demo
@@ -202,8 +202,9 @@ Troubleshooting:
 In PostgreSQL mode, that command:
 
 - applies SQL migrations in [`sql/`](sql)
-- seeds the fixed demo user
-- seeds the baseline cases and activities used by the first slice
+- seeds baseline cases and activities used by the first slice
+- does not create an authenticated account; provision `app_user.password_hash`
+  values before signing in
 
 ## Creating Migrations
 
