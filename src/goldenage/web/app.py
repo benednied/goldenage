@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import hmac
 import secrets
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
-from pathlib import Path
+from importlib.resources import as_file, files
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -15,6 +17,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.datastructures import UploadFile
 
 from goldenage.adapters.demo import (
@@ -74,10 +77,19 @@ from goldenage.web.upload_security import (
     validate_outlook_msg,
 )
 
-BASE_DIR = Path(__file__).resolve().parent
+_STATIC_RESOURCE_STACK = ExitStack()
+atexit.register(_STATIC_RESOURCE_STACK.close)
+STATIC_DIR = _STATIC_RESOURCE_STACK.enter_context(
+    as_file(files("goldenage").joinpath("web", "static"))
+)
 UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
 AUTH_COOKIE_NAME = "goldenage_session"
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+templates = Jinja2Templates(
+    env=Environment(
+        loader=PackageLoader("goldenage", "web/templates"),
+        autoescape=select_autoescape(),
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +113,7 @@ def create_app() -> FastAPI:
     upload_limits = UploadLimits.from_environment()
     app.add_middleware(UploadLimitMiddleware, limit=upload_limits.request_bytes)
     app.state.context = context
-    app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
@@ -125,7 +137,7 @@ def create_app() -> FastAPI:
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> FileResponse:
         return FileResponse(
-            BASE_DIR / "static" / "golden_age_favicon_48.ico",
+            STATIC_DIR / "golden_age_favicon_48.ico",
             media_type="image/x-icon",
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
+from typing import cast
 
 SchemaPath = Path | Traversable
 
@@ -29,7 +30,7 @@ def migration_paths(schema_path: Path | None, dialect: str) -> list[SchemaPath]:
             key=lambda path: path.name,
         )
     if schema_path.is_dir():
-        return sorted(schema_path.glob("*.sql"))
+        return cast(list[SchemaPath], sorted(schema_path.glob("*.sql")))
     return [schema_path]
 
 

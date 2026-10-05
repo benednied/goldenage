@@ -25,7 +25,7 @@ class MigrationNamespace:
 
 POSTGRES_NAMESPACE = MigrationNamespace(
     name="PostgreSQL",
-    directory=Path("sql"),
+    directory=Path("src/goldenage/resources/sql"),
     historical_names=frozenset(
         {
             "0001_initial.sql",
@@ -39,7 +39,7 @@ POSTGRES_NAMESPACE = MigrationNamespace(
 
 SQLITE_NAMESPACE = MigrationNamespace(
     name="SQLite",
-    directory=Path("sql/sqlite"),
+    directory=Path("src/goldenage/resources/sql/sqlite"),
     historical_names=frozenset(
         {
             "0001_initial.sql",
@@ -62,7 +62,10 @@ def validate_migration_directory(
     namespace: MigrationNamespace,
 ) -> None:
     """Validate one dialect's historical baseline and any subsequent migrations."""
-    paths = sorted(path for path in directory.iterdir() if path.is_file())
+    paths = sorted(
+        (path for path in directory.iterdir() if path.is_file()),
+        key=lambda path: path.name,
+    )
     names = {path.name for path in paths}
     errors: list[str] = []
 
@@ -109,10 +112,10 @@ def validate_repository_migrations(repository_root: Path) -> None:
     for namespace in NAMESPACES:
         directory = repository_root / namespace.directory
         if not directory.is_dir():
-            packaged_directory = repository_root / "src" / "goldenage" / "resources" / "sql"
+            legacy_directory = repository_root / "sql"
             if namespace is SQLITE_NAMESPACE:
-                packaged_directory /= "sqlite"
-            directory = packaged_directory
+                legacy_directory /= "sqlite"
+            directory = legacy_directory
         if directory.is_dir():
             validate_migration_directory(directory, namespace)
         else:
@@ -127,7 +130,7 @@ def main() -> None:
         "--repository-root",
         type=Path,
         default=Path.cwd(),
-        help="Repository root containing sql/. Defaults to the current directory.",
+        help="Repository root containing src/goldenage/resources/. Defaults to the current directory.",
     )
     args = parser.parse_args()
 

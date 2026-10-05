@@ -224,8 +224,8 @@ The check preserves the shipped historical prefix collisions as explicit excepti
 rejects malformed, duplicate, or backward-sorting new IDs. Never rename or edit an
 applied migration: deliver a correction as a new forward migration. See
 [`ADR-0004`](docs/70-decisions/adr-0004-migration-identifiers.md) for the baseline and
-concurrent-PR collision procedure. Add this command to the existing quality job when
-that job is available.
+concurrent-PR collision procedure. The CI quality job runs this check as part of every
+pull request and default-branch build.
 
 ## Verification
 
@@ -241,8 +241,10 @@ uv build
 
 ## Continuous Integration
 
-Pull requests and pushes to the default branch run the locked Python 3.14
-quality job: Ruff lint, Ruff format verification, `ty`, and `pytest`. Run the
+Pull requests and pushes to the default branch run locked Python 3.14 quality
+and distribution jobs. The quality job runs Ruff lint, Ruff format verification,
+`ty`, migration validation, and `pytest`; the distribution job builds and
+installs both archive paths and runs the packaged-resource smoke test. Run the
 same checks locally before opening a pull request; the exact commands and
 failure-handling guidance are in [`docs/ci.md`](docs/ci.md). Branch-protection
 configuration requires GitHub repository administration and is documented
@@ -264,6 +266,7 @@ uv run --extra dev ruff format .
 - [`docs/70-decisions/`](docs/70-decisions): canonical technical decisions and ADRs
 - [`docs/learnings/`](docs/learnings): dated implementation notes and discovered constraints
 - [`plans/implementation-plan.md`](plans/implementation-plan.md): current implementation plan
-- [`sql/`](sql): bootstrap SQL migrations
+- [`src/goldenage/resources/sql/`](src/goldenage/resources/sql): PostgreSQL bootstrap SQL migrations
+- [`src/goldenage/resources/sql/sqlite/`](src/goldenage/resources/sql/sqlite): SQLite bootstrap SQL migrations
 - [`src/goldenage/`](src/goldenage): application code by clean-architecture layer
 - [`tests/`](tests): unit, service, and web-flow tests

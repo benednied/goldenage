@@ -65,6 +65,7 @@ output-format = "concise"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -73,6 +74,8 @@ where = ["src"]
 goldenage = [
   "resources/sql/*.sql",
   "resources/sql/sqlite/*.sql",
+  "web/static/*",
   "web/static/**/*",
   "web/templates/**/*.html",
+  "web/templates/*.html",
 ]

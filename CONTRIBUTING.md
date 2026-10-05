@@ -68,8 +68,10 @@ Run these checks before opening a pull request:
 ./.venv/bin/python -m ruff check .
 ./.venv/bin/python -m ruff format --check .
 ./.venv/bin/ty check
+./.venv/bin/python -m goldenage.migration_validation
 ./.venv/bin/python -m compileall src tests
 ./.venv/bin/python -m pytest -q
+uv build
 ```
 
 Ruff can fix many style issues locally:
