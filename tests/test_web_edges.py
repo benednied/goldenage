@@ -814,6 +814,7 @@ def test_semicolon_in_password_remains_literal(monkeypatch, tmp_path) -> None:
     )
     assert response.status_code == 303
     client.cookies.clear()
+    client.get("/login")
 
     response = client.post(
         "/login/local",
