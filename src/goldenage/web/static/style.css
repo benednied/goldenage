@@ -24,7 +24,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: var(--ink);
   background:
     radial-gradient(circle at top left, rgba(13, 92, 99, 0.12), transparent 28rem),
@@ -52,7 +52,7 @@ h2,
 h3,
 h4 {
   margin: 0;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-weight: 600;
 }
 
@@ -317,7 +317,7 @@ h4 {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.72);
   color: #24211d;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 0.96rem;
   line-height: 1.5;
   white-space: pre-wrap;

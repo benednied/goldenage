@@ -30,6 +30,7 @@ class Settings:
     apple_mail_fixture_path: Path | None
     auth_secret: str
     auth_cookie_secure: bool
+    hsts_enabled: bool = False
 
     @property
     def use_local_first_sqlite(self) -> bool:
@@ -71,6 +72,8 @@ def load_settings() -> Settings:
         ),
         auth_secret=os.environ.get("GOLDENAGE_AUTH_SECRET", _GENERATED_AUTH_SECRET),
         auth_cookie_secure=_env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
+        hsts_enabled=_env_flag("GOLDENAGE_HSTS_ENABLED")
+        and _env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
     )
 
 

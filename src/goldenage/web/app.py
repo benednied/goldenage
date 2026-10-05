@@ -66,6 +66,7 @@ from goldenage.bootstrap_sqlite import ensure_sqlite_bootstrapped
 from goldenage.config import Settings, load_settings
 from goldenage.domain.models import MailSelector, UserContext
 from goldenage.domain.rules import ResolutionError, due_label
+from goldenage.web.security import SecurityHeadersMiddleware
 from goldenage.web.upload_security import (
     UploadLimitMiddleware,
     UploadLimits,
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="GoldenAge")
     upload_limits = UploadLimits.from_environment()
     app.add_middleware(UploadLimitMiddleware, limit=upload_limits.request_bytes)
+    app.add_middleware(SecurityHeadersMiddleware, hsts_enabled=settings.hsts_enabled)
     app.state.context = context
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
     if settings.use_local_first_sqlite:
