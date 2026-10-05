@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
@@ -45,6 +44,7 @@ from goldenage.adapters.postgres import (
     PostgresActivityRepository,
     PostgresArtifactRepository,
     PostgresAuditRepository,
+    PostgresAuthProvider,
     PostgresCaseRepository,
 )
 from goldenage.adapters.sqlite import (
@@ -55,6 +55,8 @@ from goldenage.adapters.sqlite import (
     SQLiteLocalUserRepository,
     SQLiteMailImportRepository,
 )
+from goldenage.application.passwords import hash_password, verify_password
+from goldenage.application.ports import AuthenticationProvider
 from goldenage.application.use_cases import (
     CaseDetail,
     GoldenAgeService,
@@ -77,6 +79,7 @@ from goldenage.web.upload_security import (
 BASE_DIR = Path(__file__).resolve().parent
 UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
 AUTH_COOKIE_NAME = "goldenage_session"
+POSTGRES_AUTH_PROVIDER = "postgres_local"
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
@@ -87,6 +90,7 @@ class AppContext:
     settings: Settings
     service: GoldenAgeService
     default_user: UserContext | None
+    auth_provider: AuthenticationProvider | None = None
     local_user_repository: SQLiteLocalUserRepository | None = None
     outlook_worker: OutlookMailboxWorker | None = None
     upload_limits: UploadLimits = UploadLimits()
@@ -131,14 +135,14 @@ def create_app() -> FastAPI:
 
     @app.get("/login", response_class=HTMLResponse)
     async def login(request: Request) -> HTMLResponse:
-        if not settings.use_local_first_sqlite:
+        if not settings.use_local_first_sqlite and context.auth_provider is None:
             return RedirectResponse(url="/worklist", status_code=302)
         if context.local_user_repository is not None:
             account = context.local_user_repository.get_first_user()
             if account is None:
                 return RedirectResponse(url="/onboarding", status_code=302)
-            if _current_user(context, request=request) is not None:
-                return RedirectResponse(url="/worklist", status_code=302)
+        if _current_user(context, request=request) is not None:
+            return RedirectResponse(url="/worklist", status_code=302)
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -151,13 +155,17 @@ def create_app() -> FastAPI:
         email: str = Form(default=""),
         password: str = Form(default=""),
     ) -> HTMLResponse:
-        if not settings.use_local_first_sqlite:
+        if not settings.use_local_first_sqlite and context.auth_provider is None:
             return RedirectResponse(url="/worklist", status_code=302)
         local_user_repository = context.local_user_repository
-        if local_user_repository is None:
-            raise HTTPException(status_code=500, detail="Local-first login is not configured.")
-        account = local_user_repository.get_user_by_email(email)
-        if account is None or not _verify_password(password, account.password_hash):
+        if local_user_repository is not None:
+            account = local_user_repository.get_user_by_email(email)
+            user = account.to_user_context() if account is not None else None
+        elif context.auth_provider is not None:
+            user = context.auth_provider.authenticate(identifier=email, secret=password)
+        else:
+            raise HTTPException(status_code=500, detail="Authentication is not configured.")
+        if user is None:
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
@@ -165,7 +173,7 @@ def create_app() -> FastAPI:
                 status_code=401,
             )
         response = RedirectResponse(url="/worklist", status_code=303)
-        _set_auth_cookie(response, account.id, settings=settings)
+        _set_auth_cookie(response, user.id, settings=settings)
         return response
 
     @app.post("/login/ldap", response_class=HTMLResponse)
@@ -180,7 +188,9 @@ def create_app() -> FastAPI:
     @app.post("/logout", response_class=HTMLResponse)
     async def logout() -> RedirectResponse:
         response = RedirectResponse(
-            url="/login" if settings.use_local_first_sqlite else "/worklist",
+            url="/login"
+            if settings.use_local_first_sqlite or context.auth_provider is not None
+            else "/worklist",
             status_code=303,
         )
         response.delete_cookie(AUTH_COOKIE_NAME)
@@ -819,16 +829,23 @@ def _build_context(settings: Settings) -> AppContext:
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
         default_user = None
+        auth_provider = None
     elif settings.database_url:
+        if settings.auth_provider is None:
+            raise RuntimeError(
+                "GOLDENAGE_AUTH_PROVIDER must be set for PostgreSQL mode; "
+                "refusing to use the demo identity."
+            )
+        if settings.auth_provider != POSTGRES_AUTH_PROVIDER:
+            raise RuntimeError(
+                f"Unsupported PostgreSQL authentication provider: {settings.auth_provider}."
+            )
         case_repository = PostgresCaseRepository(settings.database_url)
         activity_repository = PostgresActivityRepository(settings.database_url)
         artifact_repository = PostgresArtifactRepository(settings.database_url)
         audit_repository = PostgresAuditRepository(settings.database_url)
-        default_user = UserContext(
-            id=_uuid("11111111-1111-1111-1111-111111111111"),
-            email="alex@example.com",
-            display_name="Alex Example",
-        )
+        auth_provider = PostgresAuthProvider(settings.database_url)
+        default_user = None
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
     else:
@@ -838,6 +855,7 @@ def _build_context(settings: Settings) -> AppContext:
         artifact_repository = InMemoryArtifactRepository(state, case_repository)
         audit_repository = InMemoryAuditRepository(state)
         default_user = user
+        auth_provider = None
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
 
@@ -866,6 +884,7 @@ def _build_context(settings: Settings) -> AppContext:
         def ingest_outlook_message(message: OutlookMailboxMessage) -> None:
             user = _current_user_for_repositories(
                 default_user=default_user,
+                auth_provider=auth_provider,
                 local_user_repository=local_user_repository,
             )
             if user is None:
@@ -889,6 +908,7 @@ def _build_context(settings: Settings) -> AppContext:
         settings=settings,
         service=service,
         default_user=default_user,
+        auth_provider=auth_provider,
         local_user_repository=local_user_repository,
         outlook_worker=outlook_worker,
         upload_limits=UploadLimits.from_environment(),
@@ -1087,28 +1107,37 @@ def _settings_context(
 
 
 def _current_user(context: AppContext, *, request: Request | None = None) -> UserContext | None:
-    if context.local_user_repository is None:
-        return context.default_user
-
-    account = context.local_user_repository.get_first_user()
-    if account is None:
-        return None
-    if request is None:
+    if context.local_user_repository is not None:
+        account = context.local_user_repository.get_first_user()
+        if account is None:
+            return None
+        if request is None:
+            return account.to_user_context()
+        account_id = _authenticated_account_id(request, settings=context.settings)
+        if account_id != account.id:
+            return None
         return account.to_user_context()
-    account_id = _authenticated_account_id(request, settings=context.settings)
-    if account_id != account.id:
-        return None
-    return account.to_user_context()
+    if context.auth_provider is not None:
+        if request is None:
+            return None
+        account_id = _authenticated_account_id(request, settings=context.settings)
+        if account_id is None:
+            return None
+        return context.auth_provider.resolve(account_id)
+    return context.default_user
 
 
 def _current_user_for_repositories(
     *,
     default_user: UserContext | None,
     local_user_repository: SQLiteLocalUserRepository | None,
+    auth_provider: AuthenticationProvider | None = None,
 ) -> UserContext | None:
     if local_user_repository is not None:
         account = local_user_repository.get_first_user()
         return account.to_user_context() if account is not None else None
+    if auth_provider is not None:
+        return None
     return default_user
 
 
@@ -1132,13 +1161,15 @@ def _redirect_to_login_or_onboarding_if_needed(
     request: Request,
     context: AppContext,
 ) -> RedirectResponse | None:
-    if not context.settings.use_local_first_sqlite:
+    if context.settings.use_local_first_sqlite:
+        if context.local_user_repository is None:
+            return RedirectResponse(url="/onboarding", status_code=302)
+        if context.local_user_repository.get_first_user() is None:
+            return RedirectResponse(url="/onboarding", status_code=302)
+        if _current_user(context, request=request) is None:
+            return RedirectResponse(url="/login", status_code=302)
         return None
-    if context.local_user_repository is None:
-        return RedirectResponse(url="/onboarding", status_code=302)
-    if context.local_user_repository.get_first_user() is None:
-        return RedirectResponse(url="/onboarding", status_code=302)
-    if _current_user(context, request=request) is None:
+    if context.auth_provider is not None and _current_user(context, request=request) is None:
         return RedirectResponse(url="/login", status_code=302)
     return None
 
@@ -1167,31 +1198,11 @@ async def _store_profile_picture(
 
 
 def _hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        600_000,
-    ).hex()
-    return f"pbkdf2_sha256$600000${salt}${digest}"
+    return hash_password(password)
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
-    try:
-        algorithm, iterations_text, salt, expected = password_hash.split("$", 3)
-        iterations = int(iterations_text)
-    except ValueError:
-        return False
-    if algorithm != "pbkdf2_sha256":
-        return False
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        iterations,
-    ).hex()
-    return hmac.compare_digest(digest, expected)
+    return verify_password(password, password_hash)
 
 
 def _set_auth_cookie(response: RedirectResponse, account_id: UUID, *, settings: Settings) -> None:

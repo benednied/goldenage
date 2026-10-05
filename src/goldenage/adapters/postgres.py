@@ -7,10 +7,12 @@ from dataclasses import asdict
 from datetime import datetime
 from uuid import UUID
 
+from goldenage.application.passwords import verify_password
 from goldenage.application.ports import (
     ActivityRepository,
     ArtifactRepository,
     AuditRepository,
+    AuthenticationProvider,
     CaseRepository,
 )
 from goldenage.domain.models import (
@@ -66,6 +68,49 @@ class _PostgresRepositoryBase:
                 return False
             visible_group_id = row["visible_group_id"]
             return visible_group_id is None or visible_group_id in user.visible_group_ids
+
+
+class PostgresAuthProvider(_PostgresRepositoryBase, AuthenticationProvider):
+    """Password-backed PostgreSQL identity provider.
+
+    The signed session cookie contains only the account UUID. This provider
+    re-reads the account and group memberships for every request, so deleted
+    accounts and membership changes take effect without trusting client input.
+    """
+
+    def authenticate(self, *, identifier: str, secret: str) -> UserContext | None:
+        sql = """
+            SELECT u.id, u.email, u.display_name, u.profile_image_path, u.password_hash,
+                   ARRAY_AGG(m.group_id) FILTER (WHERE m.group_id IS NOT NULL) AS group_ids
+            FROM app_user u
+            LEFT JOIN user_group_membership m ON m.user_id = u.id
+            WHERE lower(u.email) = lower(%(identifier)s)
+            GROUP BY u.id, u.email, u.display_name, u.profile_image_path, u.password_hash
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"identifier": identifier.strip()})
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        password_hash = row["password_hash"]
+        if not isinstance(password_hash, str) or not verify_password(secret, password_hash):
+            return None
+        return _row_to_user_context(row)
+
+    def resolve(self, account_id: UUID) -> UserContext | None:
+        sql = """
+            SELECT u.id, u.email, u.display_name, u.profile_image_path, u.password_hash,
+                   ARRAY_AGG(m.group_id) FILTER (WHERE m.group_id IS NOT NULL) AS group_ids
+            FROM app_user u
+            LEFT JOIN user_group_membership m ON m.user_id = u.id
+            WHERE u.id = %(account_id)s
+              AND u.password_hash IS NOT NULL
+            GROUP BY u.id, u.email, u.display_name, u.profile_image_path, u.password_hash
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"account_id": account_id})
+            row = cursor.fetchone()
+        return _row_to_user_context(row) if row is not None else None
 
 
 class PostgresCaseRepository(_PostgresRepositoryBase, CaseRepository):
@@ -624,6 +669,20 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, payload)
             connection.commit()
+
+
+def _row_to_user_context(row: dict[str, object]) -> UserContext:
+    """Map a provider row to a verified request context."""
+    raw_group_ids = row.get("group_ids") or ()
+    return UserContext(
+        id=UUID(str(row["id"])),
+        email=str(row["email"]),
+        display_name=str(row["display_name"]),
+        profile_image_path=(
+            str(row["profile_image_path"]) if row.get("profile_image_path") is not None else None
+        ),
+        visible_group_ids=frozenset(UUID(str(group_id)) for group_id in raw_group_ids),  # ty:ignore[not-iterable]
+    )
 
 
 def _row_to_case_file(row: dict[str, object]) -> CaseFile:

@@ -26,6 +26,16 @@ from goldenage.domain.models import (
 )
 
 
+class AuthenticationProvider(Protocol):
+    """Port for verified account authentication and request-time resolution."""
+
+    def authenticate(self, *, identifier: str, secret: str) -> UserContext | None:
+        """Verify credentials and return the resulting user context."""
+
+    def resolve(self, account_id: UUID) -> UserContext | None:
+        """Resolve a signed session subject into its current user and groups."""
+
+
 class CaseRepository(Protocol):
     """Persistence port for cases."""
 

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -646,16 +647,120 @@ def test_build_context_postgres_and_required_sqlite_path(monkeypatch, tmp_path) 
     monkeypatch.setattr(web_app, "PostgresActivityRepository", FakeRepository)
     monkeypatch.setattr(web_app, "PostgresArtifactRepository", FakeRepository)
     monkeypatch.setattr(web_app, "PostgresAuditRepository", FakeRepository)
+    monkeypatch.setattr(web_app, "PostgresAuthProvider", FakeRepository)
     monkeypatch.setattr(web_app, "build_desktop_mail_import_client", lambda **kwargs: None)
     context = web_app._build_context(
-        _settings(tmp_path, database_url="postgresql://example", local_first_mode=None)
+        replace(
+            _settings(tmp_path, database_url="postgresql://example", local_first_mode=None),
+            auth_provider="postgres_local",
+        )
     )
-    assert context.default_user is not None
+    assert context.default_user is None
+    assert context.auth_provider is not None
+
+    with pytest.raises(RuntimeError, match="GOLDENAGE_AUTH_PROVIDER"):
+        web_app._build_context(
+            _settings(tmp_path, database_url="postgresql://example", local_first_mode=None)
+        )
     assert context.local_user_repository is None
 
     missing_sqlite_settings = replace(_settings(tmp_path), sqlite_path=None)
     with pytest.raises(RuntimeError, match="GOLDENAGE_SQLITE_PATH"):
         web_app._build_context(missing_sqlite_settings)
+
+
+def test_postgres_web_auth_uses_signed_sessions_and_provider_contexts(
+    monkeypatch, tmp_path
+) -> None:
+    alice_id = uuid4()
+    bob_id = uuid4()
+    alice_group = uuid4()
+    bob_group = uuid4()
+
+    class FakeProvider:
+        def __init__(self) -> None:
+            self.users = {
+                "alice@example.com": UserContext(
+                    id=alice_id,
+                    email="alice@example.com",
+                    display_name="Alice",
+                    visible_group_ids=frozenset({alice_group}),
+                ),
+                "bob@example.com": UserContext(
+                    id=bob_id,
+                    email="bob@example.com",
+                    display_name="Bob",
+                    visible_group_ids=frozenset({bob_group}),
+                ),
+            }
+            self.by_id = {user.id: user for user in self.users.values()}
+            self.resolved: list[UserContext] = []
+
+        def authenticate(self, *, identifier: str, secret: str) -> UserContext | None:
+            if secret != "password":
+                return None
+            return self.users.get(identifier.strip().lower())
+
+        def resolve(self, account_id: UUID) -> UserContext | None:
+            user = self.by_id.get(account_id)
+            if user is not None:
+                self.resolved.append(user)
+            return user
+
+    settings = replace(
+        _settings(tmp_path, database_url="postgresql://example", local_first_mode=None),
+        auth_provider="postgres_local",
+    )
+    provider = FakeProvider()
+    context = web_app.AppContext(
+        settings=settings,
+        service=cast(web_app.GoldenAgeService, object()),
+        default_user=None,
+        auth_provider=provider,
+    )
+    monkeypatch.setattr(web_app, "load_settings", lambda: settings)
+    monkeypatch.setattr(web_app, "_build_context", lambda loaded: context)
+
+    anonymous = TestClient(web_app.create_app(), follow_redirects=False)
+    assert anonymous.get("/worklist").headers["location"] == "/login"
+    assert (
+        anonymous.get("/worklist", headers={"X-User-ID": str(alice_id)}).headers["location"]
+        == "/login"
+    )
+    assert (
+        anonymous.post(
+            "/login/local", data={"email": "alice@example.com", "password": "bad"}
+        ).status_code
+        == 401
+    )
+
+    alice = TestClient(web_app.create_app(), follow_redirects=False)
+    assert (
+        alice.post(
+            "/login/local", data={"email": "alice@example.com", "password": "password"}
+        ).status_code
+        == 303
+    )
+    assert alice.get("/login").headers["location"] == "/worklist"
+    assert provider.resolved[-1].visible_group_ids == frozenset({alice_group})
+
+    bob = TestClient(web_app.create_app(), follow_redirects=False)
+    assert (
+        bob.post(
+            "/login/local", data={"email": "bob@example.com", "password": "password"}
+        ).status_code
+        == 303
+    )
+    assert bob.get("/login").headers["location"] == "/worklist"
+    assert provider.resolved[-1].id == bob_id
+    assert provider.resolved[-1].visible_group_ids == frozenset({bob_group})
+
+    provider.by_id[alice_id] = replace(provider.by_id[alice_id], visible_group_ids=frozenset())
+    assert alice.get("/login").headers["location"] == "/worklist"
+    assert provider.resolved[-1].visible_group_ids == frozenset()
+    anonymous.close()
+    alice.close()
+    bob.close()
 
 
 def test_outlook_ingest_callback_skips_when_no_repository_user(monkeypatch, tmp_path) -> None:

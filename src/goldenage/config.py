@@ -30,6 +30,7 @@ class Settings:
     apple_mail_fixture_path: Path | None
     auth_secret: str
     auth_cookie_secure: bool
+    auth_provider: str | None = None
 
     @property
     def use_local_first_sqlite(self) -> bool:
@@ -71,6 +72,7 @@ def load_settings() -> Settings:
         ),
         auth_secret=os.environ.get("GOLDENAGE_AUTH_SECRET", _GENERATED_AUTH_SECRET),
         auth_cookie_secure=_env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
+        auth_provider=_normalized_optional_env("GOLDENAGE_AUTH_PROVIDER"),
     )
 
 
@@ -89,6 +91,13 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return max(value, 1)
+
+
+def _normalized_optional_env(name: str) -> str | None:
+    """Return a trimmed environment value, treating blank values as unset."""
+    value = os.environ.get(name)
+    normalized = value.strip() if value is not None else ""
+    return normalized or None
 
 
 def _load_dotenv(path: Path) -> None:

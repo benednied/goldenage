@@ -36,7 +36,7 @@
     <section class="login-panel" aria-labelledby="login-title">
       <div class="login-card">
         <h1 id="login-title">Sign in to GoldenAge</h1>
-        <p class="subhead">Use the configured identity backend for this workspace.</p>
+        <p class="subhead">Use the configured database credentials for this workspace.</p>
 
         {% if message %}
           <div class="message message-error">{{ message }}</div>
@@ -47,33 +47,16 @@
           class="workflow-form login-form"
           method="post"
           action="/login/local"
-          data-local-action="/login/local"
-          data-ldap-action="/login/ldap"
         >
-          <h2>Workspace credentials</h2>
-          <div class="login-provider-toggle" role="radiogroup" aria-label="Credential backend">
-            <label>
-              <input type="radio" name="credential_provider" value="local" checked />
-              <span>LocalDB</span>
-            </label>
-            <label>
-              <input type="radio" name="credential_provider" value="ldap" />
-              <span>LDAP</span>
-            </label>
-            <label>
-              <input type="radio" name="credential_provider" value="entraid" disabled />
-              <span>Entra ID</span>
-            </label>
-          </div>
+          <h2>Database credentials</h2>
           <label>
-            Email or username
-            <input type="text" name="email" placeholder="name@example.com or domain\\username" autocomplete="username" required />
+            Email
+            <input type="email" name="email" placeholder="name@example.com" autocomplete="username" required />
           </label>
           <label>
             Password
             <input type="password" name="password" placeholder="Password" autocomplete="current-password" required />
           </label>
-          <input type="hidden" name="username" value="" />
           <button type="submit">Sign in</button>
         </form>
       </div>

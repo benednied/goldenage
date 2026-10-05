@@ -88,6 +88,69 @@ def test_postgres_connect_delegates_to_psycopg(monkeypatch) -> None:
     assert calls == [("postgresql://example", postgres.dict_row)]
 
 
+def test_postgres_auth_provider_resolves_verified_user_and_groups(monkeypatch) -> None:
+    user_id = uuid4()
+    group_id = uuid4()
+    row: dict[str, object] = {
+        "id": user_id,
+        "email": "alex@example.com",
+        "display_name": "Alex Example",
+        "profile_image_path": None,
+        "password_hash": "stored-hash",
+        "group_ids": [group_id],
+    }
+    cursor = FakeCursor(fetchone_rows=[row])
+    provider = postgres.PostgresAuthProvider("postgresql://example")
+    monkeypatch.setattr(provider, "_connect", lambda: FakeConnection(cursor))
+    monkeypatch.setattr(
+        postgres,
+        "verify_password",
+        lambda secret, stored: (secret, stored) == ("secret", "stored-hash"),
+    )
+
+    assert provider.authenticate(identifier=" alex@example.com ", secret="secret") == UserContext(
+        id=user_id,
+        email="alex@example.com",
+        display_name="Alex Example",
+        visible_group_ids=frozenset({group_id}),
+    )
+    assert provider.authenticate(identifier="alex@example.com", secret="wrong") is None
+
+
+def test_postgres_auth_provider_membership_changes_apply_on_next_resolution(monkeypatch) -> None:
+    user_id = uuid4()
+    first_group_id = uuid4()
+    second_group_id = uuid4()
+    first_row: dict[str, object] = {
+        "id": user_id,
+        "email": "alex@example.com",
+        "display_name": "Alex Example",
+        "profile_image_path": None,
+        "password_hash": "stored-hash",
+        "group_ids": [first_group_id],
+    }
+    second_row: dict[str, object] = {
+        "id": user_id,
+        "email": "alex@example.com",
+        "display_name": "Alex Example",
+        "profile_image_path": None,
+        "password_hash": "stored-hash",
+        "group_ids": [second_group_id],
+    }
+    first_cursor = FakeCursor(fetchone_rows=[first_row])
+    second_cursor = FakeCursor(fetchone_rows=[second_row])
+    connections = iter((FakeConnection(first_cursor), FakeConnection(second_cursor)))
+    provider = postgres.PostgresAuthProvider("postgresql://example")
+    monkeypatch.setattr(provider, "_connect", lambda: next(connections))
+
+    first_context = provider.resolve(user_id)
+    second_context = provider.resolve(user_id)
+    assert first_context is not None
+    assert second_context is not None
+    assert first_context.visible_group_ids == frozenset({first_group_id})
+    assert second_context.visible_group_ids == frozenset({second_group_id})
+
+
 def test_case_visible_handles_missing_public_and_group_visible_rows(monkeypatch) -> None:
     group_id = uuid4()
     cursor = FakeCursor(
