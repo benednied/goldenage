@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -346,3 +347,75 @@ def test_sqlite_helpers_cover_group_clause_and_datetime_round_trip() -> None:
     assert _serialize_datetime(None) is None
     assert _deserialize_datetime(None) is None
     assert _deserialize_datetime(_serialize_datetime(NOW)) == NOW
+
+
+def test_sqlite_workflow_transition_blocks_closed_case_and_rolls_back_audit_failure(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "workflow.sqlite3"
+    ensure_sqlite_bootstrapped(database_path)
+    user = UserContext(id=uuid4(), email="alex@example.com", display_name="Alex")
+    case_id = uuid4()
+    activity_id = uuid4()
+    case_repo = SQLiteCaseRepository(database_path)
+    activity_repo = SQLiteActivityRepository(database_path)
+    audit_repo = SQLiteAuditRepository(database_path)
+    case_repo.save_case(
+        CaseFile(
+            id=case_id,
+            title="Acme renewal",
+            company=None,
+            primary_contact=None,
+            status="open",
+            last_activity_at=NOW,
+        )
+    )
+    activity_repo.save_activity(
+        Activity(
+            id=activity_id,
+            case_id=case_id,
+            description="Call Max",
+            kind="follow_up",
+            due_at=NOW,
+            created_at=NOW,
+            created_by=None,
+        )
+    )
+    audit_event = AuditEvent(
+        id=uuid4(),
+        actor_user_id=None,
+        event_type="activity_resolved",
+        subject_id=activity_id,
+        payload_json={"case_id": str(case_id)},
+        created_at=NOW,
+    )
+    audit_repo.save_event(audit_event)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        activity_repo.resolve_activity(
+            activity_id=activity_id,
+            case_id=case_id,
+            completed_at=NOW,
+            close_case=True,
+            follow_up_activity=None,
+            audit_event=audit_event,
+        )
+
+    persisted_case = case_repo.get_case(case_id, user)
+    persisted_activity = activity_repo.get_activity(activity_id, user)
+    assert persisted_case is not None
+    assert persisted_activity is not None
+    assert persisted_case.status == "open"
+    assert persisted_activity.completed_at is None
+
+    case_repo.save_case(
+        CaseFile(
+            id=case_id,
+            title="Acme renewal",
+            company=None,
+            primary_contact=None,
+            status="closed",
+            last_activity_at=NOW,
+        )
+    )
+    assert activity_repo.list_due_activities(user, NOW) == ()

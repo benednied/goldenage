@@ -20,6 +20,7 @@ from goldenage.application.ports import (
     GiselaClient,
     MailImportClient,
     MailImportRepository,
+    WorkflowConflictError,
 )
 from goldenage.domain.models import (
     Activity,
@@ -71,6 +72,7 @@ class CaseDetail:
     selected_mail_message: MailMessage | None = None
     selected_conversation: MailConversation | None = None
     selected_conversation_artifacts: tuple[Artifact, ...] = ()
+    activity_history: tuple[Activity, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +141,7 @@ class GoldenAgeService:
         items: list[WorklistItem] = []
         for activity in due_activities:
             case_file = visible_cases.get(activity.case_id)
-            if case_file is None:
+            if case_file is None or case_file.status != "open":
                 continue
             items.append(
                 WorklistItem(
@@ -220,6 +222,7 @@ class GoldenAgeService:
             selected_mail_message=selected_mail_message,
             selected_conversation=selected_conversation,
             selected_conversation_artifacts=selected_conversation_artifacts,
+            activity_history=activities,
         )
 
     def get_case_detail_for_activity(
@@ -260,10 +263,32 @@ class GoldenAgeService:
         close_case: bool,
         skip_follow_up: bool,
     ) -> CaseDetail:
-        """Resolve one due activity while enforcing a clear next state."""
+        """Resolve one activity without allowing an implicit case reopening.
+
+        Closing is a conservative, explicit transition: it is rejected while
+        any other activity for the case is unfinished.  The repository repeats
+        that check inside one transaction so stale requests cannot bypass it.
+        """
         activity = self._activity_repository.get_activity(activity_id, user)
         if activity is None:
             raise NotFoundError("Activity not found.")
+
+        case_file = self._case_repository.get_case(activity.case_id, user)
+        if case_file is None:
+            raise NotFoundError("Case not found.")
+        if case_file.status != "open":
+            raise ResolutionError(
+                "This case is closed. Reopen it explicitly before resolving another activity."
+            )
+
+        activities = self._activity_repository.list_case_activities(activity.case_id, user)
+        if close_case and any(
+            other.id != activity.id and other.completed_at is None for other in activities
+        ):
+            raise ResolutionError(
+                "The case cannot be closed while other activities remain open. "
+                "Resolve them or record a follow-up first."
+            )
 
         plan = build_resolution_plan(
             activity,
@@ -275,33 +300,81 @@ class GoldenAgeService:
             skip_follow_up=skip_follow_up,
         )
 
-        self._activity_repository.save_activity(replace(activity, completed_at=plan.completed_at))
-        if plan.follow_up_activity is not None:
-            self._activity_repository.save_activity(plan.follow_up_activity)
-
-        case_file = self._case_repository.get_case(activity.case_id, user)
-        if case_file is None:
-            raise NotFoundError("Case not found.")
-
-        new_status = "closed" if plan.close_case else "open"
-        self._case_repository.save_case(replace(case_file, status=new_status, last_activity_at=now))
-
-        self._record_audit(
+        resolution_path = (
+            "case_closed"
+            if plan.close_case
+            else "no_follow_up"
+            if plan.skip_follow_up
+            else "follow_up_scheduled"
+        )
+        audit_event = AuditEvent(
+            id=uuid4(),
             actor_user_id=user.id,
             event_type="activity_resolved",
             subject_id=activity.id,
-            payload={
+            payload_json={
                 "case_id": str(activity.case_id),
                 "close_case": plan.close_case,
                 "skip_follow_up": plan.skip_follow_up,
+                "resolution_path": resolution_path,
+                "case_status_before": case_file.status,
+                "case_status_after": "closed" if plan.close_case else "open",
                 "follow_up_activity_id": (
                     str(plan.follow_up_activity.id) if plan.follow_up_activity else None
                 ),
             },
-            now=now,
+            created_at=now,
         )
+        try:
+            self._activity_repository.resolve_activity(
+                activity_id=activity.id,
+                case_id=activity.case_id,
+                completed_at=plan.completed_at,
+                close_case=plan.close_case,
+                follow_up_activity=plan.follow_up_activity,
+                audit_event=audit_event,
+            )
+        except WorkflowConflictError as error:
+            raise ResolutionError(str(error)) from error
 
         return self.get_case_detail(case_id=activity.case_id, user=user, now=now)
+
+    def reopen_case(
+        self,
+        *,
+        case_id: UUID,
+        user: UserContext,
+        now: datetime,
+    ) -> CaseDetail:
+        """Explicitly reopen a visible case and record who authorized it."""
+        case_file = self._case_repository.get_case(case_id, user)
+        if case_file is None:
+            raise NotFoundError("Case not found.")
+        if case_file.status != "closed":
+            raise ResolutionError("This case is already open; no reopen transition was recorded.")
+
+        audit_event = AuditEvent(
+            id=uuid4(),
+            actor_user_id=user.id,
+            event_type="case_reopened",
+            subject_id=case_id,
+            payload_json={
+                "case_id": str(case_id),
+                "previous_status": "closed",
+                "new_status": "open",
+                "reason": "explicit_reopen_command",
+            },
+            created_at=now,
+        )
+        try:
+            self._activity_repository.reopen_case(
+                case_id=case_id,
+                reopened_at=now,
+                audit_event=audit_event,
+            )
+        except WorkflowConflictError as error:
+            raise ResolutionError(str(error)) from error
+        return self.get_case_detail(case_id=case_id, user=user, now=now)
 
     def upload_artifact(
         self,

@@ -12,6 +12,7 @@ from goldenage.application.ports import (
     ArtifactRepository,
     AuditRepository,
     CaseRepository,
+    WorkflowConflictError,
 )
 from goldenage.domain.models import (
     Activity,
@@ -129,6 +130,7 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
             JOIN case_file c ON c.id = a.case_id
             WHERE a.completed_at IS NULL
               AND a.due_at <= %(cutoff)s
+              AND c.status = 'open'
               AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]))
             ORDER BY a.due_at ASC, a.created_at ASC
         """
@@ -188,6 +190,147 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, asdict(activity))
+            connection.commit()
+
+    def resolve_activity(
+        self,
+        *,
+        activity_id: UUID,
+        case_id: UUID,
+        completed_at: datetime,
+        close_case: bool,
+        follow_up_activity: Activity | None,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Complete an activity, update its case, and audit atomically."""
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status FROM case_file WHERE id = %(case_id)s FOR UPDATE",
+                {"case_id": case_id},
+            )
+            case_row = cursor.fetchone()
+            if case_row is None:
+                raise WorkflowConflictError("The activity or case no longer exists.")
+            if case_row["status"] != "open":
+                raise WorkflowConflictError(
+                    "This case is closed. Reopen it explicitly before resolving another activity."
+                )
+            cursor.execute(
+                """
+                SELECT case_id, completed_at
+                FROM activity
+                WHERE id = %(activity_id)s
+                FOR UPDATE
+                """,
+                {"activity_id": activity_id},
+            )
+            activity_row = cursor.fetchone()
+            if (
+                activity_row is None
+                or activity_row["case_id"] != case_id
+                or activity_row["completed_at"] is not None
+            ):
+                raise WorkflowConflictError(
+                    "This activity was already resolved by another request."
+                )
+            if close_case:
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM activity
+                    WHERE case_id = %(case_id)s
+                      AND id <> %(activity_id)s
+                      AND completed_at IS NULL
+                    LIMIT 1
+                    """,
+                    {"case_id": case_id, "activity_id": activity_id},
+                )
+                if cursor.fetchone() is not None:
+                    raise WorkflowConflictError(
+                        "The case cannot be closed while other activities remain open."
+                    )
+
+            cursor.execute(
+                """
+                UPDATE activity
+                SET completed_at = %(completed_at)s
+                WHERE id = %(activity_id)s
+                  AND case_id = %(case_id)s
+                  AND completed_at IS NULL
+                """,
+                {
+                    "completed_at": completed_at,
+                    "activity_id": activity_id,
+                    "case_id": case_id,
+                },
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowConflictError(
+                    "This activity was already resolved by another request."
+                )
+            if follow_up_activity is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO activity (
+                        id, case_id, description, kind, due_at, completed_at,
+                        created_at, created_by
+                    ) VALUES (
+                        %(id)s, %(case_id)s, %(description)s, %(kind)s, %(due_at)s,
+                        %(completed_at)s, %(created_at)s, %(created_by)s
+                    )
+                    """,
+                    asdict(follow_up_activity),
+                )
+            cursor.execute(
+                """
+                UPDATE case_file
+                SET status = %(status)s, last_activity_at = %(last_activity_at)s
+                WHERE id = %(case_id)s AND status = 'open'
+                """,
+                {
+                    "status": "closed" if close_case else "open",
+                    "last_activity_at": completed_at,
+                    "case_id": case_id,
+                },
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowConflictError(
+                    "The case changed while this activity was being resolved."
+                )
+            _insert_postgres_audit_event(cursor, audit_event)
+            connection.commit()
+
+    def reopen_case(
+        self,
+        *,
+        case_id: UUID,
+        reopened_at: datetime,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Explicitly reopen a case and audit it in the same transaction."""
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status FROM case_file WHERE id = %(case_id)s FOR UPDATE",
+                {"case_id": case_id},
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise WorkflowConflictError("The case no longer exists.")
+            if row["status"] != "closed":
+                raise WorkflowConflictError(
+                    "This case is already open; no reopen transition was recorded."
+                )
+            cursor.execute(
+                """
+                UPDATE case_file
+                SET status = 'open', last_activity_at = %(reopened_at)s
+                WHERE id = %(case_id)s AND status = 'closed'
+                """,
+                {"case_id": case_id, "reopened_at": reopened_at},
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowConflictError("The case changed before it could be reopened.")
+            _insert_postgres_audit_event(cursor, audit_event)
             connection.commit()
 
 
@@ -624,6 +767,23 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, payload)
             connection.commit()
+
+
+def _insert_postgres_audit_event(cursor, event: AuditEvent) -> None:
+    """Insert an audit event using the caller's open PostgreSQL transaction."""
+    payload = asdict(event)
+    payload["payload_json"] = Jsonb(payload["payload_json"])
+    cursor.execute(
+        """
+        INSERT INTO audit_event (
+            id, actor_user_id, event_type, subject_id, payload_json, created_at
+        ) VALUES (
+            %(id)s, %(actor_user_id)s, %(event_type)s, %(subject_id)s,
+            %(payload_json)s, %(created_at)s
+        )
+        """,
+        payload,
+    )
 
 
 def _row_to_case_file(row: dict[str, object]) -> CaseFile:

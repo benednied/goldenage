@@ -513,6 +513,55 @@ def create_app() -> FastAPI:
             context=_panel_context(request, context, detail=detail, detail_error=None, user=user),
         )
 
+    @app.post("/cases/{case_id}/reopen", response_class=HTMLResponse)
+    async def reopen_case(request: Request, case_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            detail = context.service.reopen_case(
+                case_id=_uuid(case_id),
+                user=user,
+                now=_now(context),
+            )
+        except ResolutionError as error:
+            try:
+                current = context.service.get_case_detail(
+                    case_id=_uuid(case_id),
+                    user=user,
+                    now=_now(context),
+                )
+            except NotFoundError as not_found:
+                raise HTTPException(status_code=404, detail=str(not_found)) from not_found
+            return templates.TemplateResponse(
+                request=request,
+                name="partials/detail_panel.html",
+                context=_panel_context(
+                    request,
+                    context,
+                    detail=current,
+                    detail_error=str(error),
+                    user=user,
+                ),
+                status_code=400,
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        return templates.TemplateResponse(
+            request=request,
+            name="workspace.html",
+            context=_page_context(
+                request,
+                context,
+                detail=detail,
+                intake_state=IntakeState(
+                    message="Case reopened explicitly. Resolve its remaining work when ready."
+                ),
+                user=user,
+            ),
+        )
+
     @app.post("/activities/{activity_id}/resolve", response_class=HTMLResponse)
     async def resolve_activity(
         request: Request,
