@@ -13,9 +13,10 @@ missing or unreachable.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, LiteralString, cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -39,11 +40,11 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     MailConversation,
     MailMessage,
     MailParticipant,
-    MailboxAccountConfig,
-    MailboxSyncCheckpoint,
     UserContext,
 )
 
@@ -67,15 +68,23 @@ class PostgresTestDatabase:
     def apply_schema(self) -> None:
         bootstrap_postgres.apply_schema(self.dsn, SQL_DIR)
 
-    def scalar(self, query: str, params: object | None = None) -> object:
+    def scalar(
+        self,
+        query: str,
+        params: Sequence[Any] | Mapping[str, Any] | None = None,
+    ) -> Any:
         with self.connect() as connection:
-            row = connection.execute(query, params).fetchone()
+            row = connection.execute(sql.SQL(cast(LiteralString, query)), params).fetchone()
             assert row is not None
             return row[0]
 
-    def rows(self, query: str, params: object | None = None) -> list[tuple[object, ...]]:
+    def rows(
+        self,
+        query: str,
+        params: Sequence[Any] | Mapping[str, Any] | None = None,
+    ) -> list[tuple[Any, ...]]:
         with self.connect() as connection:
-            return list(connection.execute(query, params).fetchall())
+            return list(connection.execute(sql.SQL(cast(LiteralString, query)), params).fetchall())
 
 
 @pytest.fixture
@@ -103,9 +112,7 @@ def postgres_db() -> Iterator[PostgresTestDatabase]:
     finally:
         try:
             with psycopg.connect(dsn) as connection:
-                connection.execute(
-                    sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
-                )
+                connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
                 connection.commit()
         except psycopg.Error as error:
             pytest.fail(f"Could not clean up PostgreSQL test schema: {error}", pytrace=False)
@@ -115,9 +122,10 @@ def test_bootstrap_migrations_are_idempotent_and_seed_is_repeatable(
     postgres_db: PostgresTestDatabase,
 ) -> None:
     """Run all migrations on an empty schema, then run bootstrap and seed twice."""
-    assert postgres_db.rows(
-        "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
-    ) == []
+    assert (
+        postgres_db.rows("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")
+        == []
+    )
 
     postgres_db.apply_schema()
     expected_migrations = (
@@ -126,11 +134,12 @@ def test_bootstrap_migrations_are_idempotent_and_seed_is_repeatable(
         "0003_apple_mail_import.sql",
         "0003_mailbox_ingestion.sql",
     )
-    assert tuple(row[0] for row in postgres_db.rows("SELECT name FROM schema_migration ORDER BY name")) == (
-        *expected_migrations,
-    )
+    assert tuple(
+        row[0] for row in postgres_db.rows("SELECT name FROM schema_migration ORDER BY name")
+    ) == (*expected_migrations,)
 
     expected_tables = {
+        "schema_migration",
         "app_user",
         "app_group",
         "user_group_membership",
@@ -158,9 +167,9 @@ def test_bootstrap_migrations_are_idempotent_and_seed_is_repeatable(
     assert expected_tables <= actual_tables
 
     postgres_db.apply_schema()
-    assert tuple(row[0] for row in postgres_db.rows("SELECT name FROM schema_migration ORDER BY name")) == (
-        *expected_migrations,
-    )
+    assert tuple(
+        row[0] for row in postgres_db.rows("SELECT name FROM schema_migration ORDER BY name")
+    ) == (*expected_migrations,)
 
     state, user = build_demo_state()
     bootstrap_postgres.seed_demo_data(postgres_db.dsn)
@@ -309,7 +318,9 @@ def test_case_activity_and_artifact_repositories_enforce_visibility(
     )
     for activity in (due_public, due_allowed, due_hidden, completed_allowed):
         activity_repository.save_activity(activity)
-    assert tuple(activity.id for activity in activity_repository.list_due_activities(user, NOW)) == (
+    assert tuple(
+        activity.id for activity in activity_repository.list_due_activities(user, NOW)
+    ) == (
         due_public.id,
         due_allowed.id,
     )
@@ -318,9 +329,15 @@ def test_case_activity_and_artifact_repositories_enforce_visibility(
     assert activity_repository.get_activity(due_allowed.id, user) == due_allowed
 
     artifact_repository = PostgresArtifactRepository(postgres_db.dsn)
-    public_artifact = _artifact(case_id=public_case.id, uploaded_by=actor_id, file_name="public.msg")
-    allowed_artifact = _artifact(case_id=allowed_case.id, uploaded_by=actor_id, file_name="allowed.msg")
-    hidden_artifact = _artifact(case_id=hidden_case.id, uploaded_by=actor_id, file_name="hidden.msg")
+    public_artifact = _artifact(
+        case_id=public_case.id, uploaded_by=actor_id, file_name="public.msg"
+    )
+    allowed_artifact = _artifact(
+        case_id=allowed_case.id, uploaded_by=actor_id, file_name="allowed.msg"
+    )
+    hidden_artifact = _artifact(
+        case_id=hidden_case.id, uploaded_by=actor_id, file_name="hidden.msg"
+    )
     own_unassigned = _artifact(case_id=None, uploaded_by=actor_id, file_name="own.msg")
     other_unassigned = _artifact(case_id=None, uploaded_by=other_user_id, file_name="other.msg")
     for artifact in (
@@ -333,12 +350,15 @@ def test_case_activity_and_artifact_repositories_enforce_visibility(
         artifact_repository.save_artifact(artifact)
     assert artifact_repository.get_artifact(hidden_artifact.id, user) is None
     assert artifact_repository.get_artifact(allowed_artifact.id, user) == allowed_artifact
+    assert (
+        tuple(
+            artifact.id
+            for artifact in artifact_repository.list_case_artifacts(hidden_case.id, user)
+        )
+        == ()
+    )
     assert tuple(
-        artifact.id for artifact in artifact_repository.list_case_artifacts(hidden_case.id, user)
-    ) == ()
-    assert tuple(
-        artifact.id
-        for artifact in artifact_repository.list_unassigned_artifacts(user, limit=10)
+        artifact.id for artifact in artifact_repository.list_unassigned_artifacts(user, limit=10)
     ) == (own_unassigned.id,)
 
 
@@ -463,8 +483,12 @@ def test_artifact_mail_audit_and_mailbox_repositories_round_trip(
         )
         == message
     )
-    assert artifact_repository.list_conversation_artifacts(conversation.id, visible_user) == (artifact,)
-    assert artifact_repository.list_recent_mail_conversations(visible_user, limit=10) == (conversation,)
+    assert artifact_repository.list_conversation_artifacts(conversation.id, visible_user) == (
+        artifact,
+    )
+    assert artifact_repository.list_recent_mail_conversations(visible_user, limit=10) == (
+        conversation,
+    )
 
     hidden_user = UserContext(
         id=user_id,
@@ -573,4 +597,3 @@ def _artifact(*, case_id: UUID | None, uploaded_by: UUID | None, file_name: str)
         uploaded_by=uploaded_by,
         assigned_case_id=case_id,
     )
-

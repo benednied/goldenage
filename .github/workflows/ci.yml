@@ -82,4 +82,15 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run PostgreSQL integration suite
-        run: uv run --no-sync pytest -q -m postgres_integration
+        run: |
+          set -o pipefail
+          output="$(uv run --no-sync pytest -q -m postgres_integration 2>&1)" || {
+            status=$?
+            printf '%s\n' "$output"
+            exit "$status"
+          }
+          printf '%s\n' "$output"
+          if printf '%s\n' "$output" | grep -Eq '[0-9]+ (skipped|xfailed|xpassed)'; then
+            echo "PostgreSQL integration tests must not be skipped or xfailed."
+            exit 1
+          fi
