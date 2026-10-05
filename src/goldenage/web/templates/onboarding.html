@@ -11,7 +11,7 @@
       <p class="subhead">Create the first local account for this SQLite workspace before the case queue becomes available.</p>
 
       {% if message %}
-        <div class="message message-error">{{ message }}</div>
+        <div class="message message-error" role="alert">{{ message }}</div>
       {% endif %}
 
       <form class="workflow-form onboarding-form" method="post" action="/onboarding" enctype="multipart/form-data">

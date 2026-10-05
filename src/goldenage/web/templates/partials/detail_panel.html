@@ -1,12 +1,12 @@
 <div class="panel-heading">
   <div>
     <p class="eyebrow">Case Detail</p>
-    <h2>{% if detail %}{{ detail.case_file.title }}{% else %}Select a case{% endif %}</h2>
+    <h2 id="detail-panel-title">{% if detail %}{{ detail.case_file.title }}{% else %}Select a case{% endif %}</h2>
   </div>
 </div>
 
 {% if detail_error %}
-  <div class="message message-error">{{ detail_error }}</div>
+  <div class="message message-error" role="alert">{{ detail_error }}</div>
 {% endif %}
 
 {% if detail %}
@@ -30,6 +30,7 @@
         hx-post="/activities/{{ detail.active_activity.id }}/resolve"
         hx-target="#workspace"
         hx-swap="innerHTML"
+        hx-indicator="find .busy-indicator"
         class="workflow-form"
       >
         <label>
@@ -48,7 +49,10 @@
           <input type="checkbox" name="skip_follow_up" />
           <span>Record that no follow-up is needed.</span>
         </label>
-        <button type="submit">Resolve with a clear next state</button>
+        <div class="button-row">
+          <button type="submit">Resolve with a clear next state</button>
+          <span class="busy-indicator" role="status" aria-live="polite">Saving…</span>
+        </div>
       </form>
     </section>
   {% endif %}

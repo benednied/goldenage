@@ -3,7 +3,7 @@
 The `CI` workflow runs for every pull request and for pushes to `master`, the
 default branch reported by the ENG-01 audit. Its required job is named
 `quality`. It uses Python 3.14, installs the dependency graph from `uv.lock`,
-and runs only these existing checks:
+and runs the repository quality checks:
 
 ```bash
 uv sync --frozen --extra dev
@@ -12,6 +12,14 @@ uv run --no-sync ruff format --check .
 uv run --no-sync ty check
 uv run --no-sync pytest -q
 ```
+
+The same workflow also defines the stable `browser-accessibility` job. It uses
+the existing uv environment, installs the exact browser-only pins from
+`tests/browser/requirements.txt`, installs the headless Chromium runtime, and
+runs `uv run --no-sync pytest -q tests/browser`. Failed runs publish the
+data-minimal screenshots, traces, and local server logs from `test-results/`.
+The complete local setup and the manual review limits are documented in
+[`docs/browser-accessibility.md`](browser-accessibility.md).
 
 The workflow has read-only repository permissions, a 15-minute timeout, and
 cancels superseded runs for the same pull request or branch. It does not need
@@ -35,8 +43,9 @@ must configure the existing protection mechanism for the actual default branch
 (prefer a ruleset when none already exists; otherwise extend the existing
 ruleset or classic branch protection rather than creating competing rules):
 
-1. Require a pull request before merging and require the `quality` status
-   check. Require the real reviewer count supported by the maintainer team
+1. Require a pull request before merging and require the `quality` and
+   `browser-accessibility` status checks. Require the real reviewer count
+   supported by the maintainer team
    (one when at least two maintainers can review; otherwise no mandatory review
    until a second eligible reviewer exists).
 2. Apply the rule to the actual default branch. This workflow currently assumes
@@ -45,9 +54,10 @@ ruleset or classic branch protection rather than creating competing rules):
 3. Disallow force pushes and branch deletion. Limit bypasses to the smallest
    practical maintainer/emergency group and record its members in the GitHub
    ruleset description.
-4. Create a disposable test pull request with a reversible failure (for example
-   an unused import), confirm that `quality` fails and merging is blocked, then
-   remove the failure and confirm the green pull request is mergeable.
+4. Create disposable test pull requests with reversible failures (for example
+   an unused import and a temporary browser assertion), confirm the matching
+   check fails and merging is blocked, then remove the failures and confirm the
+   green pull request is mergeable.
 5. Verify the final configuration and check name with GitHub CLI:
 
    ```bash
@@ -56,8 +66,10 @@ ruleset or classic branch protection rather than creating competing rules):
    gh api repos/OWNER/REPO/branches/DEFAULT/protection
    ```
 
-The checkout is deliberately limited to the four baseline checks. Coverage,
-database, distribution, and security gates remain separate follow-up work.
+The `quality` job remains limited to the four baseline checks above. The
+browser job is a separate UI gate because it needs a browser runtime and
+failure artifacts; coverage, database, distribution, and security gates remain
+separate follow-up work.
 
 The quality job also runs `python -m goldenage.migration_validation` when the
 migration validator is present. This permits the CI and migration-convention PRs

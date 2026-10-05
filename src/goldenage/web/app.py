@@ -553,6 +553,8 @@ def create_app() -> FastAPI:
                 ),
                 status_code=400,
             )
+            response.headers["HX-Retarget"] = "#detail-panel"
+            response.headers["HX-Reswap"] = "innerHTML"
             return response
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

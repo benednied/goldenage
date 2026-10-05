@@ -57,6 +57,7 @@ exclude = [
   "src/goldenage/adapters/sqlite.py",
   "src/goldenage/bootstrap_postgres.py",
   "src/goldenage/web/app.py",
+  "tests/browser",
   "tests/test_web.py",
 ]
 
