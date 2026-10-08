@@ -8,12 +8,32 @@ from typing import Literal
 from uuid import UUID
 
 CaseStatus = Literal["open", "closed"]
+ActorKind = Literal["user", "agent"]
+AgentRunStatus = Literal["running", "completed", "failed", "cancelled"]
+AgentMessageRole = Literal["user", "assistant", "tool"]
+AgentToolCallStatus = Literal["running", "completed", "failed", "deduplicated"]
 ActivityKind = Literal["intake", "follow_up", "question", "escalation"]
 DueLabel = Literal["overdue", "today", "upcoming"]
 MailSourceSystem = Literal["outlook_upload", "apple_mail_client", "desktop_mail_client"]
 MailMessageFormat = Literal["outlook_msg", "rfc822_email"]
 ParseStatus = Literal["parsed"]
 MailDirection = Literal["inbound", "outbound"]
+
+
+@dataclass(frozen=True, slots=True)
+class AgentExecutionContext:
+    """Immutable provenance attached to one agent operation."""
+
+    actor_kind: ActorKind
+    acting_user_id: UUID
+    agent_name: str
+    conversation_id: UUID
+    agent_run_id: UUID
+
+
+# The shorter name is useful at application boundaries and keeps the provenance vocabulary
+# explicit for callers that do not need to know the concrete runtime implementation.
+AgentProvenance = AgentExecutionContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +45,7 @@ class UserContext:
     display_name: str
     profile_image_path: str | None = None
     visible_group_ids: frozenset[UUID] = frozenset()
+    execution_context: AgentExecutionContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,3 +305,69 @@ class AuditEvent:
     subject_id: UUID
     payload_json: dict[str, object]
     created_at: datetime
+    actor_kind: ActorKind = "user"
+    acting_user_id: UUID | None = None
+    agent_name: str | None = None
+    conversation_id: UUID | None = None
+    agent_run_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentConversation:
+    """Persistent, user-owned Gisela transcript container."""
+
+    id: UUID
+    acting_user_id: UUID
+    agent_name: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AgentMessage:
+    """One transcript entry; tool output is data, never an instruction."""
+
+    id: UUID
+    conversation_id: UUID
+    run_id: UUID | None
+    role: AgentMessageRole
+    content: str
+    created_at: datetime
+    sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRun:
+    """One resumable execution of the assistant."""
+
+    id: UUID
+    conversation_id: UUID
+    acting_user_id: UUID
+    actor_kind: ActorKind
+    agent_name: str
+    status: AgentRunStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    error: str | None = None
+    request_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentToolCall:
+    """Durable tool invocation record and idempotency fence."""
+
+    id: UUID
+    conversation_id: UUID
+    run_id: UUID
+    acting_user_id: UUID
+    actor_kind: ActorKind
+    agent_name: str
+    tool_name: str
+    idempotency_key: str
+    input_json: dict[str, object]
+    status: AgentToolCallStatus
+    output_json: dict[str, object] | None
+    error: str | None
+    created_at: datetime
+    completed_at: datetime | None = None

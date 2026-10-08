@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block body %}
+<header class="app-header"><div><p class="eyebrow">Assistant workspace</p><h1>Gisela</h1><p class="subhead">Read and act within your existing GoldenAge permissions.</p></div><div class="user-chip"><div class="user-copy"><span>{{ user.display_name }}</span><small>{{ user.email }}</small><a href="/worklist">Back to worklist</a></div></div></header>
+<main class="workspace gisela-workspace">
+  <section class="panel gisela-panel" aria-labelledby="gisela-title">
+    <div class="panel-heading"><div><p class="eyebrow">Persistent chat</p><h2 id="gisela-title">{% if chat_state %}{{ chat_state.conversation.title }}{% else %}New conversation{% endif %}</h2></div><a class="secondary-button" href="/gisela/chat">New chat</a></div>
+    {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
+    <div class="chat-transcript" aria-live="polite">
+      {% if chat_state %}
+        {% for message in chat_state.messages %}
+          {% if message.role != "tool" %}<article class="chat-message chat-{{ message.role }}"><strong>{{ "You" if message.role == "user" else "Gisela" }}</strong><p>{{ message.content }}</p></article>{% endif %}
+        {% else %}<p class="empty-state">Ask Gisela to list your visible cases or artifacts.</p>{% endfor %}
+      {% else %}<p class="empty-state">Ask Gisela to list your visible cases or artifacts.</p>{% endif %}
+    </div>
+    <form method="post" action="/gisela/chat" class="chat-form">
+      {% if chat_state %}<input type="hidden" name="conversation_id" value="{{ chat_state.conversation.id }}" />{% endif %}
+      <label for="gisela-message">Message</label><textarea id="gisela-message" name="message" rows="3" maxlength="4000" required placeholder="Try: list cases"></textarea>
+      <button type="submit">Send to Gisela</button>
+    </form>
+  </section>
+  <aside class="panel"><div class="panel-heading"><h2>Your conversations</h2></div>{% if conversations %}<ul class="conversation-list">{% for conversation in conversations %}<li><a href="/gisela/chat?conversation_id={{ conversation.id }}">{{ conversation.title }}</a></li>{% endfor %}</ul>{% else %}<p class="empty-state">No saved conversations yet.</p>{% endif %}<p class="trust-note">Mail, artifacts, and tool results are treated as untrusted data. Gisela cannot change permissions or use a shell.</p></aside>
+</main>
+{% endblock %}

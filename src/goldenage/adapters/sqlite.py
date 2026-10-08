@@ -234,10 +234,13 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             FROM artifact a
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE a.id = ?
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND (
+                  (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = ?))
+                  OR (a.assigned_case_id IS NOT NULL AND {clause})
+              )
         """
         with self._connect() as connection:
-            row = connection.execute(sql, (str(artifact_id), *params)).fetchone()
+            row = connection.execute(sql, (str(artifact_id), str(user.id), *params)).fetchone()
         return _row_to_artifact(row) if row else None
 
     def list_case_artifacts(self, case_id: UUID, user: UserContext) -> Sequence[Artifact]:
@@ -580,11 +583,14 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             JOIN artifact a ON a.id = mm.artifact_id
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE mm.conversation_id = ?
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND (
+                  (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = ?))
+                  OR (a.assigned_case_id IS NOT NULL AND {clause})
+              )
             ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
         """
         with self._connect() as connection:
-            rows = connection.execute(sql, (str(conversation_id), *params)).fetchall()
+            rows = connection.execute(sql, (str(conversation_id), str(user.id), *params)).fetchall()
         return tuple(_row_to_artifact(row) for row in rows)
 
 
@@ -594,8 +600,9 @@ class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
     def save_event(self, event: AuditEvent) -> None:
         sql = """
             INSERT INTO audit_event (
-                id, actor_user_id, event_type, subject_id, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                id, actor_user_id, event_type, subject_id, payload_json, created_at,
+                actor_kind, acting_user_id, agent_name, conversation_id, agent_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._connect() as connection:
             connection.execute(
@@ -607,6 +614,11 @@ class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
                     str(event.subject_id),
                     json.dumps(event.payload_json),
                     _serialize_datetime(event.created_at),
+                    event.actor_kind,
+                    str(event.acting_user_id) if event.acting_user_id is not None else None,
+                    event.agent_name,
+                    str(event.conversation_id) if event.conversation_id is not None else None,
+                    str(event.agent_run_id) if event.agent_run_id is not None else None,
                 ),
             )
             connection.commit()

@@ -17,6 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
+from goldenage.adapters.agent import (
+    InMemoryAgentRepository,
+    PostgresAgentRepository,
+    SQLiteAgentRepository,
+)
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
     HeuristicGiselaClient,
@@ -55,6 +60,7 @@ from goldenage.adapters.sqlite import (
     SQLiteLocalUserRepository,
     SQLiteMailImportRepository,
 )
+from goldenage.application.agent_runtime import AgentRuntime
 from goldenage.application.use_cases import (
     CaseDetail,
     GoldenAgeService,
@@ -87,6 +93,7 @@ class AppContext:
     settings: Settings
     service: GoldenAgeService
     default_user: UserContext | None
+    agent_runtime: AgentRuntime | None = None
     local_user_repository: SQLiteLocalUserRepository | None = None
     outlook_worker: OutlookMailboxWorker | None = None
     upload_limits: UploadLimits = UploadLimits()
@@ -481,6 +488,88 @@ def create_app() -> FastAPI:
             ),
         )
 
+    @app.get("/gisela/chat", response_class=HTMLResponse)
+    async def gisela_chat(request: Request, conversation_id: str | None = None) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        runtime = _require_agent_runtime(context)
+        try:
+            if conversation_id:
+                chat_state = runtime.get_chat_state(
+                    conversation_id=_uuid(conversation_id), user=user
+                )
+            else:
+                conversations = runtime.list_conversations(user=user)
+                chat_state = (
+                    runtime.get_chat_state(
+                        conversation_id=conversations[0].id,
+                        user=user,
+                    )
+                    if conversations
+                    else None
+                )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return templates.TemplateResponse(
+            request=request,
+            name="gisela.html",
+            context=_gisela_context(
+                request,
+                context,
+                user=user,
+                chat_state=chat_state,
+            ),
+        )
+
+    @app.post("/gisela/chat", response_class=HTMLResponse)
+    async def send_gisela_message(
+        request: Request,
+        message: str = Form(default=""),
+        conversation_id: str | None = Form(default=None),
+        request_id: str | None = Form(default=None),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        runtime = _require_agent_runtime(context)
+        now = _now(context)
+        try:
+            conversation = (
+                runtime.start_conversation(user=user, now=now) if not conversation_id else None
+            )
+            selected_id = conversation.id if conversation is not None else _uuid(conversation_id)
+            chat_state = runtime.send_message(
+                conversation_id=selected_id,
+                content=message,
+                user=user,
+                now=now,
+                request_id=request_id,
+            )
+            error = None
+        except (NotFoundError, ResolutionError, ValueError) as caught:
+            error = str(caught)
+            if conversation_id:
+                try:
+                    chat_state = runtime.get_chat_state(
+                        conversation_id=_uuid(conversation_id), user=user
+                    )
+                except NotFoundError:
+                    chat_state = None
+            else:
+                chat_state = None
+        return templates.TemplateResponse(
+            request=request,
+            name="gisela.html",
+            context=_gisela_context(
+                request,
+                context,
+                user=user,
+                chat_state=chat_state,
+                error=error,
+            ),
+        )
+
     @app.get("/cases/{case_id}/panel", response_class=HTMLResponse)
     async def case_panel(request: Request, case_id: str) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
@@ -818,6 +907,7 @@ def _build_context(settings: Settings) -> AppContext:
         audit_repository = SQLiteAuditRepository(settings.sqlite_path)
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
+        agent_repository = SQLiteAgentRepository(settings.sqlite_path)
         default_user = None
     elif settings.database_url:
         case_repository = PostgresCaseRepository(settings.database_url)
@@ -831,6 +921,7 @@ def _build_context(settings: Settings) -> AppContext:
         )
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
+        agent_repository = PostgresAgentRepository(settings.database_url)
     else:
         state, user = build_demo_state()
         case_repository = InMemoryCaseRepository(state)
@@ -840,7 +931,9 @@ def _build_context(settings: Settings) -> AppContext:
         default_user = user
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
+        agent_repository = InMemoryAgentRepository()
 
+    elizabethan_client = HeuristicElizabethanSearchClient()
     service = GoldenAgeService(
         case_repository=case_repository,
         activity_repository=activity_repository,
@@ -852,13 +945,21 @@ def _build_context(settings: Settings) -> AppContext:
             rfc822_extractor=Rfc822EmailExtractor(),
         ),
         gisela_client=HeuristicGiselaClient(),
-        elizabethan_client=HeuristicElizabethanSearchClient(),
+        elizabethan_client=elizabethan_client,
         mail_import_client=build_desktop_mail_import_client(
             fixture_path=settings.mail_fixture_path,
             client_mode=settings.mail_client_mode,
             outlook_scan_per_folder_limit=settings.outlook_scan_per_folder_limit,
         ),
         mail_import_repository=mail_import_repository,
+    )
+    agent_runtime = AgentRuntime(
+        repository=agent_repository,
+        case_repository=case_repository,
+        artifact_repository=artifact_repository,
+        audit_repository=audit_repository,
+        service=service,
+        search_client=elizabethan_client,
     )
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:
@@ -888,11 +989,19 @@ def _build_context(settings: Settings) -> AppContext:
     return AppContext(
         settings=settings,
         service=service,
+        agent_runtime=agent_runtime,
         default_user=default_user,
         local_user_repository=local_user_repository,
         outlook_worker=outlook_worker,
         upload_limits=UploadLimits.from_environment(),
     )
+
+
+def _require_agent_runtime(context: AppContext) -> AgentRuntime:
+    runtime = context.agent_runtime
+    if runtime is None:
+        raise RuntimeError("Gisela runtime is not configured.")
+    return runtime
 
 
 async def _bounded_form(request: Request, limits: UploadLimits):
@@ -983,6 +1092,26 @@ def _page_context(
         "format_form_datetime": _format_form_datetime,
         "due_label": due_label,
         "local_timezone": context.settings.local_timezone,
+    }
+
+
+def _gisela_context(
+    request: Request,
+    context: AppContext,
+    *,
+    user: UserContext,
+    chat_state: object | None,
+    error: str | None = None,
+) -> dict[str, object]:
+    """Build the chat page context without exposing another user's transcript."""
+    return {
+        "request": request,
+        "page_title": "Gisela | GoldenAge",
+        "user": user,
+        "profile_image_url": _profile_image_url(user),
+        "chat_state": chat_state,
+        "conversations": _require_agent_runtime(context).list_conversations(user=user),
+        "error": error,
     }
 
 
