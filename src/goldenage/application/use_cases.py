@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from goldenage.application.ports import (
     ActivityRepository,
@@ -16,6 +17,8 @@ from goldenage.application.ports import (
     ArtifactStore,
     AuditRepository,
     CaseRepository,
+    CommandNotFoundError,
+    CommandRepository,
     ElizabethanSearchClient,
     GiselaClient,
     MailImportClient,
@@ -118,6 +121,7 @@ class GoldenAgeService:
         elizabethan_client: ElizabethanSearchClient,
         mail_import_client: MailImportClient | None = None,
         mail_import_repository: MailImportRepository | None = None,
+        command_repository: CommandRepository | None = None,
     ) -> None:
         self._case_repository = case_repository
         self._activity_repository = activity_repository
@@ -129,6 +133,7 @@ class GoldenAgeService:
         self._elizabethan_client = elizabethan_client
         self._mail_import_client = mail_import_client
         self._mail_import_repository = mail_import_repository
+        self._command_repository = command_repository
 
     def get_today_worklist(self, *, user: UserContext, now: datetime) -> tuple[WorklistItem, ...]:
         """Return due activities sorted by urgency and timestamp."""
@@ -259,8 +264,33 @@ class GoldenAgeService:
         next_due_at: datetime | None,
         close_case: bool,
         skip_follow_up: bool,
+        command_id: UUID | str | None = None,
     ) -> CaseDetail:
         """Resolve one due activity while enforcing a clear next state."""
+        if self._command_repository is not None:
+            request_fingerprint = _request_fingerprint(
+                "resolve_activity",
+                activity_id=str(activity_id),
+                next_step=(next_step or "").strip(),
+                next_due_at=next_due_at.isoformat() if next_due_at else None,
+                close_case=close_case,
+                skip_follow_up=skip_follow_up,
+            )
+            resolved_command_id = _command_id(
+                command_id=command_id,
+                actor_user_id=user.id,
+                operation="resolve_activity",
+                request_fingerprint=request_fingerprint,
+            )
+            committed = self._command_repository.find_command(
+                actor_user_id=user.id,
+                operation="resolve_activity",
+                command_id=resolved_command_id,
+                request_fingerprint=request_fingerprint,
+            )
+            if committed is not None:
+                return self.get_case_detail(case_id=committed.case_id, user=user, now=now)
+
         activity = self._activity_repository.get_activity(activity_id, user)
         if activity is None:
             raise NotFoundError("Activity not found.")
@@ -273,7 +303,41 @@ class GoldenAgeService:
             next_due_at=next_due_at,
             close_case=close_case,
             skip_follow_up=skip_follow_up,
+            follow_up_activity_id=uuid5(resolved_command_id, "follow-up")
+            if self._command_repository is not None
+            else None,
         )
+
+        if self._command_repository is not None:
+            try:
+                result = self._command_repository.resolve_activity(
+                    actor=user,
+                    activity_id=activity_id,
+                    completed_at=plan.completed_at,
+                    follow_up_activity=plan.follow_up_activity,
+                    close_case=plan.close_case,
+                    skip_follow_up=plan.skip_follow_up,
+                    now=now,
+                    command_id=resolved_command_id,
+                    request_fingerprint=request_fingerprint,
+                    audit_event=self._new_audit_event(
+                        actor_user_id=user.id,
+                        event_type="activity_resolved",
+                        subject_id=activity.id,
+                        payload={
+                            "case_id": str(activity.case_id),
+                            "close_case": plan.close_case,
+                            "skip_follow_up": plan.skip_follow_up,
+                            "follow_up_activity_id": (
+                                str(plan.follow_up_activity.id) if plan.follow_up_activity else None
+                            ),
+                        },
+                        now=now,
+                    ),
+                )
+            except CommandNotFoundError as error:
+                raise NotFoundError(str(error)) from error
+            return self.get_case_detail(case_id=result.case_id, user=user, now=now)
 
         self._activity_repository.save_activity(replace(activity, completed_at=plan.completed_at))
         if plan.follow_up_activity is not None:
@@ -761,18 +825,63 @@ class GoldenAgeService:
         next_due_at: datetime,
         user: UserContext,
         now: datetime,
+        command_id: UUID | str | None = None,
+        reassign: bool = False,
     ) -> CaseDetail:
         """Confirm an artifact assignment and create the next activity."""
+        normalized_step = next_step.strip()
+        if not normalized_step:
+            raise ResolutionError("A next step description is required.")
+
+        if self._command_repository is not None:
+            operation = "reassign_artifact_to_case" if reassign else "assign_artifact_to_case"
+            request_fingerprint = _request_fingerprint(
+                operation,
+                artifact_id=str(artifact_id),
+                case_id=str(case_id),
+                next_step=normalized_step,
+                next_due_at=next_due_at.isoformat(),
+                reassign=reassign,
+            )
+            resolved_command_id = _command_id(
+                command_id=command_id,
+                actor_user_id=user.id,
+                operation=operation,
+                request_fingerprint=request_fingerprint,
+            )
+            try:
+                result = self._command_repository.assign_artifact(
+                    actor=user,
+                    artifact_id=artifact_id,
+                    case_id=case_id,
+                    next_step=normalized_step,
+                    next_due_at=next_due_at,
+                    now=now,
+                    command_id=resolved_command_id,
+                    request_fingerprint=request_fingerprint,
+                    reassign=reassign,
+                    audit_event=self._new_audit_event(
+                        actor_user_id=user.id,
+                        event_type="artifact_reassigned" if reassign else "artifact_assigned",
+                        subject_id=artifact_id,
+                        payload={
+                            "case_id": str(case_id),
+                            "next_due_at": next_due_at.isoformat(),
+                            "reassigned": reassign,
+                        },
+                        now=now,
+                    ),
+                )
+            except CommandNotFoundError as error:
+                raise NotFoundError(str(error)) from error
+            return self.get_case_detail(case_id=result.case_id, user=user, now=now)
+
         artifact = self._artifact_repository.get_artifact(artifact_id, user)
         if artifact is None:
             raise NotFoundError("Artifact not found.")
         case_file = self._case_repository.get_case(case_id, user)
         if case_file is None:
             raise NotFoundError("Case not found.")
-
-        normalized_step = next_step.strip()
-        if not normalized_step:
-            raise ResolutionError("A next step description is required.")
 
         updated_artifact = replace(artifact, assigned_case_id=case_id)
         self._artifact_repository.save_artifact(updated_artifact)
@@ -818,6 +927,7 @@ class GoldenAgeService:
         next_due_at: datetime,
         user: UserContext,
         now: datetime,
+        command_id: UUID | str | None = None,
     ) -> CaseDetail:
         """Create a case from an intake artifact and schedule its first step."""
         artifact = self._artifact_repository.get_artifact(artifact_id, user)
@@ -829,6 +939,51 @@ class GoldenAgeService:
             raise ResolutionError("A case title is required.")
         if not normalized_step:
             raise ResolutionError("A next step description is required.")
+
+        if self._command_repository is not None:
+            request_fingerprint = _request_fingerprint(
+                "create_case_from_artifact",
+                artifact_id=str(artifact_id),
+                title=normalized_title,
+                company=company.strip() or None,
+                primary_contact=primary_contact.strip() or None,
+                next_step=normalized_step,
+                next_due_at=next_due_at.isoformat(),
+            )
+            resolved_command_id = _command_id(
+                command_id=command_id,
+                actor_user_id=user.id,
+                operation="create_case_from_artifact",
+                request_fingerprint=request_fingerprint,
+            )
+            try:
+                result = self._command_repository.create_case_from_artifact(
+                    actor=user,
+                    artifact_id=artifact_id,
+                    title=normalized_title,
+                    company=company.strip() or None,
+                    primary_contact=primary_contact.strip() or None,
+                    next_step=normalized_step,
+                    next_due_at=next_due_at,
+                    now=now,
+                    command_id=resolved_command_id,
+                    request_fingerprint=request_fingerprint,
+                    audit_event=self._new_audit_event(
+                        actor_user_id=user.id,
+                        event_type="artifact_assigned",
+                        subject_id=artifact_id,
+                        payload={
+                            "case_created": True,
+                            "title": normalized_title,
+                            "next_due_at": next_due_at.isoformat(),
+                        },
+                        now=now,
+                    ),
+                )
+            except CommandNotFoundError as error:
+                raise NotFoundError(str(error)) from error
+            return self.get_case_detail(case_id=result.case_id, user=user, now=now)
+
         case_id = uuid4()
         self._case_repository.save_case(
             CaseFile(
@@ -924,14 +1079,31 @@ class GoldenAgeService:
         now: datetime,
     ) -> None:
         self._audit_repository.save_event(
-            AuditEvent(
-                id=uuid4(),
+            self._new_audit_event(
                 actor_user_id=actor_user_id,
                 event_type=event_type,
                 subject_id=subject_id,
-                payload_json=payload,
-                created_at=now,
+                payload=payload,
+                now=now,
             )
+        )
+
+    @staticmethod
+    def _new_audit_event(
+        *,
+        actor_user_id: UUID | None,
+        event_type: str,
+        subject_id: UUID,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> AuditEvent:
+        return AuditEvent(
+            id=uuid4(),
+            actor_user_id=actor_user_id,
+            event_type=event_type,
+            subject_id=subject_id,
+            payload_json=payload,
+            created_at=now,
         )
 
     def _intake_state_for_artifact(
@@ -1140,3 +1312,32 @@ def _dedupe_fingerprint(
         )
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _request_fingerprint(operation: str, **fields: object) -> str:
+    """Hash the normalized command intent so command ids cannot change its meaning."""
+    payload = json.dumps(
+        {"operation": operation, "fields": fields},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _command_id(
+    *,
+    command_id: UUID | str | None,
+    actor_user_id: UUID,
+    operation: str,
+    request_fingerprint: str,
+) -> UUID:
+    """Normalize explicit ids and derive a stable id for legacy callers/forms."""
+    if command_id is not None:
+        try:
+            return command_id if isinstance(command_id, UUID) else UUID(command_id)
+        except ValueError as error:
+            raise ResolutionError("Command id must be a UUID.") from error
+    return uuid5(
+        NAMESPACE_URL,
+        f"goldenage:{actor_user_id}:{operation}:{request_fingerprint}",
+    )

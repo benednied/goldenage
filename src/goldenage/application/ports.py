@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -24,6 +25,19 @@ from goldenage.domain.models import (
     SearchResult,
     UserContext,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResult:
+    """Committed result of a command, including whether it was replayed."""
+
+    case_id: UUID
+    activity_id: UUID | None
+    replayed: bool = False
+
+
+class CommandNotFoundError(LookupError):
+    """Raised when an atomic command cannot find a visible target."""
 
 
 class CaseRepository(Protocol):
@@ -145,6 +159,69 @@ class AuditRepository(Protocol):
 
     def save_event(self, event: AuditEvent) -> None:
         """Persist an audit event."""
+
+
+class CommandRepository(Protocol):
+    """Atomic persistence boundary for user-visible workflow commands."""
+
+    def find_command(
+        self,
+        *,
+        actor_user_id: UUID,
+        operation: str,
+        command_id: UUID,
+        request_fingerprint: str,
+    ) -> CommandResult | None:
+        """Return a committed command result or raise for conflicting reuse."""
+
+    def assign_artifact(
+        self,
+        *,
+        actor: UserContext,
+        artifact_id: UUID,
+        case_id: UUID,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        reassign: bool,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        """Atomically assign an artifact and schedule its intake activity."""
+
+    def create_case_from_artifact(
+        self,
+        *,
+        actor: UserContext,
+        artifact_id: UUID,
+        title: str,
+        company: str | None,
+        primary_contact: str | None,
+        next_step: str,
+        next_due_at: datetime,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        """Atomically create a case, assign its artifact, and schedule its first activity."""
+
+    def resolve_activity(
+        self,
+        *,
+        actor: UserContext,
+        activity_id: UUID,
+        completed_at: datetime,
+        follow_up_activity: Activity | None,
+        close_case: bool,
+        skip_follow_up: bool,
+        now: datetime,
+        command_id: UUID,
+        request_fingerprint: str,
+        audit_event: AuditEvent,
+    ) -> CommandResult:
+        """Atomically complete an activity and apply its next case state."""
 
 
 class ArtifactStore(Protocol):

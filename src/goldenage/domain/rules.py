@@ -13,6 +13,10 @@ class ResolutionError(ValueError):
     """Raised when an activity resolution violates workflow rules."""
 
 
+class CommandConflictError(ResolutionError):
+    """Raised when a command id is reused or a concurrent command loses."""
+
+
 @dataclass(frozen=True, slots=True)
 class ResolutionPlan:
     """Validated resolution intent for a due activity."""
@@ -43,6 +47,7 @@ def build_resolution_plan(
     next_due_at: datetime | None,
     close_case: bool,
     skip_follow_up: bool,
+    follow_up_activity_id: UUID | None = None,
 ) -> ResolutionPlan:
     """Enforce that a due activity always resolves into a clear next state."""
     if activity.completed_at is not None:
@@ -69,7 +74,7 @@ def build_resolution_plan(
     if has_next_step:
         assert next_due_at is not None
         follow_up_activity = Activity(
-            id=uuid4(),
+            id=follow_up_activity_id or uuid4(),
             case_id=activity.case_id,
             description=normalized_step,
             kind="follow_up",
