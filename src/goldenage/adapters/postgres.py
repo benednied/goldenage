@@ -19,6 +19,9 @@ from goldenage.domain.models import (
     ArtifactMailMetadata,
     AssignmentSuggestion,
     AuditEvent,
+    Automation,
+    AutomationRun,
+    AutomationTrigger,
     CaseFile,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
@@ -608,6 +611,226 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             return tuple(_row_to_mailbox_sync_checkpoint(row) for row in cursor.fetchall())
 
 
+class PostgresAutomationRepository(_PostgresRepositoryBase):
+    """PostgreSQL persistence for owned automation definitions and run logs."""
+
+    def save_automation(self, automation: Automation) -> None:
+        sql = """
+            INSERT INTO automation (
+                id, owner_user_id, name, code, code_version, enabled, effective_user_id,
+                filesystem_paths_json, created_at, updated_at
+            ) VALUES (
+                %(id)s, %(owner_user_id)s, %(name)s, %(code)s, %(code_version)s,
+                %(enabled)s, %(effective_user_id)s, %(filesystem_paths_json)s,
+                %(created_at)s, %(updated_at)s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name, code = EXCLUDED.code, code_version = EXCLUDED.code_version,
+                enabled = EXCLUDED.enabled, effective_user_id = EXCLUDED.effective_user_id,
+                filesystem_paths_json = EXCLUDED.filesystem_paths_json,
+                updated_at = EXCLUDED.updated_at
+        """
+        payload = asdict(automation)
+        payload["filesystem_paths_json"] = Jsonb(list(automation.filesystem_paths))
+        payload.pop("filesystem_paths")
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, payload)
+            connection.commit()
+
+    def get_automation(self, automation_id: UUID, user: UserContext) -> Automation | None:
+        sql = "SELECT * FROM automation WHERE id = %(id)s AND owner_user_id = %(user_id)s"
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"id": automation_id, "user_id": user.id})
+            row = cursor.fetchone()
+        return _row_to_automation(row) if row else None
+
+    def list_automations(self, user: UserContext) -> Sequence[Automation]:
+        sql = """
+            SELECT * FROM automation
+            WHERE owner_user_id = %(user_id)s
+            ORDER BY updated_at DESC, name ASC
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"user_id": user.id})
+            return tuple(_row_to_automation(row) for row in cursor.fetchall())
+
+    def save_trigger(self, trigger: AutomationTrigger) -> None:
+        sql = """
+            INSERT INTO automation_trigger (
+                id, automation_id, kind, enabled, schedule_expression, schedule_timezone,
+                missed_run_policy, overlap_policy, event_type, sender_filter, recipient_filter,
+                subject_filter, created_at, updated_at
+            ) VALUES (
+                %(id)s, %(automation_id)s, %(kind)s, %(enabled)s, %(schedule_expression)s,
+                %(schedule_timezone)s, %(missed_run_policy)s, %(overlap_policy)s, %(event_type)s,
+                %(sender_filter)s, %(recipient_filter)s, %(subject_filter)s,
+                %(created_at)s, %(updated_at)s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                kind = EXCLUDED.kind, enabled = EXCLUDED.enabled,
+                schedule_expression = EXCLUDED.schedule_expression,
+                schedule_timezone = EXCLUDED.schedule_timezone,
+                missed_run_policy = EXCLUDED.missed_run_policy,
+                overlap_policy = EXCLUDED.overlap_policy, event_type = EXCLUDED.event_type,
+                sender_filter = EXCLUDED.sender_filter, recipient_filter = EXCLUDED.recipient_filter,
+                subject_filter = EXCLUDED.subject_filter, updated_at = EXCLUDED.updated_at
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, asdict(trigger))
+            connection.commit()
+
+    def list_triggers(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[AutomationTrigger]:
+        sql = """
+            SELECT t.* FROM automation_trigger t
+            JOIN automation a ON a.id = t.automation_id
+            WHERE t.automation_id = %(automation_id)s AND a.owner_user_id = %(user_id)s
+            ORDER BY t.created_at ASC
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"automation_id": automation_id, "user_id": user.id})
+            return tuple(_row_to_automation_trigger(row) for row in cursor.fetchall())
+
+    def create_run(self, run: AutomationRun) -> AutomationRun:
+        sql = """
+            INSERT INTO automation_run (
+                id, automation_id, trigger_id, owner_user_id, effective_user_id,
+                idempotency_key, status, code_version, configured_paths_json, trigger_label,
+                queued_at, started_at, finished_at, stdout, stderr, result_json,
+                error_message, warning_message, attempt, created_at
+            ) VALUES (
+                %(id)s, %(automation_id)s, %(trigger_id)s, %(owner_user_id)s, %(effective_user_id)s,
+                %(idempotency_key)s, %(status)s, %(code_version)s, %(configured_paths_json)s,
+                %(trigger_label)s, %(queued_at)s, %(started_at)s, %(finished_at)s, %(stdout)s,
+                %(stderr)s, %(result_json)s, %(error_message)s, %(warning_message)s,
+                %(attempt)s, %(created_at)s
+            ) ON CONFLICT (automation_id, idempotency_key) DO NOTHING
+        """
+        payload = asdict(run)
+        payload["configured_paths_json"] = Jsonb(list(run.configured_paths))
+        payload["result_json"] = Jsonb(run.result_json)
+        payload.pop("configured_paths")
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, payload)
+            cursor.execute(
+                """
+                SELECT * FROM automation_run
+                WHERE automation_id = %(automation_id)s AND idempotency_key = %(idempotency_key)s
+                """,
+                {"automation_id": run.automation_id, "idempotency_key": run.idempotency_key},
+            )
+            row = cursor.fetchone()
+            connection.commit()
+        if row is None:
+            raise PostgresRepositoryError("Automation run could not be persisted.")
+        return _row_to_automation_run(row)
+
+    def get_run(self, run_id: UUID, user: UserContext) -> AutomationRun | None:
+        sql = "SELECT * FROM automation_run WHERE id = %(id)s AND owner_user_id = %(user_id)s"
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"id": run_id, "user_id": user.id})
+            row = cursor.fetchone()
+        return _row_to_automation_run(row) if row else None
+
+    def find_run_by_key(
+        self,
+        automation_id: UUID,
+        idempotency_key: str,
+        user: UserContext,
+    ) -> AutomationRun | None:
+        sql = """
+            SELECT r.* FROM automation_run r
+            JOIN automation a ON a.id = r.automation_id
+            WHERE r.automation_id = %(automation_id)s
+              AND r.idempotency_key = %(idempotency_key)s
+              AND a.owner_user_id = %(user_id)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {
+                    "automation_id": automation_id,
+                    "idempotency_key": idempotency_key,
+                    "user_id": user.id,
+                },
+            )
+            row = cursor.fetchone()
+        return _row_to_automation_run(row) if row else None
+
+    def list_runs(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+        *,
+        limit: int = 50,
+    ) -> Sequence[AutomationRun]:
+        sql = """
+            SELECT r.* FROM automation_run r
+            JOIN automation a ON a.id = r.automation_id
+            WHERE r.automation_id = %(automation_id)s AND a.owner_user_id = %(user_id)s
+            ORDER BY r.created_at DESC LIMIT %(limit)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {"automation_id": automation_id, "user_id": user.id, "limit": limit},
+            )
+            return tuple(_row_to_automation_run(row) for row in cursor.fetchall())
+
+    def list_active_runs(self, automation_id: UUID) -> Sequence[AutomationRun]:
+        sql = """
+            SELECT * FROM automation_run
+            WHERE automation_id = %(automation_id)s AND status IN ('queued', 'running')
+            ORDER BY created_at ASC
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, {"automation_id": automation_id})
+            return tuple(_row_to_automation_run(row) for row in cursor.fetchall())
+
+    def recover_interrupted_runs(self, now: datetime) -> Sequence[AutomationRun]:
+        select_sql = "SELECT * FROM automation_run WHERE status IN ('queued', 'running')"
+        update_sql = """
+            UPDATE automation_run
+            SET status = 'interrupted', finished_at = %(now)s,
+                warning_message = 'Process restarted before this run completed.'
+            WHERE status IN ('queued', 'running')
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(select_sql)
+            rows = cursor.fetchall()
+            cursor.execute(update_sql, {"now": now})
+            connection.commit()
+        return tuple(
+            _row_to_automation_run(
+                row
+                | {
+                    "status": "interrupted",
+                    "finished_at": now,
+                    "warning_message": "Process restarted before this run completed.",
+                }
+            )
+            for row in rows
+        )
+
+    def update_run(self, run: AutomationRun) -> None:
+        sql = """
+            UPDATE automation_run SET
+                status = %(status)s, started_at = %(started_at)s, finished_at = %(finished_at)s,
+                stdout = %(stdout)s, stderr = %(stderr)s, result_json = %(result_json)s,
+                error_message = %(error_message)s, warning_message = %(warning_message)s,
+                attempt = %(attempt)s
+            WHERE id = %(id)s
+        """
+        payload = asdict(run)
+        payload["result_json"] = Jsonb(run.result_json)
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, payload)
+            connection.commit()
+
+
 class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
     """Audit repository backed by PostgreSQL."""
 
@@ -761,4 +984,63 @@ def _row_to_mailbox_sync_checkpoint(row: dict[str, object]) -> MailboxSyncCheckp
         last_message_key=row["last_message_key"],
         last_message_at=row["last_message_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_automation(row: dict[str, object]) -> Automation:
+    return Automation(
+        id=row["id"],
+        owner_user_id=row["owner_user_id"],
+        name=row["name"],
+        code=row["code"],
+        code_version=row["code_version"],
+        enabled=bool(row["enabled"]),
+        effective_user_id=row["effective_user_id"],
+        filesystem_paths=tuple(row["filesystem_paths_json"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_automation_trigger(row: dict[str, object]) -> AutomationTrigger:
+    return AutomationTrigger(
+        id=row["id"],
+        automation_id=row["automation_id"],
+        kind=row["kind"],
+        enabled=bool(row["enabled"]),
+        schedule_expression=row["schedule_expression"],
+        schedule_timezone=row["schedule_timezone"],
+        missed_run_policy=row["missed_run_policy"],
+        overlap_policy=row["overlap_policy"],
+        event_type=row["event_type"],
+        sender_filter=row["sender_filter"] or "",
+        recipient_filter=row["recipient_filter"] or "",
+        subject_filter=row["subject_filter"] or "",
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_automation_run(row: dict[str, object]) -> AutomationRun:
+    return AutomationRun(
+        id=row["id"],
+        automation_id=row["automation_id"],
+        trigger_id=row["trigger_id"],
+        owner_user_id=row["owner_user_id"],
+        effective_user_id=row["effective_user_id"],
+        idempotency_key=row["idempotency_key"],
+        status=row["status"],
+        code_version=row["code_version"],
+        configured_paths=tuple(row["configured_paths_json"]),
+        trigger_label=row["trigger_label"],
+        queued_at=row["queued_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        stdout=row["stdout"],
+        stderr=row["stderr"],
+        result_json=row["result_json"],
+        error_message=row["error_message"],
+        warning_message=row["warning_message"],
+        attempt=int(row["attempt"]),
+        created_at=row["created_at"],
     )

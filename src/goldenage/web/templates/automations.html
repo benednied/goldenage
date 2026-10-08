@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Trusted Local Runtime</p>
+      <h1>Automations</h1>
+      <p class="subhead">Durable triggers, effective-user attribution, bounded logs, and visible failures.</p>
+    </div>
+    <div class="user-chip">
+      {% if profile_image_url %}
+        <img class="user-avatar" src="{{ profile_image_url }}" alt="{{ user.display_name }}" />
+      {% else %}
+        <span class="avatar-placeholder">{{ user.display_name[:1]|upper }}</span>
+      {% endif %}
+      <div class="user-copy">
+        <span>{{ user.display_name }}</span>
+        <small>{{ user.email }}</small>
+        <a class="button-link" href="/worklist">Back to worklist</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="settings-layout">
+    <section class="panel settings-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Register</p>
+          <h2>Trusted Python</h2>
+        </div>
+      </div>
+      <div class="message message-error">{{ trusted_runtime_warning }}</div>
+      {% if message %}
+        <div class="message{% if message_kind == 'error' %} message-error{% endif %}">{{ message }}</div>
+      {% endif %}
+      <form method="post" action="/automations" class="workflow-form">
+        <label>Name <input type="text" name="name" required /></label>
+        <label>Python code
+          <textarea name="code" rows="9" required placeholder="print('hello')&#10;automation.warn('Check required fields')"></textarea>
+        </label>
+        <label>Configured filesystem paths (one per line)
+          <textarea name="filesystem_paths" rows="3" placeholder="/srv/goldenage/incoming/report.pdf"></textarea>
+        </label>
+        <div class="button-row"><button type="submit">Register automation</button></div>
+      </form>
+    </section>
+
+    <section class="panel settings-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Owned Definitions</p>
+          <h2>Automations and triggers</h2>
+        </div>
+      </div>
+      {% if not automations %}
+        <div class="empty-state"><p>No automations registered yet.</p></div>
+      {% endif %}
+      {% for row in automations %}
+        {% set automation = row.automation %}
+        <article class="automation-card{% if selected_id == automation.id %} selected{% endif %}">
+          <div class="panel-heading">
+            <div>
+              <h3>{{ automation.name }}</h3>
+              <p class="muted">Owner {{ automation.owner_user_id }} · effective user {{ automation.effective_user_id }}</p>
+              <p class="muted">Code version {{ automation.code_version }} · updated {{ automation.updated_at }}</p>
+              <p class="muted">Configured paths: {{ automation.filesystem_paths|join(', ') or 'none declared' }}</p>
+              <details><summary>View trusted code</summary><pre>{{ automation.code }}</pre></details>
+            </div>
+            <span class="status-badge">{% if automation.enabled %}enabled{% else %}disabled{% endif %}</span>
+          </div>
+          <div class="button-row">
+            <form method="post" action="/automations/{{ automation.id }}/run"><button type="submit" {% if not automation.enabled %}disabled{% endif %}>Run now</button></form>
+            <form method="post" action="/automations/{{ automation.id }}/enabled">
+              <input type="hidden" name="enabled" value="{% if not automation.enabled %}on{% endif %}" />
+              <button type="submit">{% if automation.enabled %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+          </div>
+          <details>
+            <summary>Update definition</summary>
+            <form method="post" action="/automations/{{ automation.id }}" class="workflow-form compact-form">
+              <label>Name <input type="text" name="name" value="{{ automation.name }}" required /></label>
+              <label>Python code <textarea name="code" rows="6" required>{{ automation.code }}</textarea></label>
+              <label>Configured paths <textarea name="filesystem_paths" rows="2">{{ automation.filesystem_paths|join('\n') }}</textarea></label>
+              <button type="submit">Save definition</button>
+            </form>
+          </details>
+
+          <h4>Triggers</h4>
+          {% for trigger in row.triggers %}
+            <div class="muted">
+              {{ trigger.kind }}{% if trigger.event_type %} · {{ trigger.event_type }}{% endif %}
+              {% if trigger.schedule_expression %} · {{ trigger.schedule_expression }} {{ trigger.schedule_timezone }}{% endif %}
+              {% if trigger.sender_filter %} · sender={{ trigger.sender_filter }}{% endif %}
+              {% if trigger.recipient_filter %} · recipient={{ trigger.recipient_filter }}{% endif %}
+              {% if trigger.subject_filter %} · subject={{ trigger.subject_filter }}{% endif %}
+            </div>
+          {% endfor %}
+          <form method="post" action="/automations/{{ automation.id }}/triggers" class="workflow-form compact-form">
+            <label>Trigger
+              <select name="kind"><option value="manual">manual</option><option value="schedule">schedule</option><option value="mail">mail</option><option value="artifact">artifact</option></select>
+            </label>
+            <label>Cron <input name="schedule_expression" placeholder="*/15 * * * *" /></label>
+            <label>Timezone <input name="schedule_timezone" value="UTC" /></label>
+            <label>Event <input name="event_type" placeholder="mail_received or artifact_assigned" /></label>
+            <label>Sender <input name="sender_filter" /></label>
+            <label>Recipient <input name="recipient_filter" /></label>
+            <label>Subject contains <input name="subject_filter" /></label>
+            <button type="submit">Add trigger</button>
+          </form>
+
+          <h4>Recent runs</h4>
+          {% for run in row.runs %}
+            <div class="run-log">
+              <div><strong>{{ run.status }}</strong> · {{ run.trigger_label }} · {{ run.created_at }}</div>
+              <div class="muted">run {{ run.id }} · effective user {{ run.effective_user_id }} · attempt {{ run.attempt }}</div>
+              {% if run.warning_message %}<div class="message">Warning: {{ run.warning_message }}</div>{% endif %}
+              {% if run.error_message %}<div class="message message-error">Failure: {{ run.error_message }}</div><form method="post" action="/automation-runs/{{ run.id }}/retry"><button type="submit">Retry</button></form>{% endif %}
+              {% if run.stdout %}<pre>{{ run.stdout }}</pre>{% endif %}
+              {% if run.stderr %}<pre>{{ run.stderr }}</pre>{% endif %}
+            </div>
+          {% endfor %}
+        </article>
+      {% endfor %}
+    </section>
+  </main>
+{% endblock %}

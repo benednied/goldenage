@@ -715,6 +715,18 @@ class GoldenAgeService:
         suggestion = self._artifact_repository.get_suggestion(artifact_id, user)
         return self._intake_state_for_artifact(artifact, suggestion, user=user)
 
+    def get_artifact_event_context(
+        self,
+        *,
+        artifact_id: UUID,
+        user: UserContext,
+    ) -> tuple[Artifact, ArtifactMailMetadata | None]:
+        """Return committed artifact data for post-transaction automation events."""
+        artifact = self._artifact_repository.get_artifact(artifact_id, user)
+        if artifact is None:
+            raise NotFoundError("Artifact not found.")
+        return artifact, self._artifact_repository.get_mail_metadata(artifact_id, user)
+
     def search_cases_for_artifact(
         self,
         *,

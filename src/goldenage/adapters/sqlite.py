@@ -22,6 +22,9 @@ from goldenage.domain.models import (
     ArtifactMailMetadata,
     AssignmentSuggestion,
     AuditEvent,
+    Automation,
+    AutomationRun,
+    AutomationTrigger,
     CaseFile,
     LocalUserAccount,
     MailCandidate,
@@ -612,6 +615,264 @@ class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
             connection.commit()
 
 
+class SQLiteAutomationRepository(_SQLiteRepositoryBase):
+    """SQLite persistence for owned automation definitions and run logs."""
+
+    def save_automation(self, automation: Automation) -> None:
+        sql = """
+            INSERT INTO automation (
+                id, owner_user_id, name, code, code_version, enabled, effective_user_id,
+                filesystem_paths_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                code = excluded.code,
+                code_version = excluded.code_version,
+                enabled = excluded.enabled,
+                effective_user_id = excluded.effective_user_id,
+                filesystem_paths_json = excluded.filesystem_paths_json,
+                updated_at = excluded.updated_at
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(automation.id),
+                    str(automation.owner_user_id),
+                    automation.name,
+                    automation.code,
+                    automation.code_version,
+                    int(automation.enabled),
+                    str(automation.effective_user_id),
+                    json.dumps(list(automation.filesystem_paths)),
+                    _serialize_datetime(automation.created_at),
+                    _serialize_datetime(automation.updated_at),
+                ),
+            )
+            connection.commit()
+
+    def get_automation(self, automation_id: UUID, user: UserContext) -> Automation | None:
+        sql = "SELECT * FROM automation WHERE id = ? AND owner_user_id = ?"
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(automation_id), str(user.id))).fetchone()
+        return _row_to_automation(row) if row else None
+
+    def list_automations(self, user: UserContext) -> Sequence[Automation]:
+        sql = """
+            SELECT * FROM automation
+            WHERE owner_user_id = ?
+            ORDER BY updated_at DESC, name ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(user.id),)).fetchall()
+        return tuple(_row_to_automation(row) for row in rows)
+
+    def save_trigger(self, trigger: AutomationTrigger) -> None:
+        sql = """
+            INSERT INTO automation_trigger (
+                id, automation_id, kind, enabled, schedule_expression, schedule_timezone,
+                missed_run_policy, overlap_policy, event_type, sender_filter, recipient_filter,
+                subject_filter, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                kind = excluded.kind,
+                enabled = excluded.enabled,
+                schedule_expression = excluded.schedule_expression,
+                schedule_timezone = excluded.schedule_timezone,
+                missed_run_policy = excluded.missed_run_policy,
+                overlap_policy = excluded.overlap_policy,
+                event_type = excluded.event_type,
+                sender_filter = excluded.sender_filter,
+                recipient_filter = excluded.recipient_filter,
+                subject_filter = excluded.subject_filter,
+                updated_at = excluded.updated_at
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(trigger.id),
+                    str(trigger.automation_id),
+                    trigger.kind,
+                    int(trigger.enabled),
+                    trigger.schedule_expression,
+                    trigger.schedule_timezone,
+                    trigger.missed_run_policy,
+                    trigger.overlap_policy,
+                    trigger.event_type,
+                    trigger.sender_filter,
+                    trigger.recipient_filter,
+                    trigger.subject_filter,
+                    _serialize_datetime(trigger.created_at),
+                    _serialize_datetime(trigger.updated_at),
+                ),
+            )
+            connection.commit()
+
+    def list_triggers(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[AutomationTrigger]:
+        sql = """
+            SELECT t.*
+            FROM automation_trigger t
+            JOIN automation a ON a.id = t.automation_id
+            WHERE t.automation_id = ? AND a.owner_user_id = ?
+            ORDER BY t.created_at ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(automation_id), str(user.id))).fetchall()
+        return tuple(_row_to_automation_trigger(row) for row in rows)
+
+    def create_run(self, run: AutomationRun) -> AutomationRun:
+        sql = """
+            INSERT OR IGNORE INTO automation_run (
+                id, automation_id, trigger_id, owner_user_id, effective_user_id,
+                idempotency_key, status, code_version, configured_paths_json, trigger_label,
+                queued_at, started_at, finished_at, stdout, stderr, result_json,
+                error_message, warning_message, attempt, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(run.id),
+                    str(run.automation_id),
+                    str(run.trigger_id) if run.trigger_id is not None else None,
+                    str(run.owner_user_id),
+                    str(run.effective_user_id),
+                    run.idempotency_key,
+                    run.status,
+                    run.code_version,
+                    json.dumps(list(run.configured_paths)),
+                    run.trigger_label,
+                    _serialize_datetime(run.queued_at),
+                    _serialize_datetime(run.started_at),
+                    _serialize_datetime(run.finished_at),
+                    run.stdout,
+                    run.stderr,
+                    json.dumps(run.result_json),
+                    run.error_message,
+                    run.warning_message,
+                    run.attempt,
+                    _serialize_datetime(run.created_at),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM automation_run WHERE automation_id = ? AND idempotency_key = ?",
+                (str(run.automation_id), run.idempotency_key),
+            ).fetchone()
+            connection.commit()
+        if row is None:
+            raise SQLiteRepositoryError("Automation run could not be persisted.")
+        return _row_to_automation_run(row)
+
+    def get_run(self, run_id: UUID, user: UserContext) -> AutomationRun | None:
+        sql = "SELECT * FROM automation_run WHERE id = ? AND owner_user_id = ?"
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(run_id), str(user.id))).fetchone()
+        return _row_to_automation_run(row) if row else None
+
+    def find_run_by_key(
+        self,
+        automation_id: UUID,
+        idempotency_key: str,
+        user: UserContext,
+    ) -> AutomationRun | None:
+        sql = """
+            SELECT r.* FROM automation_run r
+            JOIN automation a ON a.id = r.automation_id
+            WHERE r.automation_id = ? AND r.idempotency_key = ? AND a.owner_user_id = ?
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                sql, (str(automation_id), idempotency_key, str(user.id))
+            ).fetchone()
+        return _row_to_automation_run(row) if row else None
+
+    def list_runs(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+        *,
+        limit: int = 50,
+    ) -> Sequence[AutomationRun]:
+        sql = """
+            SELECT r.* FROM automation_run r
+            JOIN automation a ON a.id = r.automation_id
+            WHERE r.automation_id = ? AND a.owner_user_id = ?
+            ORDER BY r.created_at DESC
+            LIMIT ?
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(automation_id), str(user.id), limit)).fetchall()
+        return tuple(_row_to_automation_run(row) for row in rows)
+
+    def list_active_runs(self, automation_id: UUID) -> Sequence[AutomationRun]:
+        sql = """
+            SELECT * FROM automation_run
+            WHERE automation_id = ? AND status IN ('queued', 'running')
+            ORDER BY created_at ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(automation_id),)).fetchall()
+        return tuple(_row_to_automation_run(row) for row in rows)
+
+    def recover_interrupted_runs(self, now: datetime) -> Sequence[AutomationRun]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM automation_run WHERE status IN ('queued', 'running')"
+            ).fetchall()
+            connection.execute(
+                """
+                UPDATE automation_run
+                SET status = 'interrupted', finished_at = ?,
+                    warning_message = 'Process restarted before this run completed.'
+                WHERE status IN ('queued', 'running')
+                """,
+                (_serialize_datetime(now),),
+            )
+            connection.commit()
+        return tuple(
+            _row_to_automation_run(
+                dict(row)
+                | {
+                    "status": "interrupted",
+                    "finished_at": _serialize_datetime(now),
+                    "warning_message": "Process restarted before this run completed.",
+                }
+            )
+            for row in rows
+        )
+
+    def update_run(self, run: AutomationRun) -> None:
+        sql = """
+            UPDATE automation_run SET
+                status = ?, started_at = ?, finished_at = ?, stdout = ?, stderr = ?,
+                result_json = ?, error_message = ?, warning_message = ?, attempt = ?
+            WHERE id = ?
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    run.status,
+                    _serialize_datetime(run.started_at),
+                    _serialize_datetime(run.finished_at),
+                    run.stdout,
+                    run.stderr,
+                    json.dumps(run.result_json),
+                    run.error_message,
+                    run.warning_message,
+                    run.attempt,
+                    str(run.id),
+                ),
+            )
+            connection.commit()
+
+
 class SQLiteLocalUserRepository(_SQLiteRepositoryBase):
     """SQLite persistence for the local-first onboarding account."""
 
@@ -1091,4 +1352,63 @@ def _row_to_mail_candidate(row: sqlite3.Row) -> MailCandidate:
         preview_text=row["preview_text"],
         unread=bool(row["unread"]),
         rfc_message_id=row["rfc_message_id"],
+    )
+
+
+def _row_to_automation(row: sqlite3.Row | dict[str, object]) -> Automation:
+    return Automation(
+        id=UUID(row["id"]),
+        owner_user_id=UUID(row["owner_user_id"]),
+        name=row["name"],
+        code=row["code"],
+        code_version=row["code_version"],
+        enabled=bool(row["enabled"]),
+        effective_user_id=UUID(row["effective_user_id"]),
+        filesystem_paths=tuple(json.loads(row["filesystem_paths_json"])),
+        created_at=_deserialize_datetime(row["created_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
+    )
+
+
+def _row_to_automation_trigger(row: sqlite3.Row | dict[str, object]) -> AutomationTrigger:
+    return AutomationTrigger(
+        id=UUID(row["id"]),
+        automation_id=UUID(row["automation_id"]),
+        kind=row["kind"],
+        enabled=bool(row["enabled"]),
+        schedule_expression=row["schedule_expression"],
+        schedule_timezone=row["schedule_timezone"],
+        missed_run_policy=row["missed_run_policy"],
+        overlap_policy=row["overlap_policy"],
+        event_type=row["event_type"],
+        sender_filter=row["sender_filter"] or "",
+        recipient_filter=row["recipient_filter"] or "",
+        subject_filter=row["subject_filter"] or "",
+        created_at=_deserialize_datetime(row["created_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
+    )
+
+
+def _row_to_automation_run(row: sqlite3.Row | dict[str, object]) -> AutomationRun:
+    return AutomationRun(
+        id=UUID(row["id"]),
+        automation_id=UUID(row["automation_id"]),
+        trigger_id=UUID(row["trigger_id"]) if row["trigger_id"] else None,
+        owner_user_id=UUID(row["owner_user_id"]),
+        effective_user_id=UUID(row["effective_user_id"]),
+        idempotency_key=row["idempotency_key"],
+        status=row["status"],
+        code_version=row["code_version"],
+        configured_paths=tuple(json.loads(row["configured_paths_json"])),
+        trigger_label=row["trigger_label"],
+        queued_at=_deserialize_datetime(row["queued_at"]),
+        started_at=_deserialize_datetime(row["started_at"]),
+        finished_at=_deserialize_datetime(row["finished_at"]),
+        stdout=row["stdout"],
+        stderr=row["stderr"],
+        result_json=json.loads(row["result_json"]),
+        error_message=row["error_message"],
+        warning_message=row["warning_message"],
+        attempt=int(row["attempt"]),
+        created_at=_deserialize_datetime(row["created_at"]),
     )

@@ -13,6 +13,9 @@ from goldenage.domain.models import (
     ArtifactMailMetadata,
     AssignmentSuggestion,
     AuditEvent,
+    Automation,
+    AutomationRun,
+    AutomationTrigger,
     CaseFile,
     ExtractedArtifactData,
     ImportedMailPayload,
@@ -145,6 +148,61 @@ class AuditRepository(Protocol):
 
     def save_event(self, event: AuditEvent) -> None:
         """Persist an audit event."""
+
+
+class AutomationRepository(Protocol):
+    """Persistence port for trusted automation definitions and runs."""
+
+    def save_automation(self, automation: Automation) -> None:
+        """Create or update an owned automation definition."""
+
+    def get_automation(self, automation_id: UUID, user: UserContext) -> Automation | None:
+        """Return an automation visible to its owner."""
+
+    def list_automations(self, user: UserContext) -> Sequence[Automation]:
+        """Return automations owned by the user."""
+
+    def save_trigger(self, trigger: AutomationTrigger) -> None:
+        """Create or update an automation trigger."""
+
+    def list_triggers(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+    ) -> Sequence[AutomationTrigger]:
+        """Return triggers for an owned automation."""
+
+    def create_run(self, run: AutomationRun) -> AutomationRun:
+        """Insert a run once and return the existing row for duplicate keys."""
+
+    def get_run(self, run_id: UUID, user: UserContext) -> AutomationRun | None:
+        """Return a durable run visible to its owner."""
+
+    def find_run_by_key(
+        self,
+        automation_id: UUID,
+        idempotency_key: str,
+        user: UserContext,
+    ) -> AutomationRun | None:
+        """Find an existing delivery by its stable idempotency key."""
+
+    def list_runs(
+        self,
+        automation_id: UUID,
+        user: UserContext,
+        *,
+        limit: int = 50,
+    ) -> Sequence[AutomationRun]:
+        """Return recent durable runs for an owned automation."""
+
+    def list_active_runs(self, automation_id: UUID) -> Sequence[AutomationRun]:
+        """Return queued/running runs for overlap handling."""
+
+    def recover_interrupted_runs(self, now: datetime) -> Sequence[AutomationRun]:
+        """Mark abandoned running runs interrupted after a process restart."""
+
+    def update_run(self, run: AutomationRun) -> None:
+        """Persist a run state transition and bounded output."""
 
 
 class ArtifactStore(Protocol):

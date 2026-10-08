@@ -17,12 +17,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
+from goldenage.adapters.automation_runtime import AutomationSchedulerWorker
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
     HeuristicGiselaClient,
     InMemoryActivityRepository,
     InMemoryArtifactRepository,
     InMemoryAuditRepository,
+    InMemoryAutomationRepository,
     InMemoryCaseRepository,
     InMemoryMailImportRepository,
     LocalArtifactStore,
@@ -45,16 +47,19 @@ from goldenage.adapters.postgres import (
     PostgresActivityRepository,
     PostgresArtifactRepository,
     PostgresAuditRepository,
+    PostgresAutomationRepository,
     PostgresCaseRepository,
 )
 from goldenage.adapters.sqlite import (
     SQLiteActivityRepository,
     SQLiteArtifactRepository,
     SQLiteAuditRepository,
+    SQLiteAutomationRepository,
     SQLiteCaseRepository,
     SQLiteLocalUserRepository,
     SQLiteMailImportRepository,
 )
+from goldenage.application.automations import AutomationEvent, AutomationService
 from goldenage.application.use_cases import (
     CaseDetail,
     GoldenAgeService,
@@ -87,8 +92,10 @@ class AppContext:
     settings: Settings
     service: GoldenAgeService
     default_user: UserContext | None
+    automation_service: AutomationService | None = None
     local_user_repository: SQLiteLocalUserRepository | None = None
     outlook_worker: OutlookMailboxWorker | None = None
+    automation_scheduler: AutomationSchedulerWorker | None = None
     upload_limits: UploadLimits = UploadLimits()
 
 
@@ -108,11 +115,18 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup_event() -> None:
+        context.automation_service and context.automation_service.recover_after_restart(
+            now=datetime.now(UTC)
+        )
+        if context.automation_scheduler is not None:
+            context.automation_scheduler.start()
         if context.outlook_worker is not None:
             context.outlook_worker.start()
 
     @app.on_event("shutdown")
     async def shutdown_event() -> None:
+        if context.automation_scheduler is not None:
+            context.automation_scheduler.stop()
         if context.outlook_worker is not None:
             context.outlook_worker.stop()
 
@@ -281,6 +295,226 @@ def create_app() -> FastAPI:
             context=_settings_context(request, context, user=user),
         )
 
+    @app.get("/automations", response_class=HTMLResponse)
+    async def automations_page(request: Request) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(request, context, user=user),
+        )
+
+    @app.post("/automations", response_class=HTMLResponse)
+    async def register_automation(
+        request: Request,
+        name: str = Form(default=""),
+        code: str = Form(default=""),
+        filesystem_paths: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.automation_service.register_automation(
+                name=name,
+                code=code,
+                filesystem_paths=filesystem_paths.splitlines(),
+                user=user,
+                now=_now(context),
+            )
+            message = (
+                "Automation registered. Trusted code runs with this user's current permissions."
+            )
+            message_kind = "info"
+        except (LookupError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(
+                request,
+                context,
+                user=user,
+                message=message,
+                message_kind=message_kind,
+            ),
+        )
+
+    @app.post("/automations/{automation_id}", response_class=HTMLResponse)
+    async def update_automation(
+        request: Request,
+        automation_id: str,
+        name: str = Form(default=""),
+        code: str = Form(default=""),
+        filesystem_paths: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        selected_id = _uuid(automation_id)
+        try:
+            context.automation_service.register_automation(
+                automation_id=selected_id,
+                name=name,
+                code=code,
+                filesystem_paths=filesystem_paths.splitlines(),
+                user=user,
+                now=_now(context),
+            )
+            message = "Automation updated; prior runs retain their original code version."
+            message_kind = "info"
+        except (LookupError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(
+                request,
+                context,
+                user=user,
+                message=message,
+                message_kind=message_kind,
+                selected_id=selected_id,
+            ),
+        )
+
+    @app.post("/automations/{automation_id}/run", response_class=HTMLResponse)
+    async def run_automation(request: Request, automation_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.automation_service.run_manual(
+                automation_id=_uuid(automation_id), user=user, now=_now(context)
+            )
+            message = "Automation run completed; inspect the durable run log below."
+            message_kind = "info"
+        except (LookupError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(
+                request,
+                context,
+                user=user,
+                message=message,
+                message_kind=message_kind,
+                selected_id=_uuid(automation_id),
+            ),
+        )
+
+    @app.post("/automations/{automation_id}/enabled", response_class=HTMLResponse)
+    async def set_automation_enabled(
+        request: Request,
+        automation_id: str,
+        enabled: str | None = Form(default=None),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.automation_service.set_enabled(
+                automation_id=_uuid(automation_id),
+                enabled=enabled == "on",
+                user=user,
+                now=_now(context),
+            )
+            message = "Automation state updated."
+            message_kind = "info"
+        except (LookupError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(
+                request,
+                context,
+                user=user,
+                message=message,
+                message_kind=message_kind,
+                selected_id=_uuid(automation_id),
+            ),
+        )
+
+    @app.post("/automations/{automation_id}/triggers", response_class=HTMLResponse)
+    async def bind_automation_trigger(
+        request: Request,
+        automation_id: str,
+        kind: str = Form(default="manual"),
+        schedule_expression: str = Form(default=""),
+        schedule_timezone: str = Form(default="UTC"),
+        event_type: str = Form(default=""),
+        sender_filter: str = Form(default=""),
+        recipient_filter: str = Form(default=""),
+        subject_filter: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.automation_service.bind_trigger(
+                automation_id=_uuid(automation_id),
+                kind=kind,  # type: ignore[arg-type]
+                schedule_expression=schedule_expression or None,
+                schedule_timezone=schedule_timezone or None,
+                event_type=event_type or None,
+                sender_filter=sender_filter,
+                recipient_filter=recipient_filter,
+                subject_filter=subject_filter,
+                user=user,
+                now=_now(context),
+            )
+            message = "Trigger saved."
+            message_kind = "info"
+        except (LookupError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(
+                request,
+                context,
+                user=user,
+                message=message,
+                message_kind=message_kind,
+                selected_id=_uuid(automation_id),
+            ),
+        )
+
+    @app.post("/automation-runs/{run_id}/retry", response_class=HTMLResponse)
+    async def retry_automation_run(request: Request, run_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            run = context.automation_service.retry_run(
+                run_id=_uuid(run_id), user=user, now=_now(context)
+            )
+            message = f"Retry finished with status: {run.status}."
+            message_kind = "info"
+        except (LookupError, ValueError) as error:
+            message = str(error)
+            message_kind = "error"
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context=_automations_context(
+                request,
+                context,
+                user=user,
+                message=message,
+                message_kind=message_kind,
+            ),
+        )
+
     @app.post("/settings/mail", response_class=HTMLResponse)
     async def save_mail_settings(
         request: Request,
@@ -387,6 +621,13 @@ def create_app() -> FastAPI:
                 candidate_id=candidate_id,
                 user=user,
                 now=_now(context),
+            )
+            _emit_artifact_events(
+                context,
+                user=user,
+                artifact_id=intake_state.artifact.id if intake_state.artifact else None,
+                now=_now(context),
+                include_mail=True,
             )
             current_mail_state = context.service.get_mail_import_state(user=user)
             mail_import_state = MailImportState(
@@ -601,6 +842,12 @@ def create_app() -> FastAPI:
             user=user,
             now=_now(context),
         )
+        _emit_artifact_events(
+            context,
+            user=user,
+            artifact_id=intake_state.artifact.id if intake_state.artifact else None,
+            now=_now(context),
+        )
         return templates.TemplateResponse(
             request=request,
             name="partials/intake_panel.html",
@@ -723,6 +970,13 @@ def create_app() -> FastAPI:
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
+        _emit_artifact_events(
+            context,
+            user=user,
+            artifact_id=_uuid(artifact_id),
+            now=_now(context),
+            include_assignment=True,
+        )
         return templates.TemplateResponse(
             request=request,
             name="workspace.html",
@@ -791,6 +1045,13 @@ def create_app() -> FastAPI:
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
+        _emit_artifact_events(
+            context,
+            user=user,
+            artifact_id=_uuid(artifact_id),
+            now=_now(context),
+            include_assignment=True,
+        )
         return templates.TemplateResponse(
             request=request,
             name="workspace.html",
@@ -816,6 +1077,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = SQLiteActivityRepository(settings.sqlite_path)
         artifact_repository = SQLiteArtifactRepository(settings.sqlite_path)
         audit_repository = SQLiteAuditRepository(settings.sqlite_path)
+        automation_repository = SQLiteAutomationRepository(settings.sqlite_path)
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
         default_user = None
@@ -824,6 +1086,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = PostgresActivityRepository(settings.database_url)
         artifact_repository = PostgresArtifactRepository(settings.database_url)
         audit_repository = PostgresAuditRepository(settings.database_url)
+        automation_repository = PostgresAutomationRepository(settings.database_url)
         default_user = UserContext(
             id=_uuid("11111111-1111-1111-1111-111111111111"),
             email="alex@example.com",
@@ -837,6 +1100,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = InMemoryActivityRepository(state, case_repository)
         artifact_repository = InMemoryArtifactRepository(state, case_repository)
         audit_repository = InMemoryAuditRepository(state)
+        automation_repository = InMemoryAutomationRepository(state)
         default_user = user
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
@@ -860,7 +1124,22 @@ def _build_context(settings: Settings) -> AppContext:
         ),
         mail_import_repository=mail_import_repository,
     )
+    automation_service = AutomationService(
+        automation_repository=automation_repository,
+        case_repository=case_repository,
+        activity_repository=activity_repository,
+        artifact_repository=artifact_repository,
+        audit_repository=audit_repository,
+    )
     outlook_worker = None
+    automation_scheduler = AutomationSchedulerWorker(
+        lambda: _run_scheduled_automations(
+            automation_service=automation_service,
+            default_user=default_user,
+            local_user_repository=local_user_repository,
+        ),
+        interval_seconds=settings.outlook_poll_seconds,
+    )
     if settings.outlook_sync_enabled and settings.outlook_account_name:
 
         def ingest_outlook_message(message: OutlookMailboxMessage) -> None:
@@ -871,7 +1150,7 @@ def _build_context(settings: Settings) -> AppContext:
             if user is None:
                 return
             extracted = normalize_outlook_message(message)
-            service.ingest_mail(
+            intake_state = service.ingest_mail(
                 file_name=_mailbox_file_name(message),
                 media_type="text/plain",
                 content=message.body_text.encode("utf-8"),
@@ -879,6 +1158,22 @@ def _build_context(settings: Settings) -> AppContext:
                 user=user,
                 now=datetime.now(UTC),
             )
+            if intake_state.artifact is not None:
+                artifact, metadata = service.get_artifact_event_context(
+                    artifact_id=intake_state.artifact.id,
+                    user=user,
+                )
+                automation_service.handle_event_for_user(
+                    event=AutomationEvent(
+                        id=f"mail-received:{artifact.id}",
+                        event_type="mail_received",
+                        user_id=user.id,
+                        occurred_at=datetime.now(UTC),
+                        artifact=artifact,
+                        mail_metadata=metadata,
+                    ),
+                    user=user,
+                )
 
         source = WindowsOutlookMailboxSource(
             settings,
@@ -888,11 +1183,116 @@ def _build_context(settings: Settings) -> AppContext:
     return AppContext(
         settings=settings,
         service=service,
+        automation_service=automation_service,
         default_user=default_user,
         local_user_repository=local_user_repository,
         outlook_worker=outlook_worker,
+        automation_scheduler=automation_scheduler,
         upload_limits=UploadLimits.from_environment(),
     )
+
+
+def _emit_artifact_events(
+    context: AppContext,
+    *,
+    user: UserContext,
+    artifact_id: UUID | None,
+    now: datetime,
+    include_mail: bool = False,
+    include_assignment: bool = False,
+) -> None:
+    """Publish committed intake events after the business service returns."""
+    if artifact_id is None or context.automation_service is None:
+        return
+    try:
+        artifact, metadata = context.service.get_artifact_event_context(
+            artifact_id=artifact_id,
+            user=user,
+        )
+    except NotFoundError:
+        return
+    context.automation_service.handle_event_for_user(
+        event=AutomationEvent(
+            id=f"artifact-ingested:{artifact.id}",
+            event_type="artifact_ingested",
+            user_id=user.id,
+            occurred_at=now,
+            artifact=artifact,
+            mail_metadata=metadata,
+        ),
+        user=user,
+    )
+    if include_mail and metadata is not None:
+        context.automation_service.handle_event_for_user(
+            event=AutomationEvent(
+                id=f"mail-received:{artifact.id}",
+                event_type="mail_received",
+                user_id=user.id,
+                occurred_at=now,
+                artifact=artifact,
+                mail_metadata=metadata,
+            ),
+            user=user,
+        )
+    if include_assignment:
+        context.automation_service.handle_event_for_user(
+            event=AutomationEvent(
+                id=f"artifact-assigned:{artifact.id}",
+                event_type="artifact_assigned",
+                user_id=user.id,
+                occurred_at=now,
+                artifact=artifact,
+                mail_metadata=metadata,
+            ),
+            user=user,
+        )
+
+
+def _run_scheduled_automations(
+    *,
+    automation_service: AutomationService,
+    default_user: UserContext | None,
+    local_user_repository: SQLiteLocalUserRepository | None,
+) -> None:
+    """Run schedules for the current local/development effective identity."""
+    user = _current_user_for_repositories(
+        default_user=default_user,
+        local_user_repository=local_user_repository,
+    )
+    if user is not None:
+        automation_service.run_scheduled(user=user, now=datetime.now(UTC))
+
+
+def _automations_context(
+    request: Request,
+    context: AppContext,
+    *,
+    user: UserContext,
+    message: str | None = None,
+    message_kind: str = "info",
+    selected_id: UUID | None = None,
+) -> dict[str, object]:
+    rows = []
+    for automation in context.automation_service.list_automations(user=user):
+        definition, triggers, runs = context.automation_service.get_automation(
+            automation_id=automation.id,
+            user=user,
+        )
+        rows.append({"automation": definition, "triggers": triggers, "runs": runs})
+    return {
+        "request": request,
+        "page_title": "Automations · GoldenAge",
+        "user": user,
+        "profile_image_url": _profile_image_url(user),
+        "automations": rows,
+        "selected_id": selected_id,
+        "message": message,
+        "message_kind": message_kind,
+        "trusted_runtime_warning": (
+            "Trusted local Python is not sandboxed. Scripts can access the host process and "
+            "filesystem; deploy separate OS identities/instances when isolation is required."
+        ),
+    }
 
 
 async def _bounded_form(request: Request, limits: UploadLimits):
