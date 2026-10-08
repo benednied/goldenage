@@ -137,11 +137,12 @@ back to demo adapters:
 docker compose up -d postgres
 docker compose ps                         # continue after postgres is healthy
 export GOLDENAGE_TEST_POSTGRES_DSN=postgresql://goldenage:goldenage-local-password@127.0.0.1:5432/goldenage
-./.venv/bin/python -m pytest -q -m postgres_integration
+./.venv/bin/python -m pytest -q --no-cov -m postgres_integration
 docker compose down
 ```
 
-The CI job runs the same marker against its temporary PostgreSQL service. The
+The CI job runs the same marker against its temporary PostgreSQL service.
+`--no-cov` disables the full-suite coverage gate for this focused database run. The
 fast default command deliberately excludes this marker:
 
 ```bash
@@ -253,15 +254,19 @@ uv run --extra dev ruff format --check .
 uv run --extra dev ty check
 ./.venv/bin/python -m goldenage.migration_validation
 ./.venv/bin/python -m compileall src tests
-./.venv/bin/pytest -q
+./.venv/bin/pytest -q  # also measures line and branch coverage and enforces 100%
 ```
 
 ## Continuous Integration
 
 Pull requests and pushes to the default branch run the locked Python 3.14
-quality job: Ruff lint, Ruff format verification, `ty`, and `pytest`. Run the
-same checks locally before opening a pull request; the exact commands and
-failure-handling guidance are in [`docs/ci.md`](docs/ci.md). Branch-protection
+quality job: Ruff lint, Ruff format verification, `ty`, and the full `pytest`
+coverage gate. The test command measures `goldenage` with branch coverage,
+prints missing lines, enforces the configured 100% threshold via
+`--cov-fail-under=100`, and writes the machine-readable `coverage.json` report.
+Run the same checks locally before opening a pull request; the exact commands
+and failure-handling guidance are in
+[`docs/ci.md`](docs/ci.md). Branch-protection
 configuration requires GitHub repository administration and is documented
 there as well.
 

@@ -146,6 +146,24 @@ def test_in_memory_repositories_apply_visibility_and_mail_lookup_edges(tmp_path)
         )
         == state.mail_messages[artifact_id]
     )
+    orphan_message = replace(
+        state.mail_messages[artifact_id],
+        artifact_id=uuid4(),
+        source_message_id="orphan-message",
+    )
+    state.mail_messages[orphan_message.artifact_id] = orphan_message
+    assert (
+        artifact_repo.find_mail_message_by_source(
+            source_kind="outlook_upload",
+            source_account_id="account",
+            source_folder_id="Inbox",
+            source_message_id="orphan-message",
+            internet_message_id=None,
+            dedupe_fingerprint="other",
+            user=visible_user,
+        )
+        is None
+    )
     assert artifact_repo.list_conversation_artifacts(conversation_id, visible_user) == (
         state.artifacts[artifact_id],
     )
@@ -232,6 +250,14 @@ def test_in_memory_mail_import_repository_tracks_selectors_candidates_and_import
         artifact_id=uuid4(),
         now=NOW,
     )
+    repository.save_imported_message(
+        user=user,
+        source_system="desktop_mail_client",
+        external_message_id="candidate-without-rfc",
+        rfc_message_id=None,
+        artifact_id=uuid4(),
+        now=NOW,
+    )
 
     assert repository.get_selector(user=user, source_system="desktop_mail_client") == selector
     assert repository.list_review_candidates(user=user, source_system="desktop_mail_client") == (
@@ -256,7 +282,7 @@ def test_in_memory_mail_import_repository_tracks_selectors_candidates_and_import
     assert repository.list_imported_message_ids(
         user=user,
         source_system="desktop_mail_client",
-    ) == frozenset({"candidate-1", "<candidate-1@example.com>"})
+    ) == frozenset({"candidate-1", "<candidate-1@example.com>", "candidate-without-rfc"})
 
     repository.discard_review_candidate(
         user=user,

@@ -45,6 +45,14 @@ jobs:
           fi
           uv run --no-sync pytest -q -m "not postgres_integration"
 
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-report
+          path: coverage.json
+          if-no-files-found: warn
+
   postgres-integration:
     name: postgres-integration
     runs-on: ubuntu-24.04
@@ -84,7 +92,7 @@ jobs:
       - name: Run PostgreSQL integration suite
         run: |
           set -o pipefail
-          output="$(uv run --no-sync pytest -q -m postgres_integration 2>&1)" || {
+          output="$(uv run --no-sync pytest -q --no-cov -m postgres_integration 2>&1)" || {
             status=$?
             printf '%s\n' "$output"
             exit "$status"

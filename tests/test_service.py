@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -21,15 +22,18 @@ from goldenage.application.use_cases import (
     _already_imported_message,
     _build_mail_metadata,
     _dedupe_fingerprint,
+    _mail_participants,
     _merge_participants,
     _normalize_mail_selector,
     _normalize_subject,
     _suggest_new_case_title,
 )
 from goldenage.domain.models import (
+    Artifact,
     ExtractedArtifactData,
     ImportedMailPayload,
     MailCandidate,
+    MailMessage,
     MailParticipant,
     MailSelector,
 )
@@ -142,8 +146,11 @@ def build_service(
 
 
 def test_today_worklist_contains_overdue_and_later_today_but_not_tomorrow(tmp_path) -> None:
-    service, user, _ = build_service(tmp_path)
-    current_day = datetime.now(UTC).date()
+    fixture_now = datetime(2026, 10, 4, 12, tzinfo=UTC)
+    with patch("goldenage.adapters.demo.datetime", wraps=datetime) as clock:
+        clock.now.return_value = fixture_now
+        service, user, _ = build_service(tmp_path)
+    current_day = fixture_now.date()
     end_of_day = datetime.combine(current_day, datetime.max.time(), tzinfo=UTC)
 
     items = service.get_today_worklist(user=user, now=end_of_day)
@@ -655,6 +662,99 @@ def test_service_defensive_repository_edge_paths(tmp_path) -> None:
     assert service.list_unassigned_intake(user=user, limit=1)
 
 
+def test_service_handles_artifacts_without_mail_records_and_missing_conversations(tmp_path) -> None:
+    service, user, state = build_service(tmp_path)
+    case_id = next(iter(state.cases))
+    now = datetime(2026, 4, 12, 10, 0, tzinfo=UTC)
+    artifact_repository = service._artifact_repository
+
+    plain_artifact = Artifact(
+        id=UUID("11111111-1111-1111-1111-111111111111"),
+        file_name="notes.txt",
+        media_type="text/plain",
+        size_bytes=5,
+        content_text="notes",
+        storage_key="notes.txt",
+        uploaded_at=now,
+        uploaded_by=user.id,
+        assigned_case_id=case_id,
+    )
+    artifact_repository.save_artifact(plain_artifact)
+    detail = service.get_case_detail(
+        case_id=case_id,
+        selected_artifact_id=plain_artifact.id,
+        user=user,
+        now=now,
+    )
+    assert detail.selected_artifact == plain_artifact
+    assert detail.selected_mail_message is None
+
+    service.assign_artifact_to_case(
+        artifact_id=plain_artifact.id,
+        case_id=case_id,
+        next_step="Review notes",
+        next_due_at=now,
+        user=user,
+        now=now,
+    )
+
+    orphaned_conversation_artifact = Artifact(
+        id=UUID("22222222-2222-2222-2222-222222222222"),
+        file_name="orphaned.msg",
+        media_type="application/vnd.ms-outlook",
+        size_bytes=7,
+        content_text="orphaned",
+        storage_key="orphaned.msg",
+        uploaded_at=now,
+        uploaded_by=user.id,
+    )
+    artifact_repository.save_artifact(orphaned_conversation_artifact)
+    artifact_repository.save_mail_message(
+        MailMessage(
+            artifact_id=orphaned_conversation_artifact.id,
+            conversation_id=UUID("33333333-3333-3333-3333-333333333333"),
+            source_kind="outlook_upload",
+            source_account_id=None,
+            source_folder_id=None,
+            source_message_id=None,
+            source_conversation_id=None,
+            internet_message_id=None,
+            dedupe_fingerprint="orphaned",
+            direction=None,
+            received_at=None,
+            created_at=now,
+        )
+    )
+    service.assign_artifact_to_case(
+        artifact_id=orphaned_conversation_artifact.id,
+        case_id=case_id,
+        next_step="Review orphaned message",
+        next_due_at=now,
+        user=user,
+        now=now,
+    )
+
+    plain_extracted = ExtractedArtifactData(
+        message_format="plain_text",  # ty:ignore[invalid-argument-type]
+        parse_status="parsed",
+        content_text="plain body",
+        subject="Plain note",
+        sender=None,
+        recipients=(MailParticipant(name="Alex", email=None),),
+        sent_at=now,
+    )
+    intake = service.ingest_mail(
+        file_name="plain.txt",
+        media_type="text/plain",
+        content=b"plain body",
+        extracted=plain_extracted,
+        user=user,
+        now=now,
+    )
+    assert intake.artifact is not None
+    assert intake.conversation is None
+
+
 def test_service_import_mail_defensive_empty_artifact_path(tmp_path, monkeypatch) -> None:
     candidate = MailCandidate(
         candidate_id="apple-1",
@@ -763,6 +863,23 @@ def test_service_conversation_merge_and_existing_dedupe_paths(tmp_path) -> None:
     assert duplicate.conversation is not None
     assert duplicate.conversation.id == first.conversation.id
 
+    third_extracted = replace(
+        second_extracted,
+        source_message_id="message-3",
+        internet_message_id="<msg-3@example.com>",
+        conversation_id="different-conversation",
+    )
+    third = service.ingest_mail(
+        file_name="third.msg",
+        media_type="application/vnd.ms-outlook",
+        content=b"third",
+        extracted=third_extracted,
+        user=user,
+        now=datetime(2026, 4, 12, 13, 0, tzinfo=UTC),
+    )
+    assert third.conversation is not None
+    assert third.conversation.id != first.conversation.id
+
 
 def test_service_search_candidate_messages_for_no_matches_and_partial_imports(tmp_path) -> None:
     imported = MailCandidate(
@@ -845,6 +962,24 @@ def test_service_pure_helpers_cover_edge_cases() -> None:
         )
         is None
     )
+    metadata_without_domain = _build_mail_metadata(
+        artifact_id=UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+        extracted=replace(
+            _sample_extracted_data(subject="No domain"),
+            sender=MailParticipant(name="Unknown", email="not-an-email"),
+        ),
+        source_system="outlook_upload",
+        external_message_id=None,
+        rfc_message_id=None,
+        source_account=None,
+        source_mailbox=None,
+        now=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+    )
+    assert metadata_without_domain is not None
+    assert metadata_without_domain.sender_domain is None
+    assert _mail_participants(
+        replace(_sample_extracted_data(subject="Recipients only"), sender=None)
+    ) == (MailParticipant(name="Alex Example", email="alex@example.com"),)
     assert _suggest_new_case_title(None) == ""
     assert _normalize_mail_selector(MailSelector(result_limit=0)).result_limit == 1
     assert _already_imported_message(2) == (

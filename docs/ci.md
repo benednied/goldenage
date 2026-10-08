@@ -20,6 +20,20 @@ and `GOLDENAGE_TEST_POSTGRES_DSN`. The test fixture creates and drops a unique
 schema per test, so no application tables are shared between tests. A missing
 or unreachable database is a test failure, not a skip.
 
+The repository's pytest configuration adds the single canonical coverage
+configuration to that command: it measures the explicit `goldenage` source
+tree with line and branch coverage, prints missing lines, writes
+`coverage.json`, and enforces the configured 100% threshold with
+`--cov-fail-under=100`. That pytest-cov option is intentional: the
+`tool.coverage.report.fail_under` setting alone does not turn a pytest-cov run
+into a failing gate. A failed test or coverage gate remains a failed job; the
+report upload runs afterwards so the missing coverage is available for
+diagnosis.
+
+The integration job uses `pytest -q --no-cov -m postgres_integration`: the
+coverage gate belongs to the full unit suite in `quality`, not this focused
+database suite.
+
 The workflow has read-only repository permissions, a 15-minute timeout, and
 cancels superseded runs for the same pull request or branch. It does not need
 secrets. `actions/checkout` and `actions/setup-python` are pinned to immutable
@@ -28,7 +42,8 @@ commit SHAs; their trailing version comments identify the reviewed release.
 
 ## Handling a failed check
 
-Open the failed job, reproduce the named command locally, correct the failure,
+Open the failed job, reproduce the named command locally, inspect the logs
+and the coverage artifact when relevant, correct the failure,
 and push the correction. A new push cancels the obsolete pull-request run.
 
 ## GitHub administrator handoff
@@ -61,6 +76,8 @@ ruleset or classic branch protection rather than creating competing rules):
    gh api repos/OWNER/REPO/rulesets
    gh api repos/OWNER/REPO/branches/DEFAULT/protection
    ```
+
+Coverage is part of the required `quality` check.
 
 The PostgreSQL job is deliberately separate from the fast quality job so local
 unit-test runs remain quick while database regressions block merging.

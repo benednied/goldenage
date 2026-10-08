@@ -33,7 +33,16 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "-m 'not postgres_integration'"
+addopts = [
+  "-m",
+  "not postgres_integration",
+  "--cov=goldenage",
+  "--cov-branch",
+  "--cov-report=term-missing",
+  "--cov-report=json:coverage.json",
+  "--cov-fail-under=100",
+]
+
 markers = [
   "postgres_integration: tests that require the disposable PostgreSQL integration database",
 ]

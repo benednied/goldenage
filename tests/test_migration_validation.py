@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from goldenage import migration_validation
 from goldenage.migration_validation import (
     MigrationNamespace,
     MigrationValidationError,
@@ -83,3 +84,17 @@ def test_repository_migrations_match_the_historical_baseline() -> None:
     repository_root = Path(__file__).parents[1]
 
     validate_repository_migrations(repository_root)
+
+
+def test_main_reports_validation_errors(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        migration_validation,
+        "validate_repository_migrations",
+        lambda repository_root: (_ for _ in ()).throw(
+            MigrationValidationError(f"broken: {repository_root}")
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["migration_validation", "--repository-root", str(tmp_path)])
+
+    with pytest.raises(SystemExit, match="broken:"):
+        migration_validation.main()
