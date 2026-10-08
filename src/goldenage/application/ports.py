@@ -14,6 +14,9 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    Company,
+    Contact,
+    ContactNote,
     ExtractedArtifactData,
     ImportedMailPayload,
     MailCandidate,
@@ -37,6 +40,53 @@ class CaseRepository(Protocol):
 
     def save_case(self, case_file: CaseFile) -> None:
         """Persist a case."""
+
+
+class PartyRepository(Protocol):
+    """Persistence port for accepted company, contact, and note records."""
+
+    def list_companies(self, user: UserContext, query: str = "") -> Sequence[Company]:
+        """Return visible companies, optionally filtered by name."""
+
+    def get_company(self, company_id: UUID, user: UserContext) -> Company | None:
+        """Return one visible company."""
+
+    def save_company(self, company: Company, audit_event: AuditEvent | None = None) -> None:
+        """Persist a company and, when supplied, its audit event atomically."""
+
+    def list_contacts(
+        self,
+        user: UserContext,
+        *,
+        company_id: UUID | None = None,
+        query: str = "",
+    ) -> Sequence[Contact]:
+        """Return visible contacts, optionally narrowed to a company."""
+
+    def get_contact(self, contact_id: UUID, user: UserContext) -> Contact | None:
+        """Return one visible contact."""
+
+    def save_contact(self, contact: Contact, audit_event: AuditEvent | None = None) -> None:
+        """Persist a contact and, when supplied, its audit event atomically."""
+
+    def list_contact_notes(self, contact_id: UUID, user: UserContext) -> Sequence[ContactNote]:
+        """Return visible notes for a visible contact."""
+
+    def save_contact_note(self, note: ContactNote, audit_event: AuditEvent | None = None) -> None:
+        """Persist a note and, when supplied, its audit event atomically."""
+
+    def save_case_association(
+        self,
+        case_file: CaseFile,
+        audit_event: AuditEvent | None = None,
+    ) -> None:
+        """Persist a case association and its audit event atomically when supplied."""
+
+    def list_company_cases(self, company_id: UUID, user: UserContext) -> Sequence[CaseFile]:
+        """Return visible cases canonically linked to a company."""
+
+    def list_contact_cases(self, contact_id: UUID, user: UserContext) -> Sequence[CaseFile]:
+        """Return visible cases canonically linked to a contact."""
 
 
 class ActivityRepository(Protocol):

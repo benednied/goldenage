@@ -128,7 +128,7 @@ def test_case_repository_maps_reads_and_commits_writes(monkeypatch) -> None:
     repo.save_case(CaseFile(**row))  # ty:ignore[invalid-argument-type]
 
     assert connection.commits == 1
-    assert cursor.executed[-1][1] == row
+    assert cursor.executed[-1][1] == {**row, "company_id": None, "primary_contact_id": None}
 
 
 def test_activity_repository_visibility_and_completion_branches(monkeypatch) -> None:

@@ -25,6 +25,7 @@ from goldenage.adapters.demo import (
     InMemoryAuditRepository,
     InMemoryCaseRepository,
     InMemoryMailImportRepository,
+    InMemoryPartyRepository,
     LocalArtifactStore,
     OutlookMsgExtractor,
     build_demo_state,
@@ -46,6 +47,7 @@ from goldenage.adapters.postgres import (
     PostgresArtifactRepository,
     PostgresAuditRepository,
     PostgresCaseRepository,
+    PostgresPartyRepository,
 )
 from goldenage.adapters.sqlite import (
     SQLiteActivityRepository,
@@ -54,6 +56,7 @@ from goldenage.adapters.sqlite import (
     SQLiteCaseRepository,
     SQLiteLocalUserRepository,
     SQLiteMailImportRepository,
+    SQLitePartyRepository,
 )
 from goldenage.application.use_cases import (
     CaseDetail,
@@ -457,6 +460,254 @@ def create_app() -> FastAPI:
             ),
         )
 
+    @app.get("/companies", response_class=HTMLResponse)
+    async def companies_page(request: Request, query: str = "") -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        return templates.TemplateResponse(
+            request=request,
+            name="companies.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                companies=context.service.list_companies(user=user, query=query),
+                contacts=context.service.list_contacts(user=user),
+                query=query,
+            ),
+        )
+
+    @app.post("/companies", response_class=HTMLResponse)
+    async def create_company(
+        request: Request,
+        name: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            company = context.service.create_company(name=name, user=user, now=_now(context))
+        except (NotFoundError, ResolutionError) as error:
+            return templates.TemplateResponse(
+                request=request,
+                name="companies.html",
+                context=_party_page_context(
+                    request,
+                    context,
+                    user=user,
+                    companies=context.service.list_companies(user=user),
+                    contacts=context.service.list_contacts(user=user),
+                    message=str(error),
+                    message_kind="error",
+                ),
+                status_code=400,
+            )
+        return RedirectResponse(url=f"/companies/{company.id}", status_code=303)
+
+    @app.get("/companies/{company_id}", response_class=HTMLResponse)
+    async def company_detail_page(request: Request, company_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            company_detail = context.service.get_company_detail(
+                company_id=_uuid(company_id), user=user
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return templates.TemplateResponse(
+            request=request,
+            name="company_detail.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                company_detail=company_detail,
+            ),
+        )
+
+    @app.post("/companies/{company_id}", response_class=HTMLResponse)
+    async def update_company(
+        request: Request,
+        company_id: str,
+        name: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.service.update_company(
+                company_id=_uuid(company_id),
+                name=name,
+                user=user,
+                now=_now(context),
+            )
+            company_detail = context.service.get_company_detail(
+                company_id=_uuid(company_id), user=user
+            )
+            message = "Company updated."
+            message_kind = "info"
+            status_code = 200
+        except (NotFoundError, ResolutionError) as error:
+            company_detail = None
+            message = str(error)
+            message_kind = "error"
+            status_code = 400 if isinstance(error, ResolutionError) else 404
+        return templates.TemplateResponse(
+            request=request,
+            name="company_detail.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                company_detail=company_detail,
+                message=message,
+                message_kind=message_kind,
+            ),
+            status_code=status_code,
+        )
+
+    @app.post("/companies/{company_id}/contacts", response_class=HTMLResponse)
+    async def create_contact(
+        request: Request,
+        company_id: str,
+        name: str = Form(default=""),
+        email: str = Form(default=""),
+        phone: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            contact = context.service.create_contact(
+                company_id=_uuid(company_id),
+                name=name,
+                email=email,
+                phone=phone,
+                user=user,
+                now=_now(context),
+            )
+        except (NotFoundError, ResolutionError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return RedirectResponse(url=f"/contacts/{contact.id}", status_code=303)
+
+    @app.get("/contacts", response_class=HTMLResponse)
+    async def contacts_page(request: Request, query: str = "") -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        return templates.TemplateResponse(
+            request=request,
+            name="contacts.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                contacts=context.service.list_contacts(user=user, query=query),
+                companies=context.service.list_companies(user=user),
+                query=query,
+            ),
+        )
+
+    @app.get("/contacts/{contact_id}", response_class=HTMLResponse)
+    async def contact_detail_page(request: Request, contact_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            contact_detail = context.service.get_contact_detail(
+                contact_id=_uuid(contact_id), user=user
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return templates.TemplateResponse(
+            request=request,
+            name="contact_detail.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                contact_detail=contact_detail,
+            ),
+        )
+
+    @app.post("/contacts/{contact_id}", response_class=HTMLResponse)
+    async def update_contact(
+        request: Request,
+        contact_id: str,
+        name: str = Form(default=""),
+        email: str = Form(default=""),
+        phone: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.service.update_contact(
+                contact_id=_uuid(contact_id),
+                name=name,
+                email=email,
+                phone=phone,
+                user=user,
+                now=_now(context),
+            )
+            contact_detail = context.service.get_contact_detail(
+                contact_id=_uuid(contact_id), user=user
+            )
+            message = "Contact updated."
+            message_kind = "info"
+            status_code = 200
+        except (NotFoundError, ResolutionError) as error:
+            contact_detail = None
+            message = str(error)
+            message_kind = "error"
+            status_code = 400 if isinstance(error, ResolutionError) else 404
+        return templates.TemplateResponse(
+            request=request,
+            name="contact_detail.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                contact_detail=contact_detail,
+                message=message,
+                message_kind=message_kind,
+            ),
+            status_code=status_code,
+        )
+
+    @app.post("/contacts/{contact_id}/notes", response_class=HTMLResponse)
+    async def create_contact_note(
+        request: Request,
+        contact_id: str,
+        body: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.service.add_contact_note(
+                contact_id=_uuid(contact_id),
+                body=body,
+                user=user,
+                now=_now(context),
+            )
+        except (NotFoundError, ResolutionError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        contact_detail = context.service.get_contact_detail(contact_id=_uuid(contact_id), user=user)
+        return templates.TemplateResponse(
+            request=request,
+            name="contact_detail.html",
+            context=_party_page_context(
+                request,
+                context,
+                user=user,
+                contact_detail=contact_detail,
+                message="Note added.",
+            ),
+        )
+
     @app.get("/worklist", response_class=HTMLResponse)
     async def worklist(
         request: Request,
@@ -492,6 +743,57 @@ def create_app() -> FastAPI:
             name="partials/detail_panel.html",
             context=_panel_context(request, context, detail=detail, detail_error=None, user=user),
         )
+
+    @app.post("/cases/{case_id}/association", response_class=HTMLResponse)
+    async def associate_case(
+        request: Request,
+        case_id: str,
+        company_id: str = Form(default=""),
+        contact_id: str = Form(default=""),
+    ) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            context.service.associate_case(
+                case_id=_uuid(case_id),
+                company_id=_uuid(company_id) if company_id else None,
+                contact_id=_uuid(contact_id) if contact_id else None,
+                user=user,
+                now=_now(context),
+            )
+            detail = _load_case_detail(
+                case_id=case_id,
+                context=context,
+                now=_now(context),
+                user=user,
+            )
+            message = "Case association updated."
+            status_code = 200
+        except (NotFoundError, ResolutionError, ValueError) as error:
+            detail = _load_case_detail(
+                case_id=case_id,
+                context=context,
+                now=_now(context),
+                user=user,
+            )
+            message = str(error)
+            status_code = 400
+        response = templates.TemplateResponse(
+            request=request,
+            name="partials/detail_panel.html",
+            context=_panel_context(
+                request,
+                context,
+                detail=detail,
+                detail_error=message if status_code != 200 else None,
+                user=user,
+            ),
+            status_code=status_code,
+        )
+        if status_code == 200:
+            response.headers["HX-Trigger"] = "caseAssociationUpdated"
+        return response
 
     @app.get("/cases/{case_id}/artifacts/{artifact_id}/panel", response_class=HTMLResponse)
     async def artifact_panel(request: Request, case_id: str, artifact_id: str) -> HTMLResponse:
@@ -818,6 +1120,7 @@ def _build_context(settings: Settings) -> AppContext:
         audit_repository = SQLiteAuditRepository(settings.sqlite_path)
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
+        party_repository = SQLitePartyRepository(settings.sqlite_path)
         default_user = None
     elif settings.database_url:
         case_repository = PostgresCaseRepository(settings.database_url)
@@ -831,6 +1134,7 @@ def _build_context(settings: Settings) -> AppContext:
         )
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
+        party_repository = PostgresPartyRepository(settings.database_url)
     else:
         state, user = build_demo_state()
         case_repository = InMemoryCaseRepository(state)
@@ -840,6 +1144,7 @@ def _build_context(settings: Settings) -> AppContext:
         default_user = user
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
+        party_repository = InMemoryPartyRepository(state, case_repository)
 
     service = GoldenAgeService(
         case_repository=case_repository,
@@ -853,6 +1158,7 @@ def _build_context(settings: Settings) -> AppContext:
         ),
         gisela_client=HeuristicGiselaClient(),
         elizabethan_client=HeuristicElizabethanSearchClient(),
+        party_repository=party_repository,
         mail_import_client=build_desktop_mail_import_client(
             fixture_path=settings.mail_fixture_path,
             client_mode=settings.mail_client_mode,
@@ -982,6 +1288,38 @@ def _page_context(
         "format_datetime": _format_datetime,
         "format_form_datetime": _format_form_datetime,
         "due_label": due_label,
+        "local_timezone": context.settings.local_timezone,
+    }
+
+
+def _party_page_context(
+    request: Request,
+    context: AppContext,
+    *,
+    user: UserContext,
+    companies: object = (),
+    contacts: object = (),
+    company_detail: object | None = None,
+    contact_detail: object | None = None,
+    query: str = "",
+    message: str | None = None,
+    message_kind: str = "info",
+) -> dict[str, object]:
+    """Build the shared context for server-rendered master-data pages."""
+    return {
+        "request": request,
+        "page_title": "Companies and contacts · GoldenAge",
+        "hero_title": "Companies and contacts",
+        "user": user,
+        "profile_image_url": _profile_image_url(user),
+        "companies": companies,
+        "contacts": contacts,
+        "company_detail": company_detail,
+        "contact_detail": contact_detail,
+        "query": query,
+        "message": message,
+        "message_kind": message_kind,
+        "format_datetime": _format_datetime,
         "local_timezone": context.settings.local_timezone,
     }
 

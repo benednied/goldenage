@@ -100,14 +100,56 @@ def seed_demo_data(dsn: str) -> None:
                 },
             )
 
+            for company in state.companies.values():
+                cursor.execute(
+                    """
+                    INSERT INTO company (
+                        id, name, normalized_name, created_at, updated_at, created_by, visible_group_id
+                    ) VALUES (
+                        %(id)s, %(name)s, %(normalized_name)s, %(created_at)s, %(updated_at)s,
+                        %(created_by)s, %(visible_group_id)s
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        normalized_name = EXCLUDED.normalized_name,
+                        updated_at = EXCLUDED.updated_at,
+                        visible_group_id = EXCLUDED.visible_group_id
+                    """,
+                    asdict(company),
+                )
+
+            for contact in state.contacts.values():
+                cursor.execute(
+                    """
+                    INSERT INTO contact (
+                        id, company_id, name, email, phone, normalized_email, created_at, updated_at,
+                        created_by, visible_group_id
+                    ) VALUES (
+                        %(id)s, %(company_id)s, %(name)s, %(email)s, %(phone)s, %(normalized_email)s,
+                        %(created_at)s, %(updated_at)s, %(created_by)s, %(visible_group_id)s
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        company_id = EXCLUDED.company_id,
+                        name = EXCLUDED.name,
+                        email = EXCLUDED.email,
+                        phone = EXCLUDED.phone,
+                        normalized_email = EXCLUDED.normalized_email,
+                        updated_at = EXCLUDED.updated_at,
+                        visible_group_id = EXCLUDED.visible_group_id
+                    """,
+                    asdict(contact),
+                )
+
             for case_file in state.cases.values():
                 cursor.execute(
                     """
                     INSERT INTO case_file (
-                        id, title, company, primary_contact, status, last_activity_at, visible_group_id
+                        id, title, company, primary_contact, status, last_activity_at, visible_group_id,
+                        company_id, primary_contact_id
                     ) VALUES (
                         %(id)s, %(title)s, %(company)s, %(primary_contact)s, %(status)s,
-                        %(last_activity_at)s, %(visible_group_id)s
+                        %(last_activity_at)s, %(visible_group_id)s, %(company_id)s,
+                        %(primary_contact_id)s
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         title = EXCLUDED.title,
@@ -115,7 +157,9 @@ def seed_demo_data(dsn: str) -> None:
                         primary_contact = EXCLUDED.primary_contact,
                         status = EXCLUDED.status,
                         last_activity_at = EXCLUDED.last_activity_at,
-                        visible_group_id = EXCLUDED.visible_group_id
+                        visible_group_id = EXCLUDED.visible_group_id,
+                        company_id = EXCLUDED.company_id,
+                        primary_contact_id = EXCLUDED.primary_contact_id
                     """,
                     asdict(case_file),
                 )

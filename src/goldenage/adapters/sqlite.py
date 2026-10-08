@@ -15,6 +15,7 @@ from goldenage.application.ports import (
     ArtifactRepository,
     AuditRepository,
     CaseRepository,
+    PartyRepository,
 )
 from goldenage.domain.models import (
     Activity,
@@ -23,6 +24,9 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    Company,
+    Contact,
+    ContactNote,
     LocalUserAccount,
     MailCandidate,
     MailConversation,
@@ -65,7 +69,8 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
     def list_cases(self, user: UserContext) -> Sequence[CaseFile]:
         clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
         sql = f"""
-            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id
+            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id,
+                   company_id, primary_contact_id
             FROM case_file
             WHERE {clause}
             ORDER BY last_activity_at DESC, title ASC
@@ -77,7 +82,8 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
     def get_case(self, case_id: UUID, user: UserContext) -> CaseFile | None:
         clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
         sql = f"""
-            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id
+            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id,
+                   company_id, primary_contact_id
             FROM case_file
             WHERE id = ? AND {clause}
         """
@@ -88,9 +94,11 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
     def save_case(self, case_file: CaseFile) -> None:
         sql = """
             INSERT INTO case_file (
-                id, title, company, primary_contact, status, last_activity_at, visible_group_id
+                id, title, company, primary_contact, status, last_activity_at, visible_group_id,
+                company_id, primary_contact_id
             ) VALUES (
-                :id, :title, :company, :primary_contact, :status, :last_activity_at, :visible_group_id
+                :id, :title, :company, :primary_contact, :status, :last_activity_at, :visible_group_id,
+                :company_id, :primary_contact_id
             )
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
@@ -98,7 +106,9 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
                 primary_contact = excluded.primary_contact,
                 status = excluded.status,
                 last_activity_at = excluded.last_activity_at,
-                visible_group_id = excluded.visible_group_id
+                visible_group_id = excluded.visible_group_id,
+                company_id = excluded.company_id,
+                primary_contact_id = excluded.primary_contact_id
         """
         payload = asdict(case_file)
         payload["id"] = str(case_file.id)
@@ -106,9 +116,250 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
         payload["visible_group_id"] = (
             str(case_file.visible_group_id) if case_file.visible_group_id is not None else None
         )
+        payload["company_id"] = str(case_file.company_id) if case_file.company_id else None
+        payload["primary_contact_id"] = (
+            str(case_file.primary_contact_id) if case_file.primary_contact_id else None
+        )
         with self._connect() as connection:
             connection.execute(sql, payload)
             connection.commit()
+
+
+class SQLitePartyRepository(_SQLiteRepositoryBase, PartyRepository):
+    """Company, contact, and contact-note repository backed by SQLite."""
+
+    def list_companies(self, user: UserContext, query: str = "") -> Sequence[Company]:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
+        sql = f"""
+            SELECT id, name, normalized_name, created_at, updated_at, created_by, visible_group_id
+            FROM company
+            WHERE {clause}
+        """
+        query_text = " ".join(query.split()).casefold()
+        query_params = (*params, f"%{query_text}%") if query_text else params
+        if query_text:
+            sql += " AND normalized_name LIKE ?"
+        sql += " ORDER BY lower(name) ASC"
+        with self._connect() as connection:
+            rows = connection.execute(sql, query_params).fetchall()
+        return tuple(_row_to_company(row) for row in rows)
+
+    def get_company(self, company_id: UUID, user: UserContext) -> Company | None:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
+        sql = f"""
+            SELECT id, name, normalized_name, created_at, updated_at, created_by, visible_group_id
+            FROM company
+            WHERE id = ? AND {clause}
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(company_id), *params)).fetchone()
+        return _row_to_company(row) if row else None
+
+    def save_company(self, company: Company, audit_event: AuditEvent | None = None) -> None:
+        sql = """
+            INSERT INTO company (
+                id, name, normalized_name, created_at, updated_at, created_by, visible_group_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                normalized_name = excluded.normalized_name,
+                updated_at = excluded.updated_at,
+                visible_group_id = excluded.visible_group_id
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(company.id),
+                    company.name,
+                    company.normalized_name,
+                    _serialize_datetime(company.created_at),
+                    _serialize_datetime(company.updated_at),
+                    str(company.created_by) if company.created_by else None,
+                    str(company.visible_group_id) if company.visible_group_id else None,
+                ),
+            )
+            if audit_event is not None:
+                _insert_audit_event(connection, audit_event)
+            connection.commit()
+
+    def list_contacts(
+        self,
+        user: UserContext,
+        *,
+        company_id: UUID | None = None,
+        query: str = "",
+    ) -> Sequence[Contact]:
+        contact_clause, contact_params = _group_visibility_clause(
+            user.visible_group_ids,
+            "ct.visible_group_id",
+        )
+        company_clause, company_params = _group_visibility_clause(
+            user.visible_group_ids,
+            "co.visible_group_id",
+        )
+        sql = f"""
+            SELECT ct.id, ct.company_id, ct.name, ct.email, ct.phone, ct.normalized_email,
+                   ct.created_at, ct.updated_at, ct.created_by, ct.visible_group_id
+            FROM contact ct
+            JOIN company co ON co.id = ct.company_id
+            WHERE {contact_clause} AND {company_clause}
+        """
+        params: tuple[str, ...] = (*contact_params, *company_params)
+        if company_id is not None:
+            sql += " AND ct.company_id = ?"
+            params += (str(company_id),)
+        query_text = " ".join(query.split()).casefold()
+        if query_text:
+            sql += " AND (ct.name LIKE ? OR ct.normalized_email LIKE ?)"
+            params += (f"%{query_text}%", f"%{query_text}%")
+        sql += " ORDER BY lower(ct.name) ASC"
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return tuple(_row_to_contact(row) for row in rows)
+
+    def get_contact(self, contact_id: UUID, user: UserContext) -> Contact | None:
+        contacts = self.list_contacts(user)
+        return next((contact for contact in contacts if contact.id == contact_id), None)
+
+    def save_contact(self, contact: Contact, audit_event: AuditEvent | None = None) -> None:
+        sql = """
+            INSERT INTO contact (
+                id, company_id, name, email, phone, normalized_email, created_at, updated_at,
+                created_by, visible_group_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                company_id = excluded.company_id,
+                name = excluded.name,
+                email = excluded.email,
+                phone = excluded.phone,
+                normalized_email = excluded.normalized_email,
+                updated_at = excluded.updated_at,
+                visible_group_id = excluded.visible_group_id
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(contact.id),
+                    str(contact.company_id),
+                    contact.name,
+                    contact.email,
+                    contact.phone,
+                    contact.normalized_email,
+                    _serialize_datetime(contact.created_at),
+                    _serialize_datetime(contact.updated_at),
+                    str(contact.created_by) if contact.created_by else None,
+                    str(contact.visible_group_id) if contact.visible_group_id else None,
+                ),
+            )
+            if audit_event is not None:
+                _insert_audit_event(connection, audit_event)
+            connection.commit()
+
+    def list_contact_notes(self, contact_id: UUID, user: UserContext) -> Sequence[ContactNote]:
+        contact_clause, contact_params = _group_visibility_clause(
+            user.visible_group_ids,
+            "ct.visible_group_id",
+        )
+        company_clause, company_params = _group_visibility_clause(
+            user.visible_group_ids,
+            "co.visible_group_id",
+        )
+        note_clause, note_params = _group_visibility_clause(
+            user.visible_group_ids,
+            "n.visible_group_id",
+        )
+        sql = f"""
+            SELECT n.id, n.contact_id, n.body, n.created_at, n.created_by, n.visible_group_id
+            FROM contact_note n
+            JOIN contact ct ON ct.id = n.contact_id
+            JOIN company co ON co.id = ct.company_id
+            WHERE n.contact_id = ? AND {note_clause} AND {contact_clause} AND {company_clause}
+            ORDER BY n.created_at DESC
+        """
+        params = (str(contact_id), *note_params, *contact_params, *company_params)
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return tuple(_row_to_contact_note(row) for row in rows)
+
+    def save_contact_note(
+        self,
+        note: ContactNote,
+        audit_event: AuditEvent | None = None,
+    ) -> None:
+        sql = """
+            INSERT INTO contact_note (id, contact_id, body, created_at, created_by, visible_group_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as connection:
+            connection.execute(
+                sql,
+                (
+                    str(note.id),
+                    str(note.contact_id),
+                    note.body,
+                    _serialize_datetime(note.created_at),
+                    str(note.created_by),
+                    str(note.visible_group_id) if note.visible_group_id else None,
+                ),
+            )
+            if audit_event is not None:
+                _insert_audit_event(connection, audit_event)
+            connection.commit()
+
+    def save_case_association(
+        self,
+        case_file: CaseFile,
+        audit_event: AuditEvent | None = None,
+    ) -> None:
+        sql = """
+            UPDATE case_file
+            SET company_id = ?, primary_contact_id = ?
+            WHERE id = ?
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                sql,
+                (
+                    str(case_file.company_id) if case_file.company_id else None,
+                    str(case_file.primary_contact_id) if case_file.primary_contact_id else None,
+                    str(case_file.id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise SQLiteRepositoryError("Case not found.")
+            if audit_event is not None:
+                _insert_audit_event(connection, audit_event)
+            connection.commit()
+
+    def list_company_cases(self, company_id: UUID, user: UserContext) -> Sequence[CaseFile]:
+        if self.get_company(company_id, user) is None:
+            return ()
+        return self._list_linked_cases("company_id", company_id, user)
+
+    def list_contact_cases(self, contact_id: UUID, user: UserContext) -> Sequence[CaseFile]:
+        if self.get_contact(contact_id, user) is None:
+            return ()
+        return self._list_linked_cases("primary_contact_id", contact_id, user)
+
+    def _list_linked_cases(
+        self,
+        column_name: str,
+        entity_id: UUID,
+        user: UserContext,
+    ) -> Sequence[CaseFile]:
+        clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
+        sql = f"""
+            SELECT id, title, company, primary_contact, status, last_activity_at, visible_group_id,
+                   company_id, primary_contact_id
+            FROM case_file
+            WHERE {column_name} = ? AND {clause}
+            ORDER BY last_activity_at DESC, title ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(entity_id), *params)).fetchall()
+        return tuple(_row_to_case_file(row) for row in rows)
 
 
 class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
@@ -592,23 +843,8 @@ class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
     """Audit repository backed by SQLite."""
 
     def save_event(self, event: AuditEvent) -> None:
-        sql = """
-            INSERT INTO audit_event (
-                id, actor_user_id, event_type, subject_id, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """
         with self._connect() as connection:
-            connection.execute(
-                sql,
-                (
-                    str(event.id),
-                    str(event.actor_user_id) if event.actor_user_id is not None else None,
-                    event.event_type,
-                    str(event.subject_id),
-                    json.dumps(event.payload_json),
-                    _serialize_datetime(event.created_at),
-                ),
-            )
+            _insert_audit_event(connection, event)
             connection.commit()
 
 
@@ -927,6 +1163,24 @@ def _group_visibility_clause(
     return f"({column_name} IS NULL OR {column_name} IN ({placeholders}))", params
 
 
+def _insert_audit_event(connection: sqlite3.Connection, event: AuditEvent) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_event (
+            id, actor_user_id, event_type, subject_id, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(event.id),
+            str(event.actor_user_id) if event.actor_user_id is not None else None,
+            event.event_type,
+            str(event.subject_id),
+            json.dumps(event.payload_json),
+            _serialize_datetime(event.created_at),
+        ),
+    )
+
+
 def _serialize_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -940,6 +1194,7 @@ def _deserialize_datetime(raw_value: str | None) -> datetime | None:
 
 
 def _row_to_case_file(row: sqlite3.Row) -> CaseFile:
+    keys = row.keys()
     return CaseFile(
         id=UUID(row["id"]),
         title=row["title"],
@@ -947,6 +1202,50 @@ def _row_to_case_file(row: sqlite3.Row) -> CaseFile:
         primary_contact=row["primary_contact"],
         status=row["status"],
         last_activity_at=_deserialize_datetime(row["last_activity_at"]),
+        visible_group_id=UUID(row["visible_group_id"]) if row["visible_group_id"] else None,
+        company_id=UUID(row["company_id"]) if "company_id" in keys and row["company_id"] else None,
+        primary_contact_id=(
+            UUID(row["primary_contact_id"])
+            if "primary_contact_id" in keys and row["primary_contact_id"]
+            else None
+        ),
+    )
+
+
+def _row_to_company(row: sqlite3.Row) -> Company:
+    return Company(
+        id=UUID(row["id"]),
+        name=row["name"],
+        normalized_name=row["normalized_name"],
+        created_at=_deserialize_datetime(row["created_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
+        created_by=UUID(row["created_by"]) if row["created_by"] else None,
+        visible_group_id=UUID(row["visible_group_id"]) if row["visible_group_id"] else None,
+    )
+
+
+def _row_to_contact(row: sqlite3.Row) -> Contact:
+    return Contact(
+        id=UUID(row["id"]),
+        company_id=UUID(row["company_id"]),
+        name=row["name"],
+        email=row["email"],
+        phone=row["phone"],
+        normalized_email=row["normalized_email"],
+        created_at=_deserialize_datetime(row["created_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
+        created_by=UUID(row["created_by"]) if row["created_by"] else None,
+        visible_group_id=UUID(row["visible_group_id"]) if row["visible_group_id"] else None,
+    )
+
+
+def _row_to_contact_note(row: sqlite3.Row) -> ContactNote:
+    return ContactNote(
+        id=UUID(row["id"]),
+        contact_id=UUID(row["contact_id"]),
+        body=row["body"],
+        created_at=_deserialize_datetime(row["created_at"]),
+        created_by=UUID(row["created_by"]),
         visible_group_id=UUID(row["visible_group_id"]) if row["visible_group_id"] else None,
     )
 

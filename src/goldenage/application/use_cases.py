@@ -20,6 +20,7 @@ from goldenage.application.ports import (
     GiselaClient,
     MailImportClient,
     MailImportRepository,
+    PartyRepository,
 )
 from goldenage.domain.models import (
     Activity,
@@ -28,6 +29,9 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    Company,
+    Contact,
+    ContactNote,
     ExtractedArtifactData,
     MailCandidate,
     MailConversation,
@@ -71,6 +75,29 @@ class CaseDetail:
     selected_mail_message: MailMessage | None = None
     selected_conversation: MailConversation | None = None
     selected_conversation_artifacts: tuple[Artifact, ...] = ()
+    company_record: Company | None = None
+    contact_record: Contact | None = None
+    available_companies: tuple[Company, ...] = ()
+    available_contacts: tuple[Contact, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyDetail:
+    """Company page state."""
+
+    company: Company
+    contacts: tuple[Contact, ...]
+    cases: tuple[CaseFile, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ContactDetail:
+    """Contact page state."""
+
+    contact: Contact
+    company: Company
+    cases: tuple[CaseFile, ...]
+    notes: tuple[ContactNote, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +143,7 @@ class GoldenAgeService:
         content_extractor: ArtifactContentExtractor,
         gisela_client: GiselaClient,
         elizabethan_client: ElizabethanSearchClient,
+        party_repository: PartyRepository | None = None,
         mail_import_client: MailImportClient | None = None,
         mail_import_repository: MailImportRepository | None = None,
     ) -> None:
@@ -127,6 +155,7 @@ class GoldenAgeService:
         self._content_extractor = content_extractor
         self._gisela_client = gisela_client
         self._elizabethan_client = elizabethan_client
+        self._party_repository = party_repository
         self._mail_import_client = mail_import_client
         self._mail_import_repository = mail_import_repository
 
@@ -134,7 +163,7 @@ class GoldenAgeService:
         """Return due activities sorted by urgency and timestamp."""
         due_activities = self._activity_repository.list_due_activities(user, now)
         visible_cases = {
-            case_file.id: case_file for case_file in self._case_repository.list_cases(user)
+            case_file.id: case_file for case_file in self._visible_cases_for_user(user)
         }
         items: list[WorklistItem] = []
         for activity in due_activities:
@@ -150,6 +179,334 @@ class GoldenAgeService:
             )
         return tuple(sorted(items, key=lambda item: (item.activity.due_at, item.case_file.title)))
 
+    def list_companies(self, *, user: UserContext, query: str = "") -> tuple[Company, ...]:
+        """Return visible accepted companies for the master-data page."""
+        return tuple(self._require_party_repository().list_companies(user, query))
+
+    def list_contacts(
+        self,
+        *,
+        user: UserContext,
+        company_id: UUID | None = None,
+        query: str = "",
+    ) -> tuple[Contact, ...]:
+        """Return visible accepted contacts for the master-data page."""
+        return tuple(
+            self._require_party_repository().list_contacts(
+                user,
+                company_id=company_id,
+                query=query,
+            )
+        )
+
+    def get_company_detail(self, *, company_id: UUID, user: UserContext) -> CompanyDetail:
+        """Build the visible company page state."""
+        repository = self._require_party_repository()
+        company = repository.get_company(company_id, user)
+        if company is None:
+            raise NotFoundError("Company not found.")
+        return CompanyDetail(
+            company=company,
+            contacts=tuple(repository.list_contacts(user, company_id=company_id)),
+            cases=tuple(repository.list_company_cases(company_id, user)),
+        )
+
+    def get_contact_detail(self, *, contact_id: UUID, user: UserContext) -> ContactDetail:
+        """Build the visible contact page state."""
+        repository = self._require_party_repository()
+        contact = repository.get_contact(contact_id, user)
+        if contact is None:
+            raise NotFoundError("Contact not found.")
+        company = repository.get_company(contact.company_id, user)
+        if company is None:
+            raise NotFoundError("Company not found.")
+        return ContactDetail(
+            contact=contact,
+            company=company,
+            cases=tuple(repository.list_contact_cases(contact_id, user)),
+            notes=tuple(repository.list_contact_notes(contact_id, user)),
+        )
+
+    def create_company(
+        self,
+        *,
+        name: str,
+        user: UserContext,
+        now: datetime,
+    ) -> Company:
+        """Create an explicitly accepted company master record."""
+        repository = self._require_party_repository()
+        normalized_name = _normalize_party_name(name)
+        if not normalized_name:
+            raise ResolutionError("A company name is required.")
+        if any(
+            company.normalized_name == normalized_name
+            for company in repository.list_companies(user)
+        ):
+            raise ResolutionError("A company with this name already exists.")
+        company = Company(
+            id=uuid4(),
+            name=name.strip(),
+            normalized_name=normalized_name,
+            created_at=now,
+            updated_at=now,
+            created_by=user.id,
+        )
+        repository.save_company(
+            company,
+            audit_event=self._build_audit_event(
+                actor_user_id=user.id,
+                event_type="company_created",
+                subject_id=company.id,
+                payload={"name": company.name},
+                now=now,
+            ),
+        )
+        return company
+
+    def update_company(
+        self,
+        *,
+        company_id: UUID,
+        name: str,
+        user: UserContext,
+        now: datetime,
+    ) -> Company:
+        """Update company fields only after an authorized visible lookup."""
+        repository = self._require_party_repository()
+        company = repository.get_company(company_id, user)
+        normalized_name = _normalize_party_name(name)
+        if company is None:
+            raise NotFoundError("Company not found.")
+        if not normalized_name:
+            raise ResolutionError("A company name is required.")
+        if any(
+            other.id != company.id and other.normalized_name == normalized_name
+            for other in repository.list_companies(user)
+        ):
+            raise ResolutionError("A company with this name already exists.")
+        updated = replace(
+            company, name=name.strip(), normalized_name=normalized_name, updated_at=now
+        )
+        repository.save_company(
+            updated,
+            audit_event=self._build_audit_event(
+                actor_user_id=user.id,
+                event_type="company_updated",
+                subject_id=company.id,
+                payload={"name": updated.name},
+                now=now,
+            ),
+        )
+        return updated
+
+    def create_contact(
+        self,
+        *,
+        company_id: UUID,
+        name: str,
+        email: str,
+        phone: str,
+        user: UserContext,
+        now: datetime,
+    ) -> Contact:
+        """Create an explicitly accepted contact under a visible company."""
+        repository = self._require_party_repository()
+        company = repository.get_company(company_id, user)
+        normalized_name = name.strip()
+        normalized_email = _normalize_contact_email(email)
+        if company is None:
+            raise NotFoundError("Company not found.")
+        if not normalized_name:
+            raise ResolutionError("A contact name is required.")
+        if normalized_email and any(
+            contact.normalized_email == normalized_email
+            for contact in repository.list_contacts(user, company_id=company_id)
+        ):
+            raise ResolutionError("A contact with this email already exists at the company.")
+        contact = Contact(
+            id=uuid4(),
+            company_id=company_id,
+            name=normalized_name,
+            email=email.strip() or None,
+            phone=phone.strip() or None,
+            normalized_email=normalized_email,
+            created_at=now,
+            updated_at=now,
+            created_by=user.id,
+            visible_group_id=company.visible_group_id,
+        )
+        repository.save_contact(
+            contact,
+            audit_event=self._build_audit_event(
+                actor_user_id=user.id,
+                event_type="contact_created",
+                subject_id=contact.id,
+                payload={"company_id": str(company_id), "name": contact.name},
+                now=now,
+            ),
+        )
+        return contact
+
+    def update_contact(
+        self,
+        *,
+        contact_id: UUID,
+        name: str,
+        email: str,
+        phone: str,
+        user: UserContext,
+        now: datetime,
+    ) -> Contact:
+        """Update a visible contact while keeping its company ownership."""
+        repository = self._require_party_repository()
+        contact = repository.get_contact(contact_id, user)
+        normalized_name = name.strip()
+        normalized_email = _normalize_contact_email(email)
+        if contact is None:
+            raise NotFoundError("Contact not found.")
+        if not normalized_name:
+            raise ResolutionError("A contact name is required.")
+        if normalized_email and any(
+            other.id != contact.id and other.normalized_email == normalized_email
+            for other in repository.list_contacts(user, company_id=contact.company_id)
+        ):
+            raise ResolutionError("A contact with this email already exists at the company.")
+        updated = replace(
+            contact,
+            name=normalized_name,
+            email=email.strip() or None,
+            phone=phone.strip() or None,
+            normalized_email=normalized_email,
+            updated_at=now,
+        )
+        repository.save_contact(
+            updated,
+            audit_event=self._build_audit_event(
+                actor_user_id=user.id,
+                event_type="contact_updated",
+                subject_id=contact.id,
+                payload={"company_id": str(contact.company_id), "name": updated.name},
+                now=now,
+            ),
+        )
+        return updated
+
+    def add_contact_note(
+        self,
+        *,
+        contact_id: UUID,
+        body: str,
+        user: UserContext,
+        now: datetime,
+    ) -> ContactNote:
+        """Add an immutable, attributed note to a visible contact."""
+        repository = self._require_party_repository()
+        contact = repository.get_contact(contact_id, user)
+        normalized_body = body.strip()
+        if contact is None:
+            raise NotFoundError("Contact not found.")
+        if not normalized_body:
+            raise ResolutionError("A note cannot be empty.")
+        note = ContactNote(
+            id=uuid4(),
+            contact_id=contact_id,
+            body=normalized_body,
+            created_at=now,
+            created_by=user.id,
+            visible_group_id=contact.visible_group_id,
+        )
+        repository.save_contact_note(
+            note,
+            audit_event=self._build_audit_event(
+                actor_user_id=user.id,
+                event_type="contact_note_created",
+                subject_id=note.id,
+                payload={"contact_id": str(contact_id)},
+                now=now,
+            ),
+        )
+        return note
+
+    def associate_case(
+        self,
+        *,
+        case_id: UUID,
+        company_id: UUID | None,
+        contact_id: UUID | None,
+        user: UserContext,
+        now: datetime,
+    ) -> CaseFile:
+        """Explicitly link a visible case to visible canonical master records."""
+        repository = self._require_party_repository()
+        case_file = self._case_repository.get_case(case_id, user)
+        if case_file is None:
+            raise NotFoundError("Case not found.")
+        company = repository.get_company(company_id, user) if company_id else None
+        contact = repository.get_contact(contact_id, user) if contact_id else None
+        if company_id is not None and company is None:
+            raise NotFoundError("Company not found.")
+        if contact_id is not None and contact is None:
+            raise NotFoundError("Contact not found.")
+        if contact is not None and (company is None or contact.company_id != company.id):
+            raise ResolutionError("The selected contact belongs to a different company.")
+        updated = replace(case_file, company_id=company_id, primary_contact_id=contact_id)
+        repository.save_case_association(
+            updated,
+            audit_event=self._build_audit_event(
+                actor_user_id=user.id,
+                event_type="case_party_associated",
+                subject_id=case_id,
+                payload={
+                    "company_id": str(company_id) if company_id else None,
+                    "contact_id": str(contact_id) if contact_id else None,
+                },
+                now=now,
+            ),
+        )
+        return updated
+
+    def _require_party_repository(self) -> PartyRepository:
+        if self._party_repository is None:
+            raise NotFoundError("Company and contact records are not available in this runtime.")
+        return self._party_repository
+
+    def _visible_cases_for_user(self, user: UserContext) -> tuple[CaseFile, ...]:
+        """Return visible cases with hidden canonical-party strings masked."""
+        return tuple(
+            self._mask_hidden_case_party_strings(case_file, user)
+            for case_file in self._case_repository.list_cases(user)
+        )
+
+    def _mask_hidden_case_party_strings(
+        self,
+        case_file: CaseFile,
+        user: UserContext,
+    ) -> CaseFile:
+        if self._party_repository is None:
+            return case_file
+        company = (
+            self._party_repository.get_company(case_file.company_id, user)
+            if case_file.company_id is not None
+            else None
+        )
+        contact = (
+            self._party_repository.get_contact(case_file.primary_contact_id, user)
+            if case_file.primary_contact_id is not None
+            else None
+        )
+        return replace(
+            case_file,
+            company=None
+            if case_file.company_id is not None and company is None
+            else case_file.company,
+            primary_contact=(
+                None
+                if case_file.primary_contact_id is not None and contact is None
+                else case_file.primary_contact
+            ),
+        )
+
     def get_case_detail(
         self,
         *,
@@ -163,6 +520,7 @@ class GoldenAgeService:
         case_file = self._case_repository.get_case(case_id, user)
         if case_file is None:
             raise NotFoundError("Case not found.")
+        case_file = self._mask_hidden_case_party_strings(case_file, user)
 
         activities = tuple(
             sorted(
@@ -210,6 +568,21 @@ class GoldenAgeService:
                     )
                 )
 
+        company_record = None
+        contact_record = None
+        available_companies: tuple[Company, ...] = ()
+        available_contacts: tuple[Contact, ...] = ()
+        if self._party_repository is not None:
+            if case_file.company_id is not None:
+                company_record = self._party_repository.get_company(case_file.company_id, user)
+            if case_file.primary_contact_id is not None:
+                contact_record = self._party_repository.get_contact(
+                    case_file.primary_contact_id,
+                    user,
+                )
+            available_companies = tuple(self._party_repository.list_companies(user))
+            available_contacts = tuple(self._party_repository.list_contacts(user))
+
         return CaseDetail(
             case_file=case_file,
             active_activity=active_activity,
@@ -220,6 +593,10 @@ class GoldenAgeService:
             selected_mail_message=selected_mail_message,
             selected_conversation=selected_conversation,
             selected_conversation_artifacts=selected_conversation_artifacts,
+            company_record=company_record,
+            contact_record=contact_record,
+            available_companies=available_companies,
+            available_contacts=available_contacts,
         )
 
     def get_case_detail_for_activity(
@@ -670,7 +1047,7 @@ class GoldenAgeService:
         suggestion = self._gisela_client.analyze_artifact(
             artifact,
             mail_metadata,
-            self._case_repository.list_cases(user),
+            self._visible_cases_for_user(user),
             now,
         )
         self._artifact_repository.save_suggestion(suggestion)
@@ -733,7 +1110,7 @@ class GoldenAgeService:
             query,
             artifact,
             mail_metadata,
-            self._case_repository.list_cases(user),
+            self._visible_cases_for_user(user),
             now,
         )
         self._record_audit(
@@ -924,14 +1301,32 @@ class GoldenAgeService:
         now: datetime,
     ) -> None:
         self._audit_repository.save_event(
-            AuditEvent(
-                id=uuid4(),
+            self._build_audit_event(
                 actor_user_id=actor_user_id,
                 event_type=event_type,
                 subject_id=subject_id,
-                payload_json=payload,
-                created_at=now,
+                payload=payload,
+                now=now,
             )
+        )
+
+    @staticmethod
+    def _build_audit_event(
+        *,
+        actor_user_id: UUID | None,
+        event_type: str,
+        subject_id: UUID,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> AuditEvent:
+        """Build an audit event for a transaction-owning repository mutation."""
+        return AuditEvent(
+            id=uuid4(),
+            actor_user_id=actor_user_id,
+            event_type=event_type,
+            subject_id=subject_id,
+            payload_json=payload,
+            created_at=now,
         )
 
     def _intake_state_for_artifact(
@@ -1025,6 +1420,17 @@ def _normalize_mail_selector(selector: MailSelector) -> MailSelector:
         sent_after=selector.sent_after,
         result_limit=min(max(selector.result_limit, 1), 50),
     )
+
+
+def _normalize_party_name(value: str) -> str:
+    """Normalize accepted company names for scoped duplicate checks."""
+    return " ".join(value.split()).casefold()
+
+
+def _normalize_contact_email(value: str) -> str | None:
+    """Normalize an optional contact email without creating mail-derived records."""
+    normalized = value.strip().casefold()
+    return normalized or None
 
 
 def _already_imported_message(count: int) -> str:

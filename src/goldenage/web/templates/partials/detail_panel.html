@@ -11,10 +11,51 @@
 
 {% if detail %}
   <div class="detail-meta">
-    <span>{{ detail.case_file.company or "No company" }}</span>
-    <span>{{ detail.case_file.primary_contact or "No contact" }}</span>
+    <span>
+      {% if detail.company_record %}<a href="/companies/{{ detail.company_record.id }}">{{ detail.company_record.name }}</a>
+      {% else %}{{ detail.case_file.company or "No company" }}{% endif %}
+    </span>
+    <span>
+      {% if detail.contact_record %}<a href="/contacts/{{ detail.contact_record.id }}">{{ detail.contact_record.name }}</a>
+      {% else %}{{ detail.case_file.primary_contact or "No contact" }}{% endif %}
+    </span>
     <span class="pill">{{ detail.case_file.status }}</span>
   </div>
+
+  {% if detail.available_companies %}
+    <section class="detail-section">
+      <h3>Canonical associations</h3>
+      <p class="muted">Legacy company and contact text stays preserved until you explicitly link master records.</p>
+      <form
+        method="post"
+        action="/cases/{{ detail.case_file.id }}/association"
+        hx-post="/cases/{{ detail.case_file.id }}/association"
+        hx-target="#detail-panel"
+        hx-swap="innerHTML"
+        class="workflow-form"
+      >
+        <label>
+          Company
+          <select name="company_id">
+            <option value="">No canonical company</option>
+            {% for company in detail.available_companies %}
+              <option value="{{ company.id }}" {% if detail.company_record and detail.company_record.id == company.id %}selected{% endif %}>{{ company.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Primary contact
+          <select name="contact_id">
+            <option value="">No canonical contact</option>
+            {% for contact in detail.available_contacts %}
+              <option value="{{ contact.id }}" {% if detail.contact_record and detail.contact_record.id == contact.id %}selected{% endif %}>{{ contact.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Save associations</button>
+      </form>
+    </section>
+  {% endif %}
 
   {% if detail.active_activity %}
     <section class="detail-section">

@@ -21,6 +21,7 @@ from goldenage.application.ports import (
     ElizabethanSearchClient,
     GiselaClient,
     MailImportRepository,
+    PartyRepository,
 )
 from goldenage.domain.models import (
     Activity,
@@ -29,6 +30,9 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    Company,
+    Contact,
+    ContactNote,
     ExtractedArtifactData,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
@@ -51,6 +55,9 @@ class DemoState:
 
     users: dict[UUID, UserContext]
     cases: dict[UUID, CaseFile]
+    companies: dict[UUID, Company]
+    contacts: dict[UUID, Contact]
+    contact_notes: dict[UUID, ContactNote]
     activities: dict[UUID, Activity]
     artifacts: dict[UUID, Artifact]
     artifact_mail_metadata: dict[UUID, ArtifactMailMetadata]
@@ -83,6 +90,120 @@ class InMemoryCaseRepository(CaseRepository):
 
     def save_case(self, case_file: CaseFile) -> None:
         self._state.cases[case_file.id] = case_file
+
+
+class InMemoryPartyRepository(PartyRepository):
+    """In-memory company, contact, and note repository for demo mode."""
+
+    def __init__(self, state: DemoState, case_repository: InMemoryCaseRepository) -> None:
+        self._state = state
+        self._case_repository = case_repository
+
+    def list_companies(self, user: UserContext, query: str = "") -> Sequence[Company]:
+        normalized_query = " ".join(query.split()).casefold()
+        companies = [
+            company
+            for company in self._state.companies.values()
+            if _party_visible_to_user(company.visible_group_id, user)
+            and (not normalized_query or normalized_query in company.normalized_name)
+        ]
+        return tuple(sorted(companies, key=lambda company: company.name.casefold()))
+
+    def get_company(self, company_id: UUID, user: UserContext) -> Company | None:
+        company = self._state.companies.get(company_id)
+        if company is None or not _party_visible_to_user(company.visible_group_id, user):
+            return None
+        return company
+
+    def save_company(self, company: Company, audit_event: AuditEvent | None = None) -> None:
+        self._state.companies[company.id] = company
+        if audit_event is not None:
+            self._state.audit_events.append(audit_event)
+
+    def list_contacts(
+        self,
+        user: UserContext,
+        *,
+        company_id: UUID | None = None,
+        query: str = "",
+    ) -> Sequence[Contact]:
+        normalized_query = " ".join(query.split()).casefold()
+        contacts = [
+            contact
+            for contact in self._state.contacts.values()
+            if (company_id is None or contact.company_id == company_id)
+            and self.get_company(contact.company_id, user) is not None
+            and _party_visible_to_user(contact.visible_group_id, user)
+            and (
+                not normalized_query
+                or normalized_query in contact.name.casefold()
+                or normalized_query in (contact.email or "").casefold()
+            )
+        ]
+        return tuple(sorted(contacts, key=lambda contact: contact.name.casefold()))
+
+    def get_contact(self, contact_id: UUID, user: UserContext) -> Contact | None:
+        contact = self._state.contacts.get(contact_id)
+        if contact is None or self.get_company(contact.company_id, user) is None:
+            return None
+        if not _party_visible_to_user(contact.visible_group_id, user):
+            return None
+        return contact
+
+    def save_contact(self, contact: Contact, audit_event: AuditEvent | None = None) -> None:
+        self._state.contacts[contact.id] = contact
+        if audit_event is not None:
+            self._state.audit_events.append(audit_event)
+
+    def list_contact_notes(self, contact_id: UUID, user: UserContext) -> Sequence[ContactNote]:
+        if self.get_contact(contact_id, user) is None:
+            return ()
+        notes = [
+            note
+            for note in self._state.contact_notes.values()
+            if note.contact_id == contact_id and _party_visible_to_user(note.visible_group_id, user)
+        ]
+        return tuple(sorted(notes, key=lambda note: note.created_at, reverse=True))
+
+    def save_contact_note(
+        self,
+        note: ContactNote,
+        audit_event: AuditEvent | None = None,
+    ) -> None:
+        self._state.contact_notes[note.id] = note
+        if audit_event is not None:
+            self._state.audit_events.append(audit_event)
+
+    def save_case_association(
+        self,
+        case_file: CaseFile,
+        audit_event: AuditEvent | None = None,
+    ) -> None:
+        self._state.cases[case_file.id] = case_file
+        if audit_event is not None:
+            self._state.audit_events.append(audit_event)
+
+    def list_company_cases(self, company_id: UUID, user: UserContext) -> Sequence[CaseFile]:
+        if self.get_company(company_id, user) is None:
+            return ()
+        cases = [
+            case_file
+            for case_file in self._state.cases.values()
+            if case_file.company_id == company_id
+            and self._case_repository.get_case(case_file.id, user) is not None
+        ]
+        return tuple(sorted(cases, key=lambda case_file: case_file.last_activity_at, reverse=True))
+
+    def list_contact_cases(self, contact_id: UUID, user: UserContext) -> Sequence[CaseFile]:
+        if self.get_contact(contact_id, user) is None:
+            return ()
+        cases = [
+            case_file
+            for case_file in self._state.cases.values()
+            if case_file.primary_contact_id == contact_id
+            and self._case_repository.get_case(case_file.id, user) is not None
+        ]
+        return tuple(sorted(cases, key=lambda case_file: case_file.last_activity_at, reverse=True))
 
 
 class InMemoryActivityRepository(ActivityRepository):
@@ -517,6 +638,62 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
     )
     now = datetime.now(UTC)
 
+    companies = [
+        Company(
+            id=UUID("cccccccc-cccc-cccc-cccc-ccccccccccc1"),
+            name="Acme Inc.",
+            normalized_name="acme inc.",
+            created_at=now,
+            updated_at=now,
+        ),
+        Company(
+            id=UUID("cccccccc-cccc-cccc-cccc-ccccccccccc2"),
+            name="Northwind GmbH",
+            normalized_name="northwind gmbh",
+            created_at=now,
+            updated_at=now,
+        ),
+        Company(
+            id=UUID("cccccccc-cccc-cccc-cccc-ccccccccccc3"),
+            name="Bluebird AG",
+            normalized_name="bluebird ag",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    contacts = [
+        Contact(
+            id=UUID("dddddddd-dddd-dddd-dddd-ddddddddddd1"),
+            company_id=companies[0].id,
+            name="Max Mustermann",
+            email="max@acme.example",
+            phone=None,
+            normalized_email="max@acme.example",
+            created_at=now,
+            updated_at=now,
+        ),
+        Contact(
+            id=UUID("dddddddd-dddd-dddd-dddd-ddddddddddd2"),
+            company_id=companies[1].id,
+            name="Sabine Keller",
+            email="sabine@northwind.example",
+            phone=None,
+            normalized_email="sabine@northwind.example",
+            created_at=now,
+            updated_at=now,
+        ),
+        Contact(
+            id=UUID("dddddddd-dddd-dddd-dddd-ddddddddddd3"),
+            company_id=companies[2].id,
+            name="Jonas Adler",
+            email="jonas@bluebird.example",
+            phone=None,
+            normalized_email="jonas@bluebird.example",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+
     cases = [
         CaseFile(
             id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"),
@@ -525,6 +702,8 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
             primary_contact="Max Mustermann",
             status="open",
             last_activity_at=now - timedelta(days=1),
+            company_id=companies[0].id,
+            primary_contact_id=contacts[0].id,
         ),
         CaseFile(
             id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"),
@@ -533,6 +712,8 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
             primary_contact="Sabine Keller",
             status="open",
             last_activity_at=now - timedelta(hours=8),
+            company_id=companies[1].id,
+            primary_contact_id=contacts[1].id,
         ),
         CaseFile(
             id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"),
@@ -541,6 +722,8 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
             primary_contact="Jonas Adler",
             status="open",
             last_activity_at=now - timedelta(days=3),
+            company_id=companies[2].id,
+            primary_contact_id=contacts[2].id,
         ),
     ]
 
@@ -577,6 +760,9 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
     state = DemoState(
         users={user.id: user},
         cases={case_file.id: case_file for case_file in cases},
+        companies={company.id: company for company in companies},
+        contacts={contact.id: contact for contact in contacts},
+        contact_notes={},
         activities={activity.id: activity for activity in activities},
         artifacts={},
         artifact_mail_metadata={},
@@ -594,6 +780,10 @@ def _case_visible_to_user(case_file: CaseFile, user: UserContext) -> bool:
     if case_file.visible_group_id is None:
         return True
     return case_file.visible_group_id in user.visible_group_ids
+
+
+def _party_visible_to_user(visible_group_id: UUID | None, user: UserContext) -> bool:
+    return visible_group_id is None or visible_group_id in user.visible_group_ids
 
 
 def _rank_cases(
