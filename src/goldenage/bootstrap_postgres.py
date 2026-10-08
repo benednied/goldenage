@@ -5,14 +5,12 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from pathlib import Path
+from typing import LiteralString, cast
+
+import psycopg
 
 from goldenage.adapters.demo import build_demo_state
 from goldenage.config import load_settings
-
-try:
-    import psycopg
-except ModuleNotFoundError as exc:  # pragma: no cover - import guard for incomplete envs.
-    raise RuntimeError("psycopg must be installed to bootstrap PostgreSQL.") from exc
 
 
 def main() -> None:
@@ -65,7 +63,7 @@ def apply_schema(dsn: str, schema_path: Path) -> None:
                 )
                 if cursor.fetchone() is not None:
                     continue
-                cursor.execute(sql_path.read_text(encoding="utf-8"))
+                cursor.execute(cast(LiteralString, sql_path.read_text(encoding="utf-8")))
                 cursor.execute(
                     "INSERT INTO schema_migration (name) VALUES (%(name)s)",
                     {"name": sql_path.name},

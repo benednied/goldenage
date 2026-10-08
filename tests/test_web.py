@@ -186,7 +186,9 @@ def test_upload_reject_and_search_flow(tmp_path, monkeypatch) -> None:
 
     import re
 
-    artifact_id = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text).group(1)
+    artifact_match = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text)
+    assert artifact_match is not None
+    artifact_id = artifact_match.group(1)
 
     reject_response = client.post(f"/artifacts/{artifact_id}/suggestion/reject")
     assert reject_response.status_code == 200
@@ -241,8 +243,12 @@ def test_clicking_case_artifact_displays_msg_contents(tmp_path, monkeypatch) -> 
 
     import re
 
-    artifact_id = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text).group(1)
-    case_id = re.search(r'name="case_id" value="([0-9a-f-]+)"', upload_response.text).group(1)
+    artifact_match = re.search(r"/artifacts/([0-9a-f-]+)/assign", upload_response.text)
+    case_match = re.search(r'name="case_id" value="([0-9a-f-]+)"', upload_response.text)
+    assert artifact_match is not None
+    assert case_match is not None
+    artifact_id = artifact_match.group(1)
+    case_id = case_match.group(1)
 
     assign_response = client.post(
         f"/artifacts/{artifact_id}/assign",
@@ -296,10 +302,12 @@ def test_recent_conversation_can_be_opened_from_intake_panel(tmp_path, monkeypat
 
     import re
 
-    conversation_id = re.search(
+    conversation_match = re.search(
         r"/intake/conversations/([0-9a-f-]+)",
         upload_response.text,
-    ).group(1)
+    )
+    assert conversation_match is not None
+    conversation_id = conversation_match.group(1)
 
     response = client.get(f"/intake/conversations/{conversation_id}")
     assert response.status_code == 200
@@ -332,10 +340,12 @@ def test_recent_conversation_opens_fallback_triage_when_no_suggestion(
 
     import re
 
-    conversation_id = re.search(
+    conversation_match = re.search(
         r"/intake/conversations/([0-9a-f-]+)",
         upload_response.text,
-    ).group(1)
+    )
+    assert conversation_match is not None
+    conversation_id = conversation_match.group(1)
 
     response = client.get(f"/intake/conversations/{conversation_id}")
 
@@ -695,7 +705,9 @@ def test_local_first_intake_can_create_new_case_when_search_has_no_results(
 
     import re
 
-    artifact_id = re.search(r"/artifacts/([0-9a-f-]+)/create-case", upload_response.text).group(1)
+    artifact_match = re.search(r"/artifacts/([0-9a-f-]+)/create-case", upload_response.text)
+    assert artifact_match is not None
+    artifact_id = artifact_match.group(1)
 
     create_response = client.post(
         f"/artifacts/{artifact_id}/create-case",
@@ -753,7 +765,9 @@ def test_upload_keeps_original_name_out_of_storage_path(tmp_path, monkeypatch, f
             files={"file": (file_name, content, "application/vnd.ms-outlook")},
         )
         assert response.status_code == 200
-        artifact_id = UUID(re.search(r"/artifacts/([0-9a-f-]+)/assign", response.text).group(1))
+        artifact_match = re.search(r"/artifacts/([0-9a-f-]+)/assign", response.text)
+        assert artifact_match is not None
+        artifact_id = UUID(artifact_match.group(1))
         context = app.state.context
         artifact = context.service.get_intake_state(
             artifact_id=artifact_id, user=context.default_user

@@ -939,6 +939,14 @@ def _deserialize_datetime(raw_value: str | None) -> datetime | None:
     return datetime.fromisoformat(raw_value)
 
 
+def _required_datetime(raw_value: str | None) -> datetime:
+    """Decode a non-null database timestamp and fail on corrupt rows."""
+    value = _deserialize_datetime(raw_value)
+    if value is None:
+        raise ValueError("Required database timestamp is missing.")
+    return value
+
+
 def _row_to_case_file(row: sqlite3.Row) -> CaseFile:
     return CaseFile(
         id=UUID(row["id"]),
@@ -946,7 +954,7 @@ def _row_to_case_file(row: sqlite3.Row) -> CaseFile:
         company=row["company"],
         primary_contact=row["primary_contact"],
         status=row["status"],
-        last_activity_at=_deserialize_datetime(row["last_activity_at"]),
+        last_activity_at=_required_datetime(row["last_activity_at"]),
         visible_group_id=UUID(row["visible_group_id"]) if row["visible_group_id"] else None,
     )
 
@@ -957,8 +965,8 @@ def _row_to_activity(row: sqlite3.Row) -> Activity:
         case_id=UUID(row["case_id"]),
         description=row["description"],
         kind=row["kind"],
-        due_at=_deserialize_datetime(row["due_at"]),
-        created_at=_deserialize_datetime(row["created_at"]),
+        due_at=_required_datetime(row["due_at"]),
+        created_at=_required_datetime(row["created_at"]),
         created_by=UUID(row["created_by"]) if row["created_by"] else None,
         completed_at=_deserialize_datetime(row["completed_at"]),
     )
@@ -972,7 +980,7 @@ def _row_to_artifact(row: sqlite3.Row) -> Artifact:
         size_bytes=row["size_bytes"],
         content_text=row["content_text"],
         storage_key=row["storage_key"],
-        uploaded_at=_deserialize_datetime(row["uploaded_at"]),
+        uploaded_at=_required_datetime(row["uploaded_at"]),
         uploaded_by=UUID(row["uploaded_by"]) if row["uploaded_by"] else None,
         assigned_case_id=UUID(row["assigned_case_id"]) if row["assigned_case_id"] else None,
     )
@@ -984,7 +992,7 @@ def _row_to_suggestion(row: sqlite3.Row) -> AssignmentSuggestion:
         suggested_case_id=UUID(row["suggested_case_id"]) if row["suggested_case_id"] else None,
         summary_reason=row["summary_reason"],
         confidence=float(row["confidence"]),
-        created_at=_deserialize_datetime(row["created_at"]),
+        created_at=_required_datetime(row["created_at"]),
     )
 
 
@@ -1011,7 +1019,7 @@ def _row_to_mail_metadata(row: sqlite3.Row) -> ArtifactMailMetadata:
             for recipient in recipients
         ),
         sent_at=_deserialize_datetime(row["sent_at"]),
-        created_at=_deserialize_datetime(row["created_at"]),
+        created_at=_required_datetime(row["created_at"]),
     )
 
 
@@ -1023,7 +1031,7 @@ def _row_to_mail_conversation(row: sqlite3.Row) -> MailConversation:
         external_conversation_id=row["external_conversation_id"],
         normalized_subject=row["normalized_subject"],
         latest_subject=row["latest_subject"],
-        latest_message_at=_deserialize_datetime(row["latest_message_at"]),
+        latest_message_at=_required_datetime(row["latest_message_at"]),
         participants=tuple(
             MailParticipant(
                 name=participant.get("name"),
@@ -1034,8 +1042,8 @@ def _row_to_mail_conversation(row: sqlite3.Row) -> MailConversation:
         message_count=int(row["message_count"]),
         latest_artifact_id=UUID(row["latest_artifact_id"]),
         assigned_case_id=UUID(row["assigned_case_id"]) if row["assigned_case_id"] else None,
-        created_at=_deserialize_datetime(row["created_at"]),
-        updated_at=_deserialize_datetime(row["updated_at"]),
+        created_at=_required_datetime(row["created_at"]),
+        updated_at=_required_datetime(row["updated_at"]),
     )
 
 
@@ -1052,7 +1060,7 @@ def _row_to_mail_message(row: sqlite3.Row) -> MailMessage:
         dedupe_fingerprint=row["dedupe_fingerprint"],
         direction=row["direction"],
         received_at=_deserialize_datetime(row["received_at"]),
-        created_at=_deserialize_datetime(row["created_at"]),
+        created_at=_required_datetime(row["created_at"]),
     )
 
 
