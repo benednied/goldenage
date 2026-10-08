@@ -5,6 +5,7 @@ This directory contains dated implementation notes. These files are intentionall
 ## Current Entries
 
 - [`2026-04-12-bootstrap-slice.md`](2026-04-12-bootstrap-slice.md): lessons and constraints from the first working implementation slice
+- [`2026-10-05-sec-05-local-assets.md`](2026-10-05-sec-05-local-assets.md): local browser assets and enforced security headers
 
 ## Rule
 

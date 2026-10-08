@@ -37,6 +37,17 @@ def test_load_settings_reads_environment_aliases_and_typed_values(monkeypatch, t
     assert settings.apple_mail_fixture_path == tmp_path / "mail.json"
     assert settings.auth_secret == "secret"
     assert settings.auth_cookie_secure is True
+    assert settings.hsts_enabled is False
+
+
+def test_hsts_requires_explicit_secure_cookie_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.setenv("GOLDENAGE_HSTS_ENABLED", "1")
+    monkeypatch.setenv("GOLDENAGE_AUTH_COOKIE_SECURE", "0")
+    assert config.load_settings().hsts_enabled is False
+
+    monkeypatch.setenv("GOLDENAGE_AUTH_COOKIE_SECURE", "1")
+    assert config.load_settings().hsts_enabled is True
 
 
 def test_load_settings_loads_dotenv_without_overriding_existing_environment(
