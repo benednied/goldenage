@@ -80,6 +80,7 @@
           class="workflow-form"
         >
           <input type="hidden" name="case_id" value="{{ intake_state.suggestion.suggested_case_id }}" />
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <label>
             What should happen next?
             <input type="text" name="next_step" placeholder="Review the newly received draft and reply" required />
@@ -120,6 +121,7 @@
           class="workflow-form"
         >
           <input type="hidden" name="artifact_id" value="{{ intake_state.artifact.id }}" />
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <label>
             Search description
             <input type="text" name="query" value="{{ intake_state.search_query }}" placeholder="Email from Acme to Alex Morgan about renewal" required />
@@ -144,6 +146,7 @@
                   class="result-card"
                 >
                   <input type="hidden" name="case_id" value="{{ result.case_id }}" />
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                   <div class="result-copy">
                     <h4>{{ result.title }}</h4>
                     <p>{{ result.company or "No company" }}</p>
@@ -181,6 +184,7 @@
             hx-indicator="find .busy-indicator"
             class="workflow-form"
           >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             <label>
               Case title
               <input
@@ -229,6 +233,7 @@
   hx-swap="innerHTML"
   hx-indicator="find .busy-indicator"
 >
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   <div class="wave wave-a"></div>
   <div class="wave wave-b"></div>
   <div class="dropzone-copy">
@@ -301,6 +306,7 @@
       hx-indicator="find .busy-indicator"
       class="workflow-form"
     >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <label>
         Mail address
         <input type="text" name="account_name" value="{{ mail_import_state.selector.account_name or '' }}" placeholder="name@example.com" />
@@ -353,6 +359,7 @@
               class="result-card"
             >
               <input type="hidden" name="candidate_id" value="{{ candidate.candidate_id }}" />
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <div class="result-copy">
                 <h4>{{ candidate.subject or "(no subject)" }}</h4>
                 <p>{{ candidate.sender_name or candidate.sender_email or "Unknown sender" }}</p>

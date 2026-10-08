@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from goldenage import config
 
 
@@ -80,3 +82,33 @@ def test_env_helpers_handle_defaults_invalid_values_and_flags(monkeypatch) -> No
     assert config._env_flag("TRUE_FLAG") is True
     assert config._env_flag("FALSE_FLAG") is False
     config._load_dotenv(Path("missing.env"))
+
+
+def test_production_requires_a_persistent_suitable_auth_secret(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.setenv("GOLDENAGE_ENVIRONMENT", "production")
+    monkeypatch.delenv("GOLDENAGE_AUTH_SECRET", raising=False)
+
+    with pytest.raises(RuntimeError, match="GOLDENAGE_AUTH_SECRET must be set"):
+        config.load_settings()
+
+    monkeypatch.setenv("GOLDENAGE_AUTH_SECRET", "a" * 32)
+    with pytest.raises(RuntimeError, match="at least 32 characters"):
+        config.load_settings()
+
+    monkeypatch.setenv(
+        "GOLDENAGE_AUTH_SECRET",
+        "random-production-secret-1234567890",
+    )
+    settings = config.load_settings()
+    assert settings.environment == "production"
+    assert settings.auth_cookie_secure is True
+
+
+def test_insecure_same_site_none_cookie_configuration_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
+    monkeypatch.setenv("GOLDENAGE_AUTH_COOKIE_SAMESITE", "none")
+    monkeypatch.delenv("GOLDENAGE_AUTH_COOKIE_SECURE", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires secure authentication cookies"):
+        config.load_settings()

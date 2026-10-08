@@ -19,6 +19,12 @@ from goldenage.domain.rules import ResolutionError
 from goldenage.web import app as web_app
 
 
+def _csrf_data(client: TestClient) -> dict[str, str]:
+    token = client.cookies.get(web_app.CSRF_COOKIE_NAME)
+    assert isinstance(token, str)
+    return {web_app.CSRF_FIELD_NAME: token}
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("GOLDENAGE_DISABLE_DOTENV", "1")
@@ -47,10 +53,11 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
     local_client = TestClient(web_app.create_app(), follow_redirects=False)
     assert local_client.get("/").headers["location"] == "/onboarding"
     assert local_client.get("/login").headers["location"] == "/onboarding"
+    local_client.get("/onboarding")
 
     bad_onboarding = local_client.post(
         "/onboarding",
-        data={"display_name": "", "email": "", "password": ""},
+        data={"display_name": "", "email": "", "password": "", **_csrf_data(local_client)},
     )
     assert bad_onboarding.status_code == 400
     assert "Display name, email, and password are required." in bad_onboarding.text
@@ -60,6 +67,7 @@ def test_root_login_onboarding_and_ldap_redirect_branches(monkeypatch, tmp_path)
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(local_client),
         },
         files={"profile_picture": ("profile.txt", b"text", "text/plain")},
     )
@@ -184,12 +192,14 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
     client = TestClient(web_app.create_app(), follow_redirects=False)
 
     assert client.get("/settings").headers["location"] == "/onboarding"
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
     unauthenticated = TestClient(web_app.create_app(), follow_redirects=False)
@@ -197,20 +207,21 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
 
     settings_bad_date = client.post(
         "/settings/mail",
-        data={"sent_after": "not-a-date"},
+        data={"sent_after": "not-a-date", **_csrf_data(client)},
     )
     assert settings_bad_date.status_code == 200
     assert "Invalid isoformat string" in settings_bad_date.text
 
     search_bad_date = client.post(
         "/mail/desktop-mail/search",
-        data={"sent_after": "not-a-date"},
+        data={"sent_after": "not-a-date", **_csrf_data(client)},
     )
     assert search_bad_date.status_code == 200
     assert "Invalid isoformat string" in search_bad_date.text
 
     empty_upload = client.post(
         "/artifacts/upload",
+        data=_csrf_data(client),
         files={"file": ("empty.msg", b"", "application/vnd.ms-outlook")},
     )
     assert empty_upload.status_code == 400
@@ -220,14 +231,14 @@ def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
     assert (
         client.post(
             f"/activities/{uuid4()}/resolve",
-            data={"skip_follow_up": "on"},
+            data={"skip_follow_up": "on", **_csrf_data(client)},
         ).status_code
         == 404
     )
     assert (
         client.post(
             "/mail/desktop-mail/import",
-            data={"candidate_id": "missing"},
+            data={"candidate_id": "missing", **_csrf_data(client)},
         ).status_code
         == 404
     )
@@ -239,12 +250,14 @@ def test_protected_routes_redirect_when_local_user_is_not_authenticated(
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
     setup_client = TestClient(web_app.create_app(), follow_redirects=False)
+    setup_client.get("/onboarding")
     setup_client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(setup_client),
         },
     )
     client = TestClient(web_app.create_app(), follow_redirects=False)
@@ -310,12 +323,14 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
     client = TestClient(web_app.create_app(), follow_redirects=False)
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
     assert client.get("/login").headers["location"] == "/worklist"
@@ -327,6 +342,7 @@ def test_local_first_authenticated_redirects_and_missing_repository_errors(
                 "display_name": "Other",
                 "email": "other@example.com",
                 "password": "secret-passphrase",
+                **_csrf_data(client),
             },
         ).headers["location"]
         == "/worklist"
@@ -361,12 +377,14 @@ def test_password_change_error_messages(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
     client = TestClient(web_app.create_app())
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
 
@@ -376,6 +394,7 @@ def test_password_change_error_messages(tmp_path, monkeypatch) -> None:
             "current_password": "wrong",
             "new_password": "new-passphrase",
             "confirm_password": "new-passphrase",
+            **_csrf_data(client),
         },
     )
     short_password = client.post(
@@ -384,6 +403,7 @@ def test_password_change_error_messages(tmp_path, monkeypatch) -> None:
             "current_password": "secret-passphrase",
             "new_password": "short",
             "confirm_password": "short",
+            **_csrf_data(client),
         },
     )
     mismatch = client.post(
@@ -392,6 +412,7 @@ def test_password_change_error_messages(tmp_path, monkeypatch) -> None:
             "current_password": "secret-passphrase",
             "new_password": "new-passphrase",
             "confirm_password": "different",
+            **_csrf_data(client),
         },
     )
 
@@ -404,12 +425,14 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
     client = TestClient(web_app.create_app(), follow_redirects=False)
+    client.get("/onboarding")
     client.post(
         "/onboarding",
         data={
             "display_name": "Bened Example",
             "email": "bened@example.com",
             "password": "secret-passphrase",
+            **_csrf_data(client),
         },
     )
     context = client.app.state.context
@@ -456,7 +479,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     assert (
         client.post(
             f"/activities/{activity_id}/resolve",
-            data={"skip_follow_up": "on"},
+            data={"skip_follow_up": "on", **_csrf_data(client)},
         ).status_code
         == 200
     )
@@ -467,6 +490,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
                 "case_id": str(case_id),
                 "next_step": "Call",
                 "next_due_at": "2026-04-12T09:30",
+                **_csrf_data(client),
             },
         ).status_code
         == 200
@@ -474,14 +498,19 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     assert (
         client.post(
             f"/artifacts/{artifact_id}/create-case",
-            data={"title": "Case", "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+            data={
+                "title": "Case",
+                "next_step": "Call",
+                "next_due_at": "2026-04-12T09:30",
+                **_csrf_data(client),
+            },
         ).status_code
         == 200
     )
     assert (
         client.post(
             "/mail/desktop-mail/import",
-            data={"candidate_id": "candidate"},
+            data={"candidate_id": "candidate", **_csrf_data(client)},
         ).status_code
         == 200
     )
@@ -492,7 +521,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     assert (
         client.post(
             f"/activities/{activity_id}/resolve",
-            data={"skip_follow_up": "off"},
+            data={"skip_follow_up": "off", **_csrf_data(client)},
         ).status_code
         == 400
     )
@@ -501,7 +530,12 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     )
     assign_error = client.post(
         f"/artifacts/{artifact_id}/assign",
-        data={"case_id": str(case_id), "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+        data={
+            "case_id": str(case_id),
+            "next_step": "Call",
+            "next_due_at": "2026-04-12T09:30",
+            **_csrf_data(client),
+        },
     )
     assert assign_error.status_code == 400
     assert assign_error.headers["HX-Retarget"] == "#intake-panel"
@@ -510,7 +544,12 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     )
     create_error = client.post(
         f"/artifacts/{artifact_id}/create-case",
-        data={"title": "Case", "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+        data={
+            "title": "Case",
+            "next_step": "Call",
+            "next_due_at": "2026-04-12T09:30",
+            **_csrf_data(client),
+        },
     )
     assert create_error.status_code == 400
     context.service.assign_artifact_to_case = lambda **kwargs: (_ for _ in ()).throw(
@@ -519,7 +558,12 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     assert (
         client.post(
             f"/artifacts/{artifact_id}/assign",
-            data={"case_id": str(case_id), "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+            data={
+                "case_id": str(case_id),
+                "next_step": "Call",
+                "next_due_at": "2026-04-12T09:30",
+                **_csrf_data(client),
+            },
         ).status_code
         == 404
     )
@@ -529,7 +573,12 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
     assert (
         client.post(
             f"/artifacts/{artifact_id}/create-case",
-            data={"title": "Case", "next_step": "Call", "next_due_at": "2026-04-12T09:30"},
+            data={
+                "title": "Case",
+                "next_step": "Call",
+                "next_due_at": "2026-04-12T09:30",
+                **_csrf_data(client),
+            },
         ).status_code
         == 404
     )
@@ -550,6 +599,7 @@ def test_route_success_and_resolution_error_panels(tmp_path, monkeypatch) -> Non
                 "current_password": "secret-passphrase",
                 "new_password": "new-passphrase",
                 "confirm_password": "new-passphrase",
+                **_csrf_data(client),
             },
         ).text
     )
@@ -913,17 +963,27 @@ def test_semicolon_in_password_remains_literal(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("GOLDENAGE_LOCAL_FIRST_MODE", "sqlite3")
     monkeypatch.setenv("GOLDENAGE_SQLITE_PATH", str(tmp_path / "local.sqlite3"))
     client = TestClient(web_app.create_app(), follow_redirects=False)
+    client.get("/onboarding")
     response = client.post(
         "/onboarding",
-        data={"display_name": "Test User", "email": "user@example.com", "password": "safe;phrase"},
+        data={
+            "display_name": "Test User",
+            "email": "user@example.com",
+            "password": "safe;phrase",
+            **_csrf_data(client),
+        },
     )
     assert response.status_code == 303
     client.cookies.clear()
+    client.get("/login")
 
     response = client.post(
         "/login/local",
         content="email=user%40example.com&password=safe;phrase",
-        headers={"content-type": "application/x-www-form-urlencoded"},
+        headers={
+            "content-type": "application/x-www-form-urlencoded",
+            web_app.CSRF_HEADER_NAME: client.cookies.get(web_app.CSRF_COOKIE_NAME, ""),
+        },
     )
 
     assert response.status_code == 303

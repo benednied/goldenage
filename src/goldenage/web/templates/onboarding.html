@@ -31,6 +31,7 @@
           Profile picture
           <input type="file" name="profile_picture" accept="image/*" />
         </label>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <button type="submit">Create local workspace user</button>
       </form>
     </section>

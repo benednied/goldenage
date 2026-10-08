@@ -24,6 +24,7 @@
             </svg>
           </a>
           <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             <button class="icon-link" type="submit" aria-label="Sign out" title="Sign out">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M10 5H6.5A2.5 2.5 0 0 0 4 7.5v9A2.5 2.5 0 0 0 6.5 19H10" />

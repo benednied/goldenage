@@ -74,6 +74,7 @@
             <input type="password" name="password" placeholder="Password" autocomplete="current-password" required />
           </label>
           <input type="hidden" name="username" value="" />
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <button type="submit">Sign in</button>
         </form>
       </div>

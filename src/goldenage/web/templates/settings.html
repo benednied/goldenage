@@ -18,6 +18,7 @@
         <small>{{ user.email }}</small>
         <a class="button-link" href="/worklist">Back to worklist</a>
         <form method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <button class="button-link" type="submit">Sign out</button>
         </form>
       </div>
@@ -72,6 +73,7 @@
           <input type="checkbox" name="unread_only" {% if mail_selector.unread_only %}checked{% endif %} />
           Only unread messages
         </label>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <div class="button-row">
           <button type="submit">Save mail defaults</button>
         </div>
@@ -106,6 +108,7 @@
             Confirm new password
             <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required />
           </label>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <div class="button-row">
             <button type="submit">Change password</button>
           </div>

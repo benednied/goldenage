@@ -5,17 +5,19 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import time as time_module
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
 
 from goldenage.adapters.demo import (
     HeuristicElizabethanSearchClient,
@@ -77,6 +79,12 @@ from goldenage.web.upload_security import (
 BASE_DIR = Path(__file__).resolve().parent
 UNSUPPORTED_INTAKE_MESSAGE = "This upload type is not supported yet."
 AUTH_COOKIE_NAME = "goldenage_session"
+CSRF_COOKIE_NAME = "goldenage_csrf"
+CSRF_FIELD_NAME = "csrf_token"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+COOKIE_HTTPONLY = True
+CSRF_TOKEN_BYTES = 32
+AUTH_SESSION_PARTS = 5
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
@@ -105,6 +113,15 @@ def create_app() -> FastAPI:
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
+
+    @app.middleware("http")
+    async def csrf_cookie_middleware(request: Request, call_next):
+        request.state.csrf_token = _csrf_token_for_request(request, settings=settings)
+        response = await call_next(request)
+        token = getattr(request.state, "csrf_token", None)
+        if token is not None and not getattr(request.state, "delete_csrf_cookie", False):
+            _set_csrf_cookie(response, token, settings=settings)
+        return response
 
     @app.on_event("startup")
     async def startup_event() -> None:
@@ -156,6 +173,7 @@ def create_app() -> FastAPI:
         local_user_repository = context.local_user_repository
         if local_user_repository is None:
             raise HTTPException(status_code=500, detail="Local-first login is not configured.")
+        await _require_csrf(request, settings=settings)
         account = local_user_repository.get_user_by_email(email)
         if account is None or not _verify_password(password, account.password_hash):
             return templates.TemplateResponse(
@@ -165,11 +183,25 @@ def create_app() -> FastAPI:
                 status_code=401,
             )
         response = RedirectResponse(url="/worklist", status_code=303)
-        _set_auth_cookie(response, account.id, settings=settings)
+        auth_cookie_value = _set_auth_cookie(
+            response,
+            account.id,
+            password_hash=account.password_hash,
+            settings=settings,
+        )
+        _rotate_csrf_token(request, settings=settings, auth_cookie_value=auth_cookie_value)
         return response
 
     @app.post("/login/ldap", response_class=HTMLResponse)
     async def login_ldap(request: Request) -> HTMLResponse:
+        if not settings.use_local_first_sqlite:
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context=_login_context(request, message="LDAP sign-in is not configured yet."),
+                status_code=400,
+            )
+        await _require_csrf(request, settings=settings)
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -178,12 +210,15 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/logout", response_class=HTMLResponse)
-    async def logout() -> RedirectResponse:
+    async def logout(request: Request) -> RedirectResponse:
+        await _require_csrf(request, settings=settings)
         response = RedirectResponse(
             url="/login" if settings.use_local_first_sqlite else "/worklist",
             status_code=303,
         )
-        response.delete_cookie(AUTH_COOKIE_NAME)
+        _delete_auth_cookie(response, settings=settings)
+        _delete_csrf_cookie(response, settings=settings)
+        request.state.delete_csrf_cookie = True
         return response
 
     @app.get("/onboarding", response_class=HTMLResponse)
@@ -204,10 +239,13 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if not settings.use_local_first_sqlite:
             return RedirectResponse(url="/worklist", status_code=302)
+        local_user_repository = context.local_user_repository
+        if local_user_repository is None:
+            raise HTTPException(status_code=500, detail="Local-first onboarding is not configured.")
+        form = await _require_csrf(request, settings=settings, limits=upload_limits)
         if _current_user(context, request=request) is not None:
             return RedirectResponse(url="/worklist", status_code=302)
 
-        form = await _bounded_form(request, upload_limits)
         display_name = str(form.get("display_name", ""))
         email = str(form.get("email", ""))
         password = str(form.get("password", ""))
@@ -256,9 +294,6 @@ def create_app() -> FastAPI:
                 status_code=400,
             )
 
-        local_user_repository = context.local_user_repository
-        if local_user_repository is None:
-            raise HTTPException(status_code=500, detail="Local-first onboarding is not configured.")
         account = local_user_repository.create_user(
             account_id=uuid4(),
             email=normalized_email,
@@ -267,7 +302,13 @@ def create_app() -> FastAPI:
             profile_image_path=profile_image_path,
         )
         response = RedirectResponse(url="/worklist", status_code=303)
-        _set_auth_cookie(response, account.id, settings=settings)
+        auth_cookie_value = _set_auth_cookie(
+            response,
+            account.id,
+            password_hash=account.password_hash,
+            settings=settings,
+        )
+        _rotate_csrf_token(request, settings=settings, auth_cookie_value=auth_cookie_value)
         return response
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -294,6 +335,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             selector = MailSelector(
@@ -340,6 +382,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             mail_import_state = context.service.search_mail_candidates(
@@ -381,6 +424,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             intake_state = context.service.import_mail_candidate(
@@ -424,10 +468,12 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         repository = context.local_user_repository
         message = "Password changes are available only for LocalDB accounts."
         message_kind = "error"
+        new_password_hash: str | None = None
         if repository is not None:
             account = repository.get_user_by_email(user.email)
             if account is None:
@@ -439,13 +485,26 @@ def create_app() -> FastAPI:
             elif new_password != confirm_password:
                 message = "New passwords do not match."
             else:
+                new_password_hash = _hash_password(new_password)
                 repository.update_password_hash(
                     account_id=account.id,
-                    password_hash=_hash_password(new_password),
+                    password_hash=new_password_hash,
                 )
                 message = "Password changed."
                 message_kind = "info"
-        return templates.TemplateResponse(
+        auth_cookie_value: str | None = None
+        if new_password_hash is not None:
+            auth_cookie_value = _signed_account_id(
+                user.id,
+                password_hash=new_password_hash,
+                settings=settings,
+            )
+            _rotate_csrf_token(
+                request,
+                settings=settings,
+                auth_cookie_value=auth_cookie_value,
+            )
+        response = templates.TemplateResponse(
             request=request,
             name="settings.html",
             context=_settings_context(
@@ -456,6 +515,15 @@ def create_app() -> FastAPI:
                 password_message_kind=message_kind,
             ),
         )
+        if new_password_hash is not None and auth_cookie_value is not None:
+            _set_auth_cookie(
+                response,
+                user.id,
+                password_hash=new_password_hash,
+                settings=settings,
+                session_value=auth_cookie_value,
+            )
+        return response
 
     @app.get("/worklist", response_class=HTMLResponse)
     async def worklist(
@@ -524,6 +592,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             detail = context.service.resolve_activity(
@@ -577,8 +646,8 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        form = await _require_csrf(request, settings=settings, limits=context.upload_limits)
         user = _require_current_user(context, request=request)
-        form = await _bounded_form(request, context.upload_limits)
         file = form.get("file")
         if not isinstance(file, UploadFile):
             return _upload_error_response(request, context, user, "Select a file before uploading.")
@@ -613,6 +682,7 @@ def create_app() -> FastAPI:
     async def reject_suggestion(request: Request, artifact_id: str) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         intake_state = context.service.get_intake_state(
             artifact_id=_uuid(artifact_id),
@@ -658,6 +728,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         intake_state = context.service.search_cases_for_artifact(
             artifact_id=_uuid(artifact_id),
@@ -683,6 +754,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             detail = context.service.assign_artifact_to_case(
@@ -747,6 +819,7 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
+        await _require_csrf(request, settings=settings)
         user = _require_current_user(context, request=request)
         try:
             detail = context.service.create_case_for_artifact(
@@ -983,6 +1056,7 @@ def _page_context(
         "format_form_datetime": _format_form_datetime,
         "due_label": due_label,
         "local_timezone": context.settings.local_timezone,
+        "csrf_token": _request_csrf_token(request, settings=context.settings),
     }
 
 
@@ -1049,6 +1123,7 @@ def _onboarding_context(request: Request, message: str | None) -> dict[str, obje
         "request": request,
         "page_title": "Welcome to the Golden Age",
         "message": message,
+        "csrf_token": getattr(request.state, "csrf_token", ""),
     }
 
 
@@ -1057,6 +1132,7 @@ def _login_context(request: Request, message: str | None) -> dict[str, object]:
         "request": request,
         "page_title": "Sign in to GoldenAge",
         "message": message,
+        "csrf_token": getattr(request.state, "csrf_token", ""),
     }
 
 
@@ -1083,6 +1159,7 @@ def _settings_context(
         "local_password_enabled": context.local_user_repository is not None,
         "format_form_datetime": _format_form_datetime,
         "local_timezone": context.settings.local_timezone,
+        "csrf_token": _request_csrf_token(request, settings=context.settings),
     }
 
 
@@ -1095,7 +1172,11 @@ def _current_user(context: AppContext, *, request: Request | None = None) -> Use
         return None
     if request is None:
         return account.to_user_context()
-    account_id = _authenticated_account_id(request, settings=context.settings)
+    account_id = _authenticated_account_id(
+        request,
+        settings=context.settings,
+        password_hash=account.password_hash,
+    )
     if account_id != account.id:
         return None
     return account.to_user_context()
@@ -1141,6 +1222,140 @@ def _redirect_to_login_or_onboarding_if_needed(
     if _current_user(context, request=request) is None:
         return RedirectResponse(url="/login", status_code=302)
     return None
+
+
+def _request_csrf_token(request: Request, *, settings: Settings) -> str:
+    """Return the request's valid CSRF token, creating one for direct renders."""
+    token = getattr(request.state, "csrf_token", None)
+    if token is None or (
+        not getattr(request.state, "csrf_token_rotated", False)
+        and not _valid_csrf_token(request, token, settings=settings)
+    ):
+        token = _new_csrf_token(
+            settings=settings,
+            auth_cookie_value=request.cookies.get(AUTH_COOKIE_NAME),
+        )
+        request.state.csrf_token = token
+    return token
+
+
+def _csrf_token_for_request(request: Request, *, settings: Settings) -> str:
+    """Reuse a valid double-submit token or issue a fresh session-bound token."""
+    token = request.cookies.get(CSRF_COOKIE_NAME)
+    if token and _valid_csrf_token(request, token, settings=settings):
+        return token
+    return _new_csrf_token(
+        settings=settings,
+        auth_cookie_value=request.cookies.get(AUTH_COOKIE_NAME),
+    )
+
+
+def _new_csrf_token(*, settings: Settings, auth_cookie_value: str | None) -> str:
+    nonce = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
+    binding = auth_cookie_value or "anonymous"
+    payload = f"{binding}.{nonce}"
+    return f"{nonce}.{_auth_signature(payload, settings=settings)}"
+
+
+def _valid_csrf_token(request: Request, token: str, *, settings: Settings) -> bool:
+    parts = token.split(".")
+    if len(parts) != 2:
+        return False
+    nonce, signature = parts
+    if not nonce or not signature:
+        return False
+    binding = request.cookies.get(AUTH_COOKIE_NAME) or "anonymous"
+    expected = _auth_signature(f"{binding}.{nonce}", settings=settings)
+    return hmac.compare_digest(signature, expected)
+
+
+def _rotate_csrf_token(
+    request: Request,
+    *,
+    settings: Settings,
+    auth_cookie_value: str | None,
+) -> None:
+    request.state.csrf_token = _new_csrf_token(
+        settings=settings,
+        auth_cookie_value=auth_cookie_value,
+    )
+    request.state.csrf_token_rotated = True
+
+
+async def _require_csrf(
+    request: Request,
+    *,
+    settings: Settings,
+    limits: UploadLimits | None = None,
+) -> FormData | None:
+    """Reject state-changing requests without a valid session-bound token."""
+    fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    if fetch_site in {"cross-site", "cross-origin"}:
+        raise HTTPException(status_code=403, detail="CSRF validation failed.")
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="CSRF validation failed.")
+
+    form: FormData | None = None
+    content_type = request.headers.get("content-type", "").lower()
+    if limits is not None:
+        form = await _bounded_form(request, limits)
+    elif content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):
+        form = await request.form()
+
+    field_token = str(form.get(CSRF_FIELD_NAME, "")) if form is not None else ""
+    header_token = request.headers.get(CSRF_HEADER_NAME, "")
+    if field_token and header_token and not hmac.compare_digest(field_token, header_token):
+        raise HTTPException(status_code=403, detail="CSRF validation failed.")
+    submitted_token = header_token or field_token
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME, "")
+    if (
+        not submitted_token
+        or not cookie_token
+        or not hmac.compare_digest(submitted_token, cookie_token)
+        or not _valid_csrf_token(request, submitted_token, settings=settings)
+    ):
+        raise HTTPException(status_code=403, detail="CSRF validation failed.")
+    request.state.csrf_token = cookie_token
+    return form
+
+
+def _same_origin(request: Request) -> bool:
+    """Return whether an explicit Origin header belongs to this application."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        parsed_origin = urlsplit(origin)
+        origin_port = parsed_origin.port or _default_port(parsed_origin.scheme)
+    except ValueError:
+        return False
+    if (
+        parsed_origin.scheme not in {"http", "https"}
+        or parsed_origin.username is not None
+        or parsed_origin.password is not None
+        or parsed_origin.path
+        or parsed_origin.query
+        or parsed_origin.fragment
+        or parsed_origin.hostname is None
+    ):
+        return False
+    try:
+        request_url = urlsplit(str(request.base_url))
+        request_port = request_url.port or _default_port(request_url.scheme)
+    except ValueError:
+        return False
+    if request_url.hostname is None:
+        return False
+    return (
+        parsed_origin.scheme == request_url.scheme
+        and parsed_origin.hostname.lower() == request_url.hostname.lower()
+        and origin_port == request_port
+    )
+
+
+def _default_port(scheme: str) -> int | None:
+    """Return the standard port for an HTTP origin scheme."""
+    return {"http": 80, "https": 443}.get(scheme)
 
 
 async def _store_profile_picture(
@@ -1194,33 +1409,123 @@ def _verify_password(password: str, password_hash: str) -> bool:
     return hmac.compare_digest(digest, expected)
 
 
-def _set_auth_cookie(response: RedirectResponse, account_id: UUID, *, settings: Settings) -> None:
+def _set_auth_cookie(
+    response: Response,
+    account_id: UUID,
+    *,
+    password_hash: str | None = None,
+    settings: Settings,
+    session_value: str | None = None,
+) -> str:
+    value = session_value or _signed_account_id(
+        account_id,
+        password_hash=password_hash,
+        settings=settings,
+    )
     response.set_cookie(
         AUTH_COOKIE_NAME,
-        _signed_account_id(account_id, settings=settings),
-        httponly=True,
+        value,
+        max_age=settings.auth_session_max_age,
+        path=settings.auth_cookie_path,
+        domain=settings.auth_cookie_domain,
         secure=settings.auth_cookie_secure,
-        samesite="lax",
+        httponly=COOKIE_HTTPONLY,
+        samesite=settings.auth_cookie_samesite,
+    )
+    return value
+
+
+def _delete_auth_cookie(response: Response, *, settings: Settings) -> None:
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        "",
+        max_age=0,
+        expires=0,
+        path=settings.auth_cookie_path,
+        domain=settings.auth_cookie_domain,
+        secure=settings.auth_cookie_secure,
+        httponly=COOKIE_HTTPONLY,
+        samesite=settings.auth_cookie_samesite,
     )
 
 
-def _authenticated_account_id(request: Request, *, settings: Settings) -> UUID | None:
+def _set_csrf_cookie(response: Response, token: str, *, settings: Settings) -> None:
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        token,
+        max_age=settings.auth_session_max_age,
+        path=settings.auth_cookie_path,
+        domain=settings.auth_cookie_domain,
+        secure=settings.auth_cookie_secure,
+        httponly=False,
+        samesite=settings.auth_cookie_samesite,
+    )
+
+
+def _delete_csrf_cookie(response: Response, *, settings: Settings) -> None:
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        "",
+        max_age=0,
+        expires=0,
+        path=settings.auth_cookie_path,
+        domain=settings.auth_cookie_domain,
+        secure=settings.auth_cookie_secure,
+        httponly=False,
+        samesite=settings.auth_cookie_samesite,
+    )
+
+
+def _authenticated_account_id(
+    request: Request,
+    *,
+    settings: Settings,
+    password_hash: str | None = None,
+) -> UUID | None:
     raw_value = request.cookies.get(AUTH_COOKIE_NAME)
-    if not raw_value or "." not in raw_value:
+    if not raw_value:
         return None
-    account_id_text, signature = raw_value.rsplit(".", 1)
-    expected = _auth_signature(account_id_text, settings=settings)
+    parts = raw_value.split(".")
+    if len(parts) != AUTH_SESSION_PARTS:
+        return None
+    account_id_text, expiry_text, nonce, password_fingerprint, signature = parts
+    payload = ".".join(parts[:-1])
+    expected = _auth_signature(payload, settings=settings)
     if not hmac.compare_digest(signature, expected):
         return None
     try:
-        return UUID(account_id_text)
+        account_id = UUID(account_id_text)
+        expiry = int(expiry_text)
     except ValueError:
         return None
+    if not nonce or expiry <= int(time_module.time()):
+        return None
+    if password_hash is not None and not hmac.compare_digest(
+        password_fingerprint,
+        _password_fingerprint(password_hash),
+    ):
+        return None
+    return account_id
 
 
-def _signed_account_id(account_id: UUID, *, settings: Settings) -> str:
+def _signed_account_id(
+    account_id: UUID,
+    *,
+    password_hash: str | None = None,
+    settings: Settings,
+    now: int | None = None,
+) -> str:
     account_id_text = str(account_id)
-    return f"{account_id_text}.{_auth_signature(account_id_text, settings=settings)}"
+    expiry = (now if now is not None else int(time_module.time())) + settings.auth_session_max_age
+    nonce = secrets.token_urlsafe(24)
+    payload = f"{account_id_text}.{expiry}.{nonce}.{_password_fingerprint(password_hash)}"
+    return f"{payload}.{_auth_signature(payload, settings=settings)}"
+
+
+def _password_fingerprint(password_hash: str | None) -> str:
+    if password_hash is None:
+        return "-"
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()
 
 
 def _auth_signature(value: str, *, settings: Settings) -> str:
