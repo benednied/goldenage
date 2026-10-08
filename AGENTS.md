@@ -11,7 +11,9 @@
 - `uv run --extra dev ruff format --check .`: verify formatting.
 - `uv run --extra dev ty check`: run type checks across `src/` and `tests/`.
 - `./.venv/bin/python -m compileall src tests`: run a fast syntax check.
-- `./.venv/bin/pytest -q`: run the full test suite.
+- `./.venv/bin/pytest -q`: run the full test suite with line and branch coverage;
+  the configured 100% threshold is enforced with pytest-cov's
+  `--cov-fail-under=100` option and `coverage.json` is written.
 
 ## Coding Style & Naming Conventions
 Use 4-space indentation, explicit type hints, and small modules with clear data flow. Follow `docs/70-decisions/styleguide.md`: business rules stay in `domain/`, workflow orchestration in `application/`, integrations in `adapters/`, and delivery code only in `web/`. Prefer `@dataclass(frozen=True, slots=True)` for core models and `Protocol` for ports. Use `snake_case` for modules and functions, `PascalCase` for classes, and keep raw SQL in adapter modules or `sql/` files. This repo prefers `ruff` and `ty`; run them before opening a PR.

@@ -52,6 +52,24 @@ def test_normalize_outlook_mailbox_message_maps_threading_fields() -> None:
     assert normalized.internet_message_id == "<abc123@example.com>"
     assert normalized.sender is not None
     assert normalized.sender.email == "max@acme.example"
+    without_sender = normalize_outlook_message(
+        OutlookMailboxMessage(
+            account_name="Mailbox",
+            folder_key="Inbox",
+            message_key="without-sender",
+            conversation_key=None,
+            internet_message_id=None,
+            subject=None,
+            sender_name=None,
+            sender_email=None,
+            recipients=(),
+            body_text="Body",
+            sent_at=None,
+            received_at=None,
+            direction="inbound",
+        )
+    )
+    assert without_sender.sender is None
 
 
 def test_normalize_com_message_reads_outlook_mail_fields() -> None:
@@ -236,6 +254,37 @@ def test_outlook_mailbox_helpers_cover_missing_and_fallback_values() -> None:
         "max@example.com"
     )
     assert _sender_email(SimpleNamespace(SenderEmailAddress="exchange", Sender=None)) is None
+    assert (
+        _sender_email(
+            SimpleNamespace(
+                SenderEmailAddress="exchange",
+                Sender=SimpleNamespace(GetExchangeUser=lambda: None),
+            )
+        )
+        is None
+    )
+    assert (
+        _sender_email(
+            SimpleNamespace(
+                SenderEmailAddress="exchange",
+                Sender=SimpleNamespace(
+                    GetExchangeUser=lambda: SimpleNamespace(PrimarySmtpAddress="  ")
+                ),
+            )
+        )
+        is None
+    )
+    assert (
+        _sender_email(
+            SimpleNamespace(
+                SenderEmailAddress="exchange",
+                Sender=SimpleNamespace(
+                    GetExchangeUser=lambda: SimpleNamespace(PrimarySmtpAddress="max@acme.example")
+                ),
+            )
+        )
+        == "max@acme.example"
+    )
     assert _internet_message_id(SimpleNamespace(PropertyAccessor=None)) is None
     assert _internet_message_id(SimpleNamespace()) is None
     assert (
@@ -267,6 +316,11 @@ def test_outlook_mailbox_worker_starts_once_and_delegates_stop() -> None:
     worker.stop()
 
     assert calls == ["watch", "stop"]
+
+    worker_without_stop = OutlookMailboxWorker(
+        SimpleNamespace(watch_forever=lambda: None)  # ty:ignore[invalid-argument-type]
+    )
+    worker_without_stop.stop()
 
 
 def _settings(account_name: str | None) -> Settings:

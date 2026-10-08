@@ -10,6 +10,7 @@ from fastapi import HTTPException, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
+from goldenage.web import upload_security
 from goldenage.web.upload_security import (
     UploadLimitMiddleware,
     UploadLimits,
@@ -151,9 +152,106 @@ def test_request_limit_returns_413_through_starlette_parser_without_content_leng
     assert sent[1]["body"] == b'{"detail":"Request body is too large."}'
 
 
+def test_request_limit_handles_headers_disconnects_and_started_responses() -> None:
+    sent: list[dict[str, object]] = []
+
+    async def never_called(scope, receive, send) -> None:
+        del scope, receive, send
+        raise AssertionError("content-length limit should stop before the app")
+
+    async def send(message: object) -> None:
+        sent.append(cast(dict[str, object], message))
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("content-length limit should stop before receiving")
+
+    asyncio.run(
+        UploadLimitMiddleware(never_called, limit=4)(
+            {
+                "type": "http",
+                "headers": [
+                    (b"content-type", b"multipart/form-data"),
+                    (b"content-length", b"5"),
+                ],
+            },
+            receive,
+            send,
+        )
+    )
+    assert sent[0]["status"] == 413
+
+    forwarded: list[dict[str, object]] = []
+
+    async def disconnected_app(scope, receive, send) -> None:
+        del scope
+        message = await receive()
+        forwarded.append(message)
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+
+    async def disconnected_receive() -> dict[str, object]:
+        return {"type": "http.disconnect"}
+
+    asyncio.run(
+        UploadLimitMiddleware(disconnected_app, limit=4)(
+            {
+                "type": "http",
+                "headers": [
+                    (b"content-type", b"multipart/form-data"),
+                    (b"content-length", b"not-a-number"),
+                ],
+            },
+            disconnected_receive,
+            send,
+        )
+    )
+    assert forwarded == [{"type": "http.disconnect"}]
+
+    started: list[dict[str, object]] = []
+
+    async def started_response_app(scope, receive, send) -> None:
+        del scope
+        await send({"type": "http.response.start", "status": 400, "headers": []})
+        await receive()
+
+    async def oversized_receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"12345", "more_body": False}
+
+    async def record_started(message: object) -> None:
+        started.append(cast(dict[str, object], message))
+
+    asyncio.run(
+        UploadLimitMiddleware(started_response_app, limit=4)(
+            {"type": "http", "headers": [(b"content-type", b"multipart/form-data")]},
+            oversized_receive,
+            record_started,
+        )
+    )
+    assert started == [{"type": "http.response.start", "status": 400, "headers": []}]
+
+
 def test_invalid_msg_is_rejected_even_with_msg_extension_and_mime_type() -> None:
     with pytest.raises(HTTPException, match="valid Outlook MSG"):
         validate_outlook_msg(b"not an OLE compound file")
+
+
+def test_empty_msg_container_is_rejected(monkeypatch) -> None:
+    class EmptyDocument:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def listdir(self):
+            return []
+
+    monkeypatch.setattr(upload_security.olefile, "isOleFile", lambda stream: True)
+    monkeypatch.setattr(
+        upload_security.olefile, "OleFileIO", lambda *args, **kwargs: EmptyDocument()
+    )
+
+    with pytest.raises(HTTPException, match="valid Outlook MSG"):
+        validate_outlook_msg(b"ole bytes")
 
 
 def test_png_is_decoded_reencoded_without_text_metadata() -> None:
@@ -188,6 +286,49 @@ def test_animated_and_trailing_png_content_are_rejected() -> None:
         normalize_profile_png(source + b"not a PNG chunk", limits=UploadLimits())
 
 
+def test_png_parser_rejects_truncated_chunks_formats_checksums_and_zlib() -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(signature + b"\x00", limits=UploadLimits())
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(
+            signature + struct.pack(">I", 10) + b"IDAT" + b"\x00" * 4, limits=UploadLimits()
+        )
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(
+            _png(width=1, height=1, scanlines=b"\0\0\0\0")[:-1]
+            + bytes([_png(width=1, height=1, scanlines=b"\0\0\0\0")[-1] ^ 1]),
+            limits=UploadLimits(),
+        )
+    with pytest.raises(HTTPException, match="not supported"):
+        normalize_profile_png(
+            _png(width=1, height=1, scanlines=b"\0\0\0\0", color_type=3),
+            limits=UploadLimits(),
+        )
+    invalid_zlib = (
+        signature
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", b"not zlib")
+        + _chunk(b"IEND", b"")
+    )
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(invalid_zlib, limits=UploadLimits())
+
+    no_iend = (
+        signature
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(b"\0\0\0\0"))
+    )
+    with pytest.raises(HTTPException, match="valid PNG"):
+        normalize_profile_png(no_iend, limits=UploadLimits())
+
+
+def test_upload_limit_environment_falls_back_for_invalid_values(monkeypatch) -> None:
+    monkeypatch.setenv("GOLDENAGE_UPLOAD_REQUEST_BYTES", "not-an-integer")
+
+    assert UploadLimits.from_environment().request_bytes == UploadLimits().request_bytes
+
+
 def _upload_file(content: bytes) -> UploadFile:
     spool = tempfile.SpooledTemporaryFile(max_size=len(content) + 1)
     spool.write(content)
@@ -206,8 +347,8 @@ def _png_with_text_metadata() -> bytes:
     )
 
 
-def _png(*, width: int, height: int, scanlines: bytes) -> bytes:
-    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+def _png(*, width: int, height: int, scanlines: bytes, color_type: int = 2) -> bytes:
+    header = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + _chunk(b"IHDR", header)
