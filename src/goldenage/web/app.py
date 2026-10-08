@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -24,6 +24,7 @@ from goldenage.adapters.demo import (
     InMemoryArtifactRepository,
     InMemoryAuditRepository,
     InMemoryCaseRepository,
+    InMemoryMailboxRecoveryRepository,
     InMemoryMailImportRepository,
     LocalArtifactStore,
     OutlookMsgExtractor,
@@ -46,6 +47,7 @@ from goldenage.adapters.postgres import (
     PostgresArtifactRepository,
     PostgresAuditRepository,
     PostgresCaseRepository,
+    PostgresMailboxRecoveryRepository,
 )
 from goldenage.adapters.sqlite import (
     SQLiteActivityRepository,
@@ -53,6 +55,7 @@ from goldenage.adapters.sqlite import (
     SQLiteAuditRepository,
     SQLiteCaseRepository,
     SQLiteLocalUserRepository,
+    SQLiteMailboxRecoveryRepository,
     SQLiteMailImportRepository,
 )
 from goldenage.application.use_cases import (
@@ -392,6 +395,7 @@ def create_app() -> FastAPI:
             mail_import_state = MailImportState(
                 enabled=current_mail_state.enabled,
                 selector=current_mail_state.selector,
+                recoveries=current_mail_state.recoveries,
             )
         except (MailImportClientError, ResolutionError) as error:
             intake_state = IntakeState()
@@ -411,6 +415,45 @@ def create_app() -> FastAPI:
                 detail=None,
                 intake_state=intake_state,
                 mail_import_state=mail_import_state,
+                user=user,
+            ),
+        )
+
+    @app.post("/mail/recovery/{recovery_id}/retry", response_class=HTMLResponse)
+    async def retry_mail_recovery(request: Request, recovery_id: str) -> HTMLResponse:
+        if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
+            return redirect
+        user = _require_current_user(context, request=request)
+        try:
+            intake_state = context.service.retry_mail_import(
+                recovery_id=_uuid(recovery_id),
+                user=user,
+                now=_now(context),
+            )
+            message = "Failed mail import recovered. Confirm or reject the proposed case."
+            intake_state = IntakeState(
+                artifact=intake_state.artifact,
+                suggestion=intake_state.suggestion,
+                search_mode=intake_state.search_mode,
+                search_query=intake_state.search_query,
+                search_results=intake_state.search_results,
+                message=message,
+                conversation=intake_state.conversation,
+                conversation_artifacts=intake_state.conversation_artifacts,
+                new_case_title_suggestion=intake_state.new_case_title_suggestion,
+            )
+        except (NotFoundError, ResolutionError) as error:
+            if isinstance(error, NotFoundError):
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            intake_state = IntakeState(message=str(error), message_kind="error")
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/intake_panel.html",
+            context=_page_context(
+                request,
+                context,
+                detail=None,
+                intake_state=intake_state,
                 user=user,
             ),
         )
@@ -462,6 +505,8 @@ def create_app() -> FastAPI:
         request: Request,
         case_id: str | None = None,
         artifact_id: str | None = None,
+        artifact_offset: int = 0,
+        history_offset: int = 0,
     ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
@@ -472,6 +517,8 @@ def create_app() -> FastAPI:
             context=context,
             now=_now(context),
             user=user,
+            artifact_offset=artifact_offset,
+            history_offset=history_offset,
         )
         return templates.TemplateResponse(
             request=request,
@@ -482,11 +529,23 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/cases/{case_id}/panel", response_class=HTMLResponse)
-    async def case_panel(request: Request, case_id: str) -> HTMLResponse:
+    async def case_panel(
+        request: Request,
+        case_id: str,
+        artifact_offset: int = 0,
+        history_offset: int = 0,
+    ) -> HTMLResponse:
         if (redirect := _redirect_to_login_or_onboarding_if_needed(request, context)) is not None:
             return redirect
         user = _require_current_user(context, request=request)
-        detail = _load_case_detail(case_id=case_id, context=context, now=_now(context), user=user)
+        detail = _load_case_detail(
+            case_id=case_id,
+            context=context,
+            now=_now(context),
+            user=user,
+            artifact_offset=artifact_offset,
+            history_offset=history_offset,
+        )
         return templates.TemplateResponse(
             request=request,
             name="partials/detail_panel.html",
@@ -816,6 +875,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = SQLiteActivityRepository(settings.sqlite_path)
         artifact_repository = SQLiteArtifactRepository(settings.sqlite_path)
         audit_repository = SQLiteAuditRepository(settings.sqlite_path)
+        recovery_repository = SQLiteMailboxRecoveryRepository(settings.sqlite_path)
         local_user_repository = SQLiteLocalUserRepository(settings.sqlite_path)
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
         default_user = None
@@ -824,6 +884,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = PostgresActivityRepository(settings.database_url)
         artifact_repository = PostgresArtifactRepository(settings.database_url)
         audit_repository = PostgresAuditRepository(settings.database_url)
+        recovery_repository = PostgresMailboxRecoveryRepository(settings.database_url)
         default_user = UserContext(
             id=_uuid("11111111-1111-1111-1111-111111111111"),
             email="alex@example.com",
@@ -837,6 +898,7 @@ def _build_context(settings: Settings) -> AppContext:
         activity_repository = InMemoryActivityRepository(state, case_repository)
         artifact_repository = InMemoryArtifactRepository(state, case_repository)
         audit_repository = InMemoryAuditRepository(state)
+        recovery_repository = InMemoryMailboxRecoveryRepository()
         default_user = user
         local_user_repository = None
         mail_import_repository = InMemoryMailImportRepository()
@@ -859,6 +921,7 @@ def _build_context(settings: Settings) -> AppContext:
             outlook_scan_per_folder_limit=settings.outlook_scan_per_folder_limit,
         ),
         mail_import_repository=mail_import_repository,
+        recovery_repository=recovery_repository,
     )
     outlook_worker = None
     if settings.outlook_sync_enabled and settings.outlook_account_name:
@@ -962,9 +1025,17 @@ def _page_context(
     detail: CaseDetail | None,
     intake_state: IntakeState,
     user: UserContext,
-    mail_import_state: object | None = None,
+    mail_import_state: MailImportState | None = None,
 ) -> dict[str, object]:
     hydrated_intake = _hydrate_intake_state(context, intake_state=intake_state, user=user)
+    resolved_mail_state = mail_import_state or context.service.get_mail_import_state(user=user)
+    if context.outlook_worker is not None:
+        worker_state = getattr(context.outlook_worker, "state", None)
+        if worker_state is not None:
+            resolved_mail_state = replace(
+                resolved_mail_state,
+                worker_status=worker_state.status,
+            )
     return {
         "request": request,
         "page_title": "GoldenAge",
@@ -978,7 +1049,7 @@ def _page_context(
         "detail": detail,
         "detail_error": None,
         "intake_state": hydrated_intake,
-        "mail_import_state": mail_import_state or context.service.get_mail_import_state(user=user),
+        "mail_import_state": resolved_mail_state,
         "format_datetime": _format_datetime,
         "format_form_datetime": _format_form_datetime,
         "due_label": due_label,
@@ -1006,6 +1077,8 @@ def _load_case_detail(
     context: AppContext,
     now: datetime,
     user: UserContext,
+    artifact_offset: int = 0,
+    history_offset: int = 0,
 ) -> CaseDetail | None:
     if not case_id:
         return None
@@ -1015,6 +1088,8 @@ def _load_case_detail(
             user=user,
             now=now,
             selected_artifact_id=_uuid(artifact_id) if artifact_id else None,
+            artifact_offset=artifact_offset,
+            history_offset=history_offset,
         )
     except NotFoundError:
         return None

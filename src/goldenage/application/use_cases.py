@@ -6,7 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from goldenage.application.ports import (
@@ -18,6 +18,7 @@ from goldenage.application.ports import (
     CaseRepository,
     ElizabethanSearchClient,
     GiselaClient,
+    MailboxRecoveryRepository,
     MailImportClient,
     MailImportRepository,
 )
@@ -29,6 +30,7 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     ExtractedArtifactData,
+    MailboxRecovery,
     MailCandidate,
     MailConversation,
     MailMessage,
@@ -66,6 +68,17 @@ class CaseDetail:
     active_activity: Activity | None
     open_activities: tuple[Activity, ...]
     recent_artifacts: tuple[Artifact, ...]
+    completed_activities: tuple[Activity, ...] = ()
+    history: tuple["HistoryItem", ...] = ()
+    artifact_offset: int = 0
+    artifact_limit: int = 5
+    has_older_artifacts: bool = False
+    has_newer_artifacts: bool = False
+    history_offset: int = 0
+    history_limit: int = 20
+    has_older_history: bool = False
+    has_newer_history: bool = False
+    case_state_label: str = "Open case"
     selected_artifact: Artifact | None = None
     selected_mail_metadata: ArtifactMailMetadata | None = None
     selected_mail_message: MailMessage | None = None
@@ -100,6 +113,24 @@ class MailImportState:
     candidates: tuple[MailCandidate, ...] = ()
     message: str | None = None
     message_kind: MessageKind = "info"
+    recoveries: tuple[MailboxRecovery, ...] = ()
+    worker_status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryItem:
+    """Presentation-safe audit entry for a visible case."""
+
+    event: AuditEvent
+    actor_label: str
+    action: str
+    reason: str | None
+    detail: str | None
+
+
+CASE_PAGE_SIZE = 5
+HISTORY_PAGE_SIZE = 20
+RECOVERY_PAGE_SIZE = 10
 
 
 class GoldenAgeService:
@@ -118,6 +149,7 @@ class GoldenAgeService:
         elizabethan_client: ElizabethanSearchClient,
         mail_import_client: MailImportClient | None = None,
         mail_import_repository: MailImportRepository | None = None,
+        recovery_repository: MailboxRecoveryRepository | None = None,
     ) -> None:
         self._case_repository = case_repository
         self._activity_repository = activity_repository
@@ -129,6 +161,7 @@ class GoldenAgeService:
         self._elizabethan_client = elizabethan_client
         self._mail_import_client = mail_import_client
         self._mail_import_repository = mail_import_repository
+        self._recovery_repository = recovery_repository
 
     def get_today_worklist(self, *, user: UserContext, now: datetime) -> tuple[WorklistItem, ...]:
         """Return due activities sorted by urgency and timestamp."""
@@ -157,6 +190,8 @@ class GoldenAgeService:
         user: UserContext,
         now: datetime,
         selected_artifact_id: UUID | None = None,
+        artifact_offset: int = 0,
+        history_offset: int = 0,
     ) -> CaseDetail:
         """Build detail state for one case."""
         del now
@@ -174,13 +209,27 @@ class GoldenAgeService:
             activity for activity in activities if activity.completed_at is None
         )
         active_activity = open_activities[0] if open_activities else None
-        recent_artifacts = tuple(
-            sorted(
-                self._artifact_repository.list_case_artifacts(case_id, user),
-                key=lambda artifact: artifact.uploaded_at,
-                reverse=True,
-            )[:5]
+        artifact_offset = _bounded_offset(artifact_offset)
+        history_offset = _bounded_offset(history_offset)
+        artifact_page = self._case_artifact_page(
+            case_id,
+            user,
+            offset=artifact_offset,
+            limit=CASE_PAGE_SIZE,
         )
+        history_events = self._case_history_events(
+            case_id,
+            user,
+            offset=history_offset,
+            limit=HISTORY_PAGE_SIZE + 1,
+        )
+        has_older_history = len(history_events) > HISTORY_PAGE_SIZE
+        history_events = tuple(history_events[:HISTORY_PAGE_SIZE])
+        history = tuple(_history_item(event, user) for event in history_events)
+        has_newer_history = history_offset > 0
+        has_older_artifacts = len(artifact_page) > CASE_PAGE_SIZE
+        artifact_page = tuple(artifact_page[:CASE_PAGE_SIZE])
+        has_newer_artifacts = artifact_offset > 0
         selected_artifact = None
         selected_mail_metadata = None
         selected_mail_message = None
@@ -214,13 +263,63 @@ class GoldenAgeService:
             case_file=case_file,
             active_activity=active_activity,
             open_activities=open_activities,
-            recent_artifacts=recent_artifacts,
+            recent_artifacts=tuple(artifact_page),
+            completed_activities=tuple(
+                activity for activity in activities if activity.completed_at is not None
+            ),
+            history=history,
+            artifact_offset=artifact_offset,
+            has_older_artifacts=has_older_artifacts,
+            has_newer_artifacts=has_newer_artifacts,
+            history_offset=history_offset,
+            has_older_history=has_older_history,
+            has_newer_history=has_newer_history,
+            case_state_label=_case_state_label(case_file, open_activities),
             selected_artifact=selected_artifact,
             selected_mail_metadata=selected_mail_metadata,
             selected_mail_message=selected_mail_message,
             selected_conversation=selected_conversation,
             selected_conversation_artifacts=selected_conversation_artifacts,
         )
+
+    def list_case_history(
+        self,
+        *,
+        case_id: UUID,
+        user: UserContext,
+        offset: int = 0,
+        limit: int = HISTORY_PAGE_SIZE,
+    ) -> tuple[HistoryItem, ...]:
+        """Return a bounded, permission-filtered case history page."""
+        if self._case_repository.get_case(case_id, user) is None:
+            raise NotFoundError("Case not found.")
+        bounded_limit = min(max(limit, 0), HISTORY_PAGE_SIZE)
+        events = self._case_history_events(
+            case_id,
+            user,
+            offset=_bounded_offset(offset),
+            limit=bounded_limit,
+        )
+        return tuple(_history_item(event, user) for event in events)
+
+    def _case_history_events(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> tuple[AuditEvent, ...]:
+        list_method = getattr(self._audit_repository, "list_case_events", None)
+        if not callable(list_method):
+            return ()
+        return tuple(list_method(case_id, user, offset=offset, limit=limit))
+
+    def get_mail_recovery_state(self, *, user: UserContext) -> tuple[MailboxRecovery, ...]:
+        """Return failed imports the caller is authorized to retry."""
+        if self._recovery_repository is None:
+            return ()
+        return tuple(self._recovery_repository.list_recoveries(user, limit=RECOVERY_PAGE_SIZE))
 
     def get_case_detail_for_activity(
         self,
@@ -294,6 +393,10 @@ class GoldenAgeService:
                 "case_id": str(activity.case_id),
                 "close_case": plan.close_case,
                 "skip_follow_up": plan.skip_follow_up,
+                "activity_description": activity.description,
+                "next_step": next_step.strip() if next_step else None,
+                "next_due_at": next_due_at.isoformat() if next_due_at else None,
+                "reason": "No follow-up required." if plan.skip_follow_up else None,
                 "follow_up_activity_id": (
                     str(plan.follow_up_activity.id) if plan.follow_up_activity else None
                 ),
@@ -336,7 +439,7 @@ class GoldenAgeService:
     ) -> MailImportState:
         """Load persisted desktop mail selector state and review queue."""
         if self._mail_import_client is None or self._mail_import_repository is None:
-            return MailImportState()
+            return MailImportState(recoveries=self.get_mail_recovery_state(user=user))
         selector = self._mail_selector_for_user(user)
         candidates = self._mail_import_repository.list_review_candidates(
             user=user,
@@ -348,6 +451,7 @@ class GoldenAgeService:
             candidates=tuple(candidates),
             message=message,
             message_kind=message_kind,
+            recoveries=self.get_mail_recovery_state(user=user),
         )
 
     def get_mail_selector_settings(self, *, user: UserContext) -> MailSelector:
@@ -538,20 +642,82 @@ class GoldenAgeService:
         now: datetime,
     ) -> IntakeState:
         """Ingest a normalized mailbox message."""
-        return self._ingest_mail_artifact(
-            file_name=file_name,
-            media_type=media_type,
-            content=content,
-            source_system=DESKTOP_MAIL_SOURCE,
-            user=user,
-            now=now,
-            external_message_id=extracted.source_message_id,
-            rfc_message_id=extracted.internet_message_id or extracted.rfc_message_id,
-            source_account=extracted.source_account_id,
-            source_mailbox=extracted.source_folder_id,
-            audit_event_type="mailbox_message_ingested",
-            extracted=extracted,
+        try:
+            return self._ingest_mail_artifact(
+                file_name=file_name,
+                media_type=media_type,
+                content=content,
+                source_system=DESKTOP_MAIL_SOURCE,
+                user=user,
+                now=now,
+                external_message_id=extracted.source_message_id,
+                rfc_message_id=extracted.internet_message_id or extracted.rfc_message_id,
+                source_account=extracted.source_account_id,
+                source_mailbox=extracted.source_folder_id,
+                audit_event_type="mailbox_message_ingested",
+                extracted=extracted,
+            )
+        except Exception as error:
+            self._remember_failed_import(
+                file_name=file_name,
+                media_type=media_type,
+                content=content,
+                extracted=extracted,
+                user=user,
+                now=now,
+                error=error,
+            )
+            raise
+
+    def retry_mail_import(
+        self,
+        *,
+        recovery_id: UUID,
+        user: UserContext,
+        now: datetime,
+    ) -> IntakeState:
+        """Retry one failed import owned by the caller."""
+        if self._recovery_repository is None:
+            raise NotFoundError("Mail recovery is not available.")
+        recovery = self._recovery_repository.get_recovery(recovery_id, user)
+        if recovery is None:
+            raise NotFoundError("Failed import not found.")
+        extracted = _extracted_from_json(recovery.extracted_json)
+        try:
+            intake_state = self._ingest_mail_artifact(
+                file_name=recovery.file_name,
+                media_type=recovery.media_type,
+                content=recovery.content,
+                source_system=recovery.source_system,
+                user=user,
+                now=now,
+                external_message_id=recovery.external_message_id,
+                rfc_message_id=recovery.rfc_message_id,
+                source_account=recovery.account_name,
+                source_mailbox=recovery.mailbox_name,
+                audit_event_type="mailbox_message_retried",
+                extracted=extracted,
+            )
+        except Exception as error:
+            self._recovery_repository.save_recovery(
+                replace(
+                    recovery,
+                    error_message=str(error),
+                    failed_at=now,
+                    retry_count=recovery.retry_count + 1,
+                )
+            )
+            raise
+        self._recovery_repository.save_recovery(
+            replace(
+                recovery,
+                status="recovered",
+                recovered_artifact_id=(intake_state.artifact.id if intake_state.artifact else None),
+                recovered_at=now,
+                failed_at=now,
+            )
         )
+        return intake_state
 
     def get_recent_intake(self, *, user: UserContext, limit: int = 10) -> IntakeState:
         """Return recent mail conversations for the intake panel."""
@@ -616,6 +782,31 @@ class GoldenAgeService:
             or MailSelector()
         )
 
+    def _case_artifact_page(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> tuple[Artifact, ...]:
+        page_method = getattr(self._artifact_repository, "list_case_artifacts_page", None)
+        if callable(page_method):
+            return tuple(
+                page_method(
+                    case_id,
+                    user,
+                    offset=offset,
+                    limit=limit + 1,
+                )
+            )
+        artifacts = sorted(
+            self._artifact_repository.list_case_artifacts(case_id, user),
+            key=lambda artifact: artifact.uploaded_at,
+            reverse=True,
+        )
+        return tuple(artifacts[offset : offset + limit + 1])
+
     def _ingest_mail_artifact(
         self,
         *,
@@ -632,9 +823,48 @@ class GoldenAgeService:
         audit_event_type: str,
         extracted: ExtractedArtifactData | None = None,
     ) -> IntakeState:
+        extracted = extracted or self._content_extractor.extract(file_name, media_type, content)
+        if external_message_id is not None or source_system == DESKTOP_MAIL_SOURCE:
+            existing = self._existing_mail_message(
+                extracted=extracted,
+                source_system=source_system,
+                source_account=source_account,
+                source_mailbox=source_mailbox,
+                external_message_id=external_message_id,
+                rfc_message_id=rfc_message_id,
+                user=user,
+            )
+            if existing is not None:
+                existing_artifact = self._artifact_repository.get_artifact(
+                    existing.artifact_id,
+                    user,
+                )
+                if existing_artifact is not None:
+                    state = self._intake_state_for_artifact(
+                        existing_artifact,
+                        self._artifact_repository.get_suggestion(existing.artifact_id, user),
+                        user=user,
+                    )
+                    conversation = self._artifact_repository.get_mail_conversation(
+                        existing.conversation_id,
+                        user,
+                    )
+                    return replace(
+                        state,
+                        conversation=conversation,
+                        conversation_artifacts=(
+                            tuple(
+                                self._artifact_repository.list_conversation_artifacts(
+                                    existing.conversation_id,
+                                    user,
+                                )
+                            )
+                            if conversation is not None
+                            else ()
+                        ),
+                    )
         artifact_id = uuid4()
         storage_key = self._artifact_store.store(artifact_id, file_name, content)
-        extracted = extracted or self._content_extractor.extract(file_name, media_type, content)
         artifact = Artifact(
             id=artifact_id,
             file_name=file_name,
@@ -706,6 +936,72 @@ class GoldenAgeService:
             ),
             new_case_title_suggestion=intake_state.new_case_title_suggestion,
         )
+
+    def _existing_mail_message(
+        self,
+        *,
+        extracted: ExtractedArtifactData,
+        source_system: MailSourceSystem,
+        source_account: str | None,
+        source_mailbox: str | None,
+        external_message_id: str | None,
+        rfc_message_id: str | None,
+        user: UserContext,
+    ) -> MailMessage | None:
+        source_kind = extracted.source_kind or source_system
+        return self._artifact_repository.find_mail_message_by_source(
+            source_kind=source_kind,
+            source_account_id=extracted.source_account_id or source_account,
+            source_folder_id=extracted.source_folder_id or source_mailbox,
+            source_message_id=extracted.source_message_id or external_message_id,
+            internet_message_id=extracted.internet_message_id or rfc_message_id,
+            dedupe_fingerprint=_dedupe_fingerprint(
+                source_kind=source_kind,
+                source_account_id=extracted.source_account_id or source_account,
+                source_folder_id=extracted.source_folder_id or source_mailbox,
+                source_message_id=extracted.source_message_id or external_message_id,
+                internet_message_id=extracted.internet_message_id or rfc_message_id,
+                subject=extracted.subject,
+                sent_at=extracted.sent_at,
+                content_text=extracted.content_text,
+            ),
+            user=user,
+        )
+
+    def _remember_failed_import(
+        self,
+        *,
+        file_name: str,
+        media_type: str,
+        content: bytes,
+        extracted: ExtractedArtifactData,
+        user: UserContext,
+        now: datetime,
+        error: Exception,
+    ) -> None:
+        if self._recovery_repository is None:
+            return
+        recovery = MailboxRecovery(
+            id=uuid4(),
+            user_id=user.id,
+            source_system=DESKTOP_MAIL_SOURCE,
+            external_message_id=extracted.source_message_id,
+            rfc_message_id=extracted.internet_message_id or extracted.rfc_message_id,
+            account_name=extracted.source_account_id,
+            mailbox_name=extracted.source_folder_id,
+            file_name=file_name,
+            media_type=media_type,
+            content=content,
+            extracted_json=_extracted_to_json(extracted),
+            error_message=str(error),
+            status="failed",
+            failed_at=now,
+        )
+        try:
+            self._recovery_repository.save_recovery(recovery)
+        except Exception:
+            # Never replace the original ingestion failure with a recovery-store failure.
+            return
 
     def get_intake_state(self, *, artifact_id: UUID, user: UserContext) -> IntakeState:
         """Load persisted intake state."""
@@ -802,7 +1098,17 @@ class GoldenAgeService:
             actor_user_id=user.id,
             event_type="artifact_assigned",
             subject_id=artifact_id,
-            payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
+            payload={
+                "case_id": str(case_id),
+                "next_step": normalized_step,
+                "next_due_at": next_due_at.isoformat(),
+                "reason": (
+                    suggestion.summary_reason
+                    if (suggestion := self._artifact_repository.get_suggestion(artifact_id, user))
+                    is not None
+                    else None
+                ),
+            },
             now=now,
         )
         return self.get_case_detail(case_id=case_id, user=user, now=now)
@@ -956,6 +1262,136 @@ class GoldenAgeService:
             suggestion=suggestion,
             new_case_title_suggestion=new_case_title_suggestion,
         )
+
+
+def _bounded_offset(offset: int) -> int:
+    """Keep URL-driven navigation finite and predictable."""
+    return min(max(offset, 0), 10_000)
+
+
+def _case_state_label(case_file: CaseFile, open_activities: tuple[Activity, ...]) -> str:
+    if case_file.status == "closed":
+        return "Closed case"
+    if open_activities:
+        return "Open case"
+    return "Open case · no follow-up scheduled"
+
+
+def _history_item(event: AuditEvent, user: UserContext) -> HistoryItem:
+    payload = event.payload_json
+    if event.actor_user_id is None:
+        actor_label = "System"
+    elif event.actor_user_id == user.id:
+        actor_label = user.display_name
+    else:
+        actor_label = str(event.actor_user_id)
+
+    close_case = payload.get("close_case") is True
+    action = {
+        "activity_resolved": "Closed case" if close_case else "Completed activity",
+        "artifact_assigned": "Assigned intake",
+        "artifact_uploaded": "Uploaded intake",
+        "mailbox_message_ingested": "Imported mailbox message",
+        "mailbox_message_retried": "Retried mailbox message",
+        "desktop_mail_message_imported": "Imported desktop mail",
+        "artifact_search_requested": "Searched for a case",
+    }.get(event.event_type, event.event_type.replace("_", " ").capitalize())
+    reason_value = payload.get("reason")
+    reason = reason_value if isinstance(reason_value, str) and reason_value else None
+    if reason is None and payload.get("skip_follow_up") is True:
+        reason = "No follow-up required."
+    detail_value = (
+        payload.get("next_step")
+        or payload.get("activity_description")
+        or payload.get("query")
+        or payload.get("summary_reason")
+    )
+    detail = detail_value if isinstance(detail_value, str) and detail_value else None
+    return HistoryItem(
+        event=event,
+        actor_label=actor_label,
+        action=action,
+        reason=reason,
+        detail=detail,
+    )
+
+
+def _extracted_to_json(extracted: ExtractedArtifactData) -> dict[str, object]:
+    """Serialize normalized mail data for a durable retry record."""
+    sender = None
+    if extracted.sender is not None:
+        sender = {"name": extracted.sender.name, "email": extracted.sender.email}
+    return {
+        "content_text": extracted.content_text,
+        "subject": extracted.subject,
+        "sender": sender,
+        "recipients": [
+            {"name": recipient.name, "email": recipient.email} for recipient in extracted.recipients
+        ],
+        "sent_at": extracted.sent_at.isoformat() if extracted.sent_at else None,
+        "rfc_message_id": extracted.rfc_message_id,
+        "message_format": extracted.message_format,
+        "parse_status": extracted.parse_status,
+        "source_kind": extracted.source_kind,
+        "received_at": extracted.received_at.isoformat() if extracted.received_at else None,
+        "direction": extracted.direction,
+        "source_account_id": extracted.source_account_id,
+        "source_folder_id": extracted.source_folder_id,
+        "source_message_id": extracted.source_message_id,
+        "conversation_id": extracted.conversation_id,
+        "internet_message_id": extracted.internet_message_id,
+    }
+
+
+def _extracted_from_json(payload: dict[str, object]) -> ExtractedArtifactData:
+    sender_payload = payload.get("sender")
+    sender = None
+    if isinstance(sender_payload, dict):
+        sender = MailParticipant(
+            name=_optional_string(sender_payload.get("name")),
+            email=_optional_string(sender_payload.get("email")),
+        )
+    recipients_payload = payload.get("recipients")
+    recipients: list[MailParticipant] = []
+    if isinstance(recipients_payload, list):
+        for item in recipients_payload:
+            if isinstance(item, dict):
+                recipients.append(
+                    MailParticipant(
+                        name=_optional_string(item.get("name")),
+                        email=_optional_string(item.get("email")),
+                    )
+                )
+    return ExtractedArtifactData(
+        content_text=str(payload.get("content_text") or ""),
+        subject=_optional_string(payload.get("subject")),
+        sender=sender,
+        recipients=tuple(recipients),
+        sent_at=_optional_datetime(payload.get("sent_at")),
+        rfc_message_id=_optional_string(payload.get("rfc_message_id")),
+        message_format=cast(
+            Literal["outlook_msg", "rfc822_email"], payload.get("message_format", "rfc822_email")
+        ),
+        parse_status="parsed",
+        source_kind=_optional_string(payload.get("source_kind")),
+        received_at=_optional_datetime(payload.get("received_at")),
+        direction=cast(Literal["inbound", "outbound"] | None, payload.get("direction")),
+        source_account_id=_optional_string(payload.get("source_account_id")),
+        source_folder_id=_optional_string(payload.get("source_folder_id")),
+        source_message_id=_optional_string(payload.get("source_message_id")),
+        conversation_id=_optional_string(payload.get("conversation_id")),
+        internet_message_id=_optional_string(payload.get("internet_message_id")),
+    )
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return datetime.fromisoformat(value)
 
 
 def _build_mail_metadata(

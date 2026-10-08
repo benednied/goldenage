@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parseaddr
-from typing import Any, Callable, cast
+from typing import Any, Callable, Literal, cast
 
 from goldenage.application.ports import MailboxSource
 from goldenage.config import Settings
@@ -36,6 +36,15 @@ class OutlookMailboxMessage:
     sent_at: datetime | None
     received_at: datetime | None
     direction: str
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxWorkerState:
+    """Observable state for the local mailbox worker."""
+
+    status: Literal["idle", "running", "failed", "stopped"]
+    message: str | None = None
+    changed_at: datetime | None = None
 
 
 def normalize_outlook_message(message: OutlookMailboxMessage) -> ExtractedArtifactData:
@@ -235,14 +244,44 @@ class OutlookMailboxWorker:
     def __init__(self, source: MailboxSource) -> None:
         self._source = source
         self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()
+        self._state = MailboxWorkerState(status="idle")
+
+    @property
+    def state(self) -> MailboxWorkerState:
+        """Return the latest worker state for the status panel."""
+        with self._state_lock:
+            return self._state
 
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(target=self._source.watch_forever, daemon=True)
+        self._set_state("running")
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         stop = getattr(self._source, "stop", None)
         if callable(stop):
             stop()
+        self._set_state("stopped")
+
+    def _run(self) -> None:
+        try:
+            self._source.watch_forever()
+        except Exception as error:  # pragma: no cover - platform-specific worker failures.
+            self._set_state("failed", str(error))
+        else:
+            self._set_state("stopped")
+
+    def _set_state(
+        self,
+        status: Literal["idle", "running", "failed", "stopped"],
+        message: str | None = None,
+    ) -> None:
+        with self._state_lock:
+            self._state = MailboxWorkerState(
+                status=status,
+                message=message,
+                changed_at=datetime.now(UTC),
+            )

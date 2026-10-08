@@ -21,6 +21,7 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     MailboxAccountConfig,
+    MailboxRecovery,
     MailboxSyncCheckpoint,
     MailConversation,
     MailMessage,
@@ -247,6 +248,35 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, {"case_id": case_id})
+            return tuple(_row_to_artifact(row) for row in cursor.fetchall())
+
+    def list_case_artifacts_page(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> Sequence[Artifact]:
+        if not self._case_visible(case_id, user):
+            return ()
+        sql = """
+            SELECT id, file_name, media_type, size_bytes, content_text, storage_key,
+                   uploaded_at, uploaded_by, assigned_case_id
+            FROM artifact
+            WHERE assigned_case_id = %(case_id)s
+            ORDER BY uploaded_at DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {
+                    "case_id": case_id,
+                    "limit": max(limit, 0),
+                    "offset": max(offset, 0),
+                },
+            )
             return tuple(_row_to_artifact(row) for row in cursor.fetchall())
 
     def list_unassigned_artifacts(
@@ -625,6 +655,115 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
             cursor.execute(sql, payload)
             connection.commit()
 
+    def list_case_events(
+        self,
+        case_id: UUID,
+        user: UserContext,
+        *,
+        offset: int,
+        limit: int,
+    ) -> Sequence[AuditEvent]:
+        sql = """
+            SELECT e.id, e.actor_user_id, e.event_type, e.subject_id,
+                   e.payload_json, e.created_at
+            FROM audit_event e
+            LEFT JOIN activity activity_subject ON activity_subject.id = e.subject_id
+            LEFT JOIN artifact artifact_subject ON artifact_subject.id = e.subject_id
+            JOIN case_file visible_case ON visible_case.id = %(case_id)s
+            WHERE (visible_case.visible_group_id IS NULL
+                   OR visible_case.visible_group_id = ANY(%(group_ids)s::uuid[]))
+              AND (
+                    e.subject_id = visible_case.id
+                 OR activity_subject.case_id = visible_case.id
+                 OR artifact_subject.assigned_case_id = visible_case.id
+                 OR e.payload_json->>'case_id' = visible_case.id::text
+              )
+            ORDER BY e.created_at DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {
+                    "case_id": case_id,
+                    "group_ids": list(user.visible_group_ids),
+                    "limit": max(limit, 0),
+                    "offset": max(offset, 0),
+                },
+            )
+            return tuple(_row_to_audit_event(row) for row in cursor.fetchall())
+
+
+class PostgresMailboxRecoveryRepository(_PostgresRepositoryBase):
+    """PostgreSQL persistence for user-owned failed mailbox imports."""
+
+    def save_recovery(self, recovery: MailboxRecovery) -> None:
+        sql = """
+            INSERT INTO mailbox_import_recovery (
+                id, user_id, source_system, external_message_id, rfc_message_id,
+                account_name, mailbox_name, file_name, media_type, content,
+                extracted_json, error_message, status, failed_at, retry_count,
+                recovered_artifact_id, recovered_at
+            ) VALUES (
+                %(id)s, %(user_id)s, %(source_system)s, %(external_message_id)s,
+                %(rfc_message_id)s, %(account_name)s, %(mailbox_name)s, %(file_name)s,
+                %(media_type)s, %(content)s, %(extracted_json)s, %(error_message)s,
+                %(status)s, %(failed_at)s, %(retry_count)s, %(recovered_artifact_id)s,
+                %(recovered_at)s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                error_message = EXCLUDED.error_message,
+                status = EXCLUDED.status,
+                failed_at = EXCLUDED.failed_at,
+                retry_count = EXCLUDED.retry_count,
+                recovered_artifact_id = EXCLUDED.recovered_artifact_id,
+                recovered_at = EXCLUDED.recovered_at
+        """
+        payload = asdict(recovery)
+        payload["extracted_json"] = Jsonb(payload["extracted_json"])
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, payload)
+            connection.commit()
+
+    def list_recoveries(
+        self,
+        user: UserContext,
+        *,
+        limit: int,
+    ) -> Sequence[MailboxRecovery]:
+        return self._query_recoveries(
+            """
+            WHERE user_id = %(user_id)s AND status = 'failed'
+            ORDER BY failed_at DESC
+            LIMIT %(limit)s
+            """,
+            {"user_id": user.id, "limit": max(limit, 0)},
+        )
+
+    def get_recovery(self, recovery_id: UUID, user: UserContext) -> MailboxRecovery | None:
+        rows = self._query_recoveries(
+            "WHERE id = %(recovery_id)s AND user_id = %(user_id)s AND status = 'failed'",
+            {"recovery_id": recovery_id, "user_id": user.id},
+        )
+        return rows[0] if rows else None
+
+    def _query_recoveries(
+        self,
+        condition: str,
+        params: dict[str, object],
+    ) -> tuple[MailboxRecovery, ...]:
+        sql = f"""
+            SELECT id, user_id, source_system, external_message_id, rfc_message_id,
+                   account_name, mailbox_name, file_name, media_type, content,
+                   extracted_json, error_message, status, failed_at, retry_count,
+                   recovered_artifact_id, recovered_at
+            FROM mailbox_import_recovery
+            {condition}
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            return tuple(_row_to_mailbox_recovery(row) for row in cursor.fetchall())
+
 
 def _row_to_case_file(row: dict[str, object]) -> CaseFile:
     return CaseFile(
@@ -662,6 +801,39 @@ def _row_to_artifact(row: dict[str, object]) -> Artifact:
         uploaded_at=row["uploaded_at"],
         uploaded_by=row["uploaded_by"],
         assigned_case_id=row["assigned_case_id"],
+    )
+
+
+def _row_to_audit_event(row: dict[str, object]) -> AuditEvent:
+    return AuditEvent(
+        id=row["id"],
+        actor_user_id=row["actor_user_id"],
+        event_type=row["event_type"],
+        subject_id=row["subject_id"],
+        payload_json=row["payload_json"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_mailbox_recovery(row: dict[str, object]) -> MailboxRecovery:
+    return MailboxRecovery(
+        id=row["id"],
+        user_id=row["user_id"],
+        source_system=row["source_system"],
+        external_message_id=row["external_message_id"],
+        rfc_message_id=row["rfc_message_id"],
+        account_name=row["account_name"],
+        mailbox_name=row["mailbox_name"],
+        file_name=row["file_name"],
+        media_type=row["media_type"],
+        content=bytes(row["content"]),
+        extracted_json=row["extracted_json"],
+        error_message=row["error_message"],
+        status=row["status"],
+        failed_at=row["failed_at"],
+        retry_count=int(row["retry_count"]),
+        recovered_artifact_id=row["recovered_artifact_id"],
+        recovered_at=row["recovered_at"],
     )
 
 
