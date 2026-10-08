@@ -173,6 +173,36 @@ def test_startup_and_shutdown_delegate_to_outlook_worker(monkeypatch) -> None:
     assert calls == ["start", "stop"]
 
 
+def test_startup_failure_still_stops_outlook_worker(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeSource:
+        def __init__(self, settings, on_message) -> None:
+            del settings, on_message
+
+    class FakeWorker:
+        def __init__(self, source) -> None:
+            del source
+
+        def start(self) -> None:
+            calls.append("start")
+            raise RuntimeError("worker failed to start")
+
+        def stop(self) -> None:
+            calls.append("stop")
+
+    monkeypatch.setattr(web_app, "WindowsOutlookMailboxSource", FakeSource)
+    monkeypatch.setattr(web_app, "OutlookMailboxWorker", FakeWorker)
+    monkeypatch.setenv("GOLDENAGE_OUTLOOK_SYNC_ENABLED", "1")
+    monkeypatch.setenv("GOLDENAGE_OUTLOOK_ACCOUNT", "Mailbox")
+
+    with pytest.raises(RuntimeError, match="worker failed to start"):
+        with TestClient(web_app.create_app()):
+            pass
+
+    assert calls == ["start", "stop"]
+
+
 def test_web_error_routes_for_auth_mail_upload_resolution_and_not_found(
     tmp_path, monkeypatch
 ) -> None:

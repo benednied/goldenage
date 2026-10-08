@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parseaddr
@@ -104,7 +103,7 @@ class WindowsOutlookMailboxSource(MailboxSource):
                             continue
                         seen_keys.add(normalized.message_key)
                         self._on_message(normalized)
-                time.sleep(max(self._settings.outlook_poll_seconds, 5))
+                self._stop_event.wait(max(self._settings.outlook_poll_seconds, 5))
         finally:
             pythoncom.CoUninitialize()
 
@@ -235,14 +234,32 @@ class OutlookMailboxWorker:
     def __init__(self, source: MailboxSource) -> None:
         self._source = source
         self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._stopped = False
 
     def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._source.watch_forever, daemon=True)
-        self._thread.start()
+        with self._lock:
+            if self._thread is not None or self._stopped:
+                return
+            thread = threading.Thread(target=self._source.watch_forever, daemon=True)
+            self._thread = thread
+            try:
+                thread.start()
+            except BaseException:
+                self._thread = None
+                raise
 
     def stop(self) -> None:
-        stop = getattr(self._source, "stop", None)
-        if callable(stop):
-            stop()
+        with self._lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            thread = self._thread
+
+        try:
+            stop = getattr(self._source, "stop", None)
+            if callable(stop):
+                stop()
+        finally:
+            if thread is not None and thread is not threading.current_thread():
+                thread.join()

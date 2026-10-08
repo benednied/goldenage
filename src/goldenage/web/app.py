@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
@@ -97,7 +99,17 @@ def create_app() -> FastAPI:
     settings = load_settings()
     context = _build_context(settings)
 
-    app = FastAPI(title="GoldenAge")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            if context.outlook_worker is not None:
+                context.outlook_worker.start()
+            yield
+        finally:
+            if context.outlook_worker is not None:
+                context.outlook_worker.stop()
+
+    app = FastAPI(title="GoldenAge", lifespan=lifespan)
     upload_limits = UploadLimits.from_environment()
     app.add_middleware(UploadLimitMiddleware, limit=upload_limits.request_bytes)
     app.state.context = context
@@ -105,16 +117,6 @@ def create_app() -> FastAPI:
     if settings.use_local_first_sqlite:
         settings.profile_dir.mkdir(parents=True, exist_ok=True)
         app.mount("/profiles", StaticFiles(directory=str(settings.profile_dir)), name="profiles")
-
-    @app.on_event("startup")
-    async def startup_event() -> None:
-        if context.outlook_worker is not None:
-            context.outlook_worker.start()
-
-    @app.on_event("shutdown")
-    async def shutdown_event() -> None:
-        if context.outlook_worker is not None:
-            context.outlook_worker.stop()
 
     @app.get("/", response_class=HTMLResponse)
     async def home() -> RedirectResponse:

@@ -1,4 +1,5 @@
 import sys
+import threading
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -205,8 +206,6 @@ def test_outlook_mailbox_source_runs_one_poll_and_stops(monkeypatch) -> None:
         "win32com.client",
         SimpleNamespace(Dispatch=lambda name: outlook),
     )
-    monkeypatch.setattr("goldenage.adapters.outlook_mailbox.time.sleep", lambda seconds: None)
-
     source.watch_forever()
 
     assert len(received) == 1
@@ -321,6 +320,31 @@ def test_outlook_mailbox_worker_starts_once_and_delegates_stop() -> None:
         SimpleNamespace(watch_forever=lambda: None)  # ty:ignore[invalid-argument-type]
     )
     worker_without_stop.stop()
+
+
+def test_outlook_mailbox_worker_stop_waits_for_watch_and_is_idempotent() -> None:
+    watch_started = threading.Event()
+    watch_stopped = threading.Event()
+    source_stopped = threading.Event()
+
+    def watch_forever() -> None:
+        watch_started.set()
+        source_stopped.wait()
+        watch_stopped.set()
+
+    source = SimpleNamespace(
+        watch_forever=watch_forever,
+        stop=source_stopped.set,
+    )
+    worker = OutlookMailboxWorker(source)  # ty:ignore[invalid-argument-type]
+
+    worker.start()
+    assert watch_started.wait(timeout=1)
+
+    worker.stop()
+    worker.stop()
+
+    assert watch_stopped.is_set()
 
 
 def _settings(account_name: str | None) -> Settings:
