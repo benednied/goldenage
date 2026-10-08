@@ -23,6 +23,8 @@ from goldenage.domain.models import (
     AssignmentSuggestion,
     AuditEvent,
     CaseFile,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     MailCandidate,
     MailConversation,
     MailMessage,
@@ -249,6 +251,31 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
         == message
     )
     assert artifact_repo.list_conversation_artifacts(conversation_id, user) == (artifact,)
+
+    mailbox_config = MailboxAccountConfig(
+        id=uuid4(),
+        user_id=user.id,
+        source_kind="outlook_mailbox_message",
+        account_key="Mailbox",
+        outlook_store_name="Mailbox",
+        inbox_folder_key="Inbox",
+        sent_folder_key="Sent",
+        polling_interval_seconds=30,
+        active=True,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    artifact_repo.save_mailbox_account_config(mailbox_config)
+    assert artifact_repo.get_active_mailbox_account_config(user) == mailbox_config
+    mailbox_checkpoint = MailboxSyncCheckpoint(
+        account_config_id=mailbox_config.id,
+        folder_key="Inbox",
+        last_message_key="message",
+        last_message_at=NOW,
+        updated_at=NOW,
+    )
+    artifact_repo.save_mailbox_sync_checkpoint(mailbox_checkpoint)
+    assert artifact_repo.list_mailbox_sync_checkpoints(mailbox_config.id) == (mailbox_checkpoint,)
 
     account = user_repo.get_first_user()
     assert user_repo.get_first_user() == account

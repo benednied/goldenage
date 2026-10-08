@@ -30,6 +30,9 @@ class Settings:
     apple_mail_fixture_path: Path | None
     auth_secret: str
     auth_cookie_secure: bool
+    outlook_delivery_max_attempts: int = 3
+    outlook_retry_backoff_seconds: float = 1.0
+    outlook_shutdown_timeout_seconds: float = 5.0
 
     @property
     def use_local_first_sqlite(self) -> bool:
@@ -71,6 +74,11 @@ def load_settings() -> Settings:
         ),
         auth_secret=os.environ.get("GOLDENAGE_AUTH_SECRET", _GENERATED_AUTH_SECRET),
         auth_cookie_secure=_env_flag("GOLDENAGE_AUTH_COOKIE_SECURE"),
+        outlook_delivery_max_attempts=_env_int("GOLDENAGE_OUTLOOK_DELIVERY_MAX_ATTEMPTS", 3),
+        outlook_retry_backoff_seconds=_env_float("GOLDENAGE_OUTLOOK_RETRY_BACKOFF_SECONDS", 1.0),
+        outlook_shutdown_timeout_seconds=_env_float(
+            "GOLDENAGE_OUTLOOK_SHUTDOWN_TIMEOUT_SECONDS", 5.0
+        ),
     )
 
 
@@ -89,6 +97,17 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return max(value, 1)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return max(value, 0.0)
 
 
 def _load_dotenv(path: Path) -> None:

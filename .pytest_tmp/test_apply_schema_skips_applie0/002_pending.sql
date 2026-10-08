@@ -1,0 +1,1 @@
+CREATE TABLE pending_test(id int)

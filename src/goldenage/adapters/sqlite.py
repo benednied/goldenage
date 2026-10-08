@@ -24,6 +24,8 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     LocalUserAccount,
+    MailboxAccountConfig,
+    MailboxSyncCheckpoint,
     MailCandidate,
     MailConversation,
     MailMessage,
@@ -587,6 +589,102 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             rows = connection.execute(sql, (str(conversation_id), *params)).fetchall()
         return tuple(_row_to_artifact(row) for row in rows)
 
+    def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
+        """Persist the SQLite mailbox runtime configuration."""
+        sql = """
+            INSERT INTO mailbox_account_config (
+                id, user_id, source_kind, account_key, outlook_store_name,
+                inbox_folder_key, sent_folder_key, polling_interval_seconds,
+                active, created_at, updated_at
+            ) VALUES (
+                :id, :user_id, :source_kind, :account_key, :outlook_store_name,
+                :inbox_folder_key, :sent_folder_key, :polling_interval_seconds,
+                :active, :created_at, :updated_at
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                source_kind = excluded.source_kind,
+                account_key = excluded.account_key,
+                outlook_store_name = excluded.outlook_store_name,
+                inbox_folder_key = excluded.inbox_folder_key,
+                sent_folder_key = excluded.sent_folder_key,
+                polling_interval_seconds = excluded.polling_interval_seconds,
+                active = excluded.active,
+                updated_at = excluded.updated_at
+        """
+        payload = {
+            "id": str(config.id),
+            "user_id": str(config.user_id) if config.user_id is not None else None,
+            "source_kind": config.source_kind,
+            "account_key": config.account_key,
+            "outlook_store_name": config.outlook_store_name,
+            "inbox_folder_key": config.inbox_folder_key,
+            "sent_folder_key": config.sent_folder_key,
+            "polling_interval_seconds": config.polling_interval_seconds,
+            "active": int(config.active),
+            "created_at": _serialize_datetime(config.created_at),
+            "updated_at": _serialize_datetime(config.updated_at),
+        }
+        with self._connect() as connection:
+            connection.execute(sql, payload)
+            connection.commit()
+
+    def get_active_mailbox_account_config(
+        self,
+        user: UserContext,
+    ) -> MailboxAccountConfig | None:
+        """Return the active SQLite mailbox configuration for a user."""
+        sql = """
+            SELECT *
+            FROM mailbox_account_config
+            WHERE active = 1
+              AND (user_id IS NULL OR user_id = ?)
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (str(user.id),)).fetchone()
+        return _row_to_mailbox_account_config(row) if row else None
+
+    def save_mailbox_sync_checkpoint(self, checkpoint: MailboxSyncCheckpoint) -> None:
+        """Persist a successful SQLite mailbox delivery position."""
+        sql = """
+            INSERT INTO mailbox_sync_checkpoint (
+                account_config_id, folder_key, last_message_key, last_message_at, updated_at
+            ) VALUES (
+                :account_config_id, :folder_key, :last_message_key, :last_message_at, :updated_at
+            )
+            ON CONFLICT(account_config_id, folder_key) DO UPDATE SET
+                last_message_key = excluded.last_message_key,
+                last_message_at = excluded.last_message_at,
+                updated_at = excluded.updated_at
+        """
+        payload = {
+            "account_config_id": str(checkpoint.account_config_id),
+            "folder_key": checkpoint.folder_key,
+            "last_message_key": checkpoint.last_message_key,
+            "last_message_at": _serialize_datetime(checkpoint.last_message_at),
+            "updated_at": _serialize_datetime(checkpoint.updated_at),
+        }
+        with self._connect() as connection:
+            connection.execute(sql, payload)
+            connection.commit()
+
+    def list_mailbox_sync_checkpoints(
+        self,
+        account_config_id: UUID,
+    ) -> Sequence[MailboxSyncCheckpoint]:
+        """Return durable SQLite checkpoints for one mailbox configuration."""
+        sql = """
+            SELECT account_config_id, folder_key, last_message_key, last_message_at, updated_at
+            FROM mailbox_sync_checkpoint
+            WHERE account_config_id = ?
+            ORDER BY folder_key ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (str(account_config_id),)).fetchall()
+        return tuple(_row_to_mailbox_sync_checkpoint(row) for row in rows)
+
 
 class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
     """Audit repository backed by SQLite."""
@@ -1053,6 +1151,32 @@ def _row_to_mail_message(row: sqlite3.Row) -> MailMessage:
         direction=row["direction"],
         received_at=_deserialize_datetime(row["received_at"]),
         created_at=_deserialize_datetime(row["created_at"]),
+    )
+
+
+def _row_to_mailbox_account_config(row: sqlite3.Row) -> MailboxAccountConfig:
+    return MailboxAccountConfig(
+        id=UUID(row["id"]),
+        user_id=UUID(row["user_id"]) if row["user_id"] is not None else None,
+        source_kind=row["source_kind"],
+        account_key=row["account_key"],
+        outlook_store_name=row["outlook_store_name"],
+        inbox_folder_key=row["inbox_folder_key"],
+        sent_folder_key=row["sent_folder_key"],
+        polling_interval_seconds=int(row["polling_interval_seconds"]),
+        active=bool(row["active"]),
+        created_at=_deserialize_datetime(row["created_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
+    )
+
+
+def _row_to_mailbox_sync_checkpoint(row: sqlite3.Row) -> MailboxSyncCheckpoint:
+    return MailboxSyncCheckpoint(
+        account_config_id=UUID(row["account_config_id"]),
+        folder_key=row["folder_key"],
+        last_message_key=row["last_message_key"],
+        last_message_at=_deserialize_datetime(row["last_message_at"]),
+        updated_at=_deserialize_datetime(row["updated_at"]),
     )
 
 
