@@ -515,7 +515,10 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
         display_name="Alex Example",
         visible_group_ids=frozenset(),
     )
-    now = datetime.now(UTC)
+    # Keep the seeded schedule stable throughout the day.  Anchoring the
+    # relative sample data at noon avoids the "later today" item crossing
+    # midnight when the demo state is created in the evening.
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
 
     cases = [
         CaseFile(
@@ -550,7 +553,7 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
             case_id=cases[0].id,
             description="Call Max about the amended pricing appendix.",
             kind="follow_up",
-            due_at=now - timedelta(hours=3),
+            due_at=now - timedelta(days=1, hours=3),
             created_at=now - timedelta(days=2),
             created_by=user.id,
         ),

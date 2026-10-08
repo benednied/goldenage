@@ -92,3 +92,6 @@ The [pull-request template](.github/pull_request_template.md) provides the
 review checklist. Use the [bug report](.github/ISSUE_TEMPLATE/bug_report.yml)
 or [feature request](.github/ISSUE_TEMPLATE/feature_request.yml) form for new
 issues.
+
+For version bumps, changelog entries, migration notes, and the controlled draft
+release workflow, follow [`docs/releasing.md`](docs/releasing.md).
