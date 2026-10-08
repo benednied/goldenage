@@ -46,6 +46,8 @@ from goldenage.adapters.postgres import (
     PostgresArtifactRepository,
     PostgresAuditRepository,
     PostgresCaseRepository,
+    PostgresMailImportRepository,
+    PostgresRepositoryTransaction,
 )
 from goldenage.adapters.sqlite import (
     SQLiteActivityRepository,
@@ -820,17 +822,33 @@ def _build_context(settings: Settings) -> AppContext:
         mail_import_repository = SQLiteMailImportRepository(settings.sqlite_path)
         default_user = None
     elif settings.database_url:
-        case_repository = PostgresCaseRepository(settings.database_url)
-        activity_repository = PostgresActivityRepository(settings.database_url)
-        artifact_repository = PostgresArtifactRepository(settings.database_url)
-        audit_repository = PostgresAuditRepository(settings.database_url)
+        postgres_transaction = PostgresRepositoryTransaction(settings.database_url)
+        case_repository = PostgresCaseRepository(
+            settings.database_url,
+            transaction=postgres_transaction,
+        )
+        activity_repository = PostgresActivityRepository(
+            settings.database_url,
+            transaction=postgres_transaction,
+        )
+        artifact_repository = PostgresArtifactRepository(
+            settings.database_url,
+            transaction=postgres_transaction,
+        )
+        audit_repository = PostgresAuditRepository(
+            settings.database_url,
+            transaction=postgres_transaction,
+        )
         default_user = UserContext(
             id=_uuid("11111111-1111-1111-1111-111111111111"),
             email="alex@example.com",
             display_name="Alex Example",
         )
         local_user_repository = None
-        mail_import_repository = InMemoryMailImportRepository()
+        mail_import_repository = PostgresMailImportRepository(
+            settings.database_url,
+            transaction=postgres_transaction,
+        )
     else:
         state, user = build_demo_state()
         case_repository = InMemoryCaseRepository(state)

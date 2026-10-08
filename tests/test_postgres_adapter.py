@@ -13,9 +13,11 @@ from goldenage.domain.models import (
     CaseFile,
     MailboxAccountConfig,
     MailboxSyncCheckpoint,
+    MailCandidate,
     MailConversation,
     MailMessage,
     MailParticipant,
+    MailSelector,
     UserContext,
 )
 
@@ -335,6 +337,114 @@ def test_artifact_repository_save_find_and_mailbox_methods(monkeypatch) -> None:
     payloads = [params for sql, params in cursor.executed if params]
     assert any(isinstance(params.get("recipients_json"), SimpleNamespace) for params in payloads)
     assert any(isinstance(params.get("participants_json"), SimpleNamespace) for params in payloads)
+
+
+def test_postgres_mail_import_repository_persists_scoped_state(monkeypatch) -> None:
+    user = UserContext(id=uuid4(), email="alex@example.com", display_name="Alex")
+    selector = MailSelector(
+        account_name="Mailbox",
+        mailbox_name="Inbox",
+        sender_filter="max@example.com",
+        sent_after=NOW,
+        result_limit=7,
+    )
+    candidate = MailCandidate(
+        candidate_id="candidate-1",
+        source_system="desktop_mail_client",
+        account_name="Mailbox",
+        mailbox_name="Inbox",
+        subject="Acme renewal",
+        sender_name="Max",
+        sender_email="max@example.com",
+        sent_at=NOW,
+        preview_text="Preview",
+        unread=True,
+        rfc_message_id="<candidate-1@example.com>",
+    )
+    selector_row: dict[str, object] = {
+        "account_name": selector.account_name,
+        "mailbox_name": selector.mailbox_name,
+        "unread_only": selector.unread_only,
+        "sender_filter": selector.sender_filter,
+        "subject_filter": selector.subject_filter,
+        "sent_after": selector.sent_after,
+        "result_limit": selector.result_limit,
+    }
+    candidate_row: dict[str, object] = {
+        "candidate_id": candidate.candidate_id,
+        "source_system": candidate.source_system,
+        "account_name": candidate.account_name,
+        "mailbox_name": candidate.mailbox_name,
+        "subject": candidate.subject,
+        "sender_name": candidate.sender_name,
+        "sender_email": candidate.sender_email,
+        "sent_at": candidate.sent_at,
+        "preview_text": candidate.preview_text,
+        "unread": candidate.unread,
+        "rfc_message_id": candidate.rfc_message_id,
+    }
+    cursor = FakeCursor(fetchone_rows=[selector_row, candidate_row], fetchall_rows=[candidate_row])
+    connection = FakeConnection(cursor)
+    repo = postgres.PostgresMailImportRepository("postgresql://example")
+    monkeypatch.setattr(repo, "_connect", lambda: connection)
+
+    repo.upsert_source(user=user, source_system="desktop_mail_client", now=NOW)
+    repo.save_selector(
+        user=user,
+        source_system="desktop_mail_client",
+        selector=selector,
+        now=NOW,
+    )
+    assert repo.get_selector(user=user, source_system="desktop_mail_client") == selector
+    repo.replace_review_candidates(
+        user=user,
+        source_system="desktop_mail_client",
+        candidates=(candidate,),
+        now=NOW,
+    )
+    assert repo.list_review_candidates(
+        user=user,
+        source_system="desktop_mail_client",
+    ) == (candidate,)
+    assert (
+        repo.get_review_candidate(
+            user=user,
+            source_system="desktop_mail_client",
+            candidate_id="candidate-1",
+        )
+        == candidate
+    )
+    repo.discard_review_candidate(
+        user=user,
+        source_system="desktop_mail_client",
+        candidate_id="candidate-1",
+    )
+
+    cursor.fetchall_rows = [
+        {
+            "external_message_id": "candidate-1",
+            "rfc_message_id": "<candidate-1@example.com>",
+        }
+    ]
+    assert repo.list_imported_message_ids(
+        user=user,
+        source_system="desktop_mail_client",
+    ) == frozenset({"candidate-1", "<candidate-1@example.com>"})
+    repo.save_imported_message(
+        user=user,
+        source_system="desktop_mail_client",
+        external_message_id="candidate-1",
+        rfc_message_id="<candidate-1@example.com>",
+        artifact_id=uuid4(),
+        now=NOW,
+    )
+
+    assert connection.commits == 5
+    assert all(
+        params is None or params.get("user_id") == user.id
+        for _, params in cursor.executed
+        if params is not None and "user_id" in params
+    )
 
 
 def test_mapper_return_types_are_domain_models() -> None:

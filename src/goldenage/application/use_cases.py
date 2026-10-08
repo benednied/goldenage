@@ -29,6 +29,7 @@ from goldenage.domain.models import (
     AuditEvent,
     CaseFile,
     ExtractedArtifactData,
+    ImportedMailPayload,
     MailCandidate,
     MailConversation,
     MailMessage,
@@ -488,6 +489,48 @@ class GoldenAgeService:
         ):
             raise ResolutionError("This mail message was already imported.")
 
+        return self._import_mail_payload(
+            payload=payload,
+            candidate_id=candidate_id,
+            user=user,
+            now=now,
+        )
+
+    def _import_mail_payload(
+        self,
+        *,
+        payload: ImportedMailPayload,
+        candidate_id: str,
+        user: UserContext,
+        now: datetime,
+    ) -> IntakeState:
+        transaction_factory = getattr(self._mail_import_repository, "transaction", None)
+        if callable(transaction_factory):
+            with transaction_factory():
+                return self._finish_mail_import(
+                    payload=payload,
+                    candidate_id=candidate_id,
+                    user=user,
+                    now=now,
+                )
+        return self._finish_mail_import(
+            payload=payload,
+            candidate_id=candidate_id,
+            user=user,
+            now=now,
+        )
+
+    def _finish_mail_import(
+        self,
+        *,
+        payload: ImportedMailPayload,
+        candidate_id: str,
+        user: UserContext,
+        now: datetime,
+    ) -> IntakeState:
+        mail_import_repository = self._mail_import_repository
+        if mail_import_repository is None:
+            raise NotFoundError("Mail import is not available.")
         intake_state = self._ingest_mail_artifact(
             file_name=payload.file_name,
             media_type=payload.media_type,
@@ -503,7 +546,7 @@ class GoldenAgeService:
         )
         if intake_state.artifact is None:
             raise RuntimeError("Imported mail did not create an artifact.")
-        self._mail_import_repository.save_imported_message(
+        mail_import_repository.save_imported_message(
             user=user,
             source_system=payload.source_system,
             external_message_id=payload.external_message_id,
@@ -511,7 +554,7 @@ class GoldenAgeService:
             artifact_id=intake_state.artifact.id,
             now=now,
         )
-        self._mail_import_repository.discard_review_candidate(
+        mail_import_repository.discard_review_candidate(
             user=user,
             source_system=DESKTOP_MAIL_SOURCE,
             candidate_id=candidate_id,
