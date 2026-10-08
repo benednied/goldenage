@@ -485,14 +485,11 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             WHERE mm.source_kind = %(source_kind)s
               AND (
                     (
-                        %(source_account_id)s IS NOT NULL
-                    AND %(source_folder_id)s IS NOT NULL
-                    AND %(source_message_id)s IS NOT NULL
-                    AND mm.source_account_id = %(source_account_id)s
+                        mm.source_account_id = %(source_account_id)s
                     AND mm.source_folder_id = %(source_folder_id)s
                     AND mm.source_message_id = %(source_message_id)s
                     )
-                 OR (%(internet_message_id)s IS NOT NULL AND mm.internet_message_id = %(internet_message_id)s)
+                 OR mm.internet_message_id = %(internet_message_id)s
                  OR mm.dedupe_fingerprint = %(dedupe_fingerprint)s
               )
               AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)

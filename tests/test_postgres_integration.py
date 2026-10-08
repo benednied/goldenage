@@ -105,7 +105,7 @@ def postgres_db() -> Iterator[PostgresTestDatabase]:
     except psycopg.Error as error:
         pytest.fail(f"Could not connect to PostgreSQL integration database: {error}", pytrace=False)
 
-    isolated_dsn = make_conninfo(dsn, options=f"-c search_path={schema},public")
+    isolated_dsn = make_conninfo(dsn, options=f"-c search_path={schema}")
     database = PostgresTestDatabase(isolated_dsn, schema)
     try:
         yield database
@@ -471,17 +471,41 @@ def test_artifact_mail_audit_and_mailbox_repositories_round_trip(
     assert artifact_repository.get_mail_metadata(artifact.id, visible_user) == metadata
     assert artifact_repository.get_mail_conversation(conversation.id, visible_user) == conversation
     assert artifact_repository.get_mail_message(artifact.id, visible_user) == message
+    # Each deduplication key must work independently, including null identifiers.
+    lookups = (
+        ("account-1", "Inbox", "message-1", None, "different", message),
+        (None, None, None, "<mail-1@example.com>", "different", message),
+        (None, None, None, None, "fingerprint-1", message),
+        (None, None, None, None, "different", None),
+        (None, "Inbox", "message-1", None, "different", None),
+        ("account-1", None, "message-1", None, "different", None),
+        ("account-1", "Inbox", None, None, "different", None),
+        ("account-1", "Sent", "message-1", None, "different", None),
+    )
+    for account_id, folder_id, message_id, internet_id, fingerprint, expected in lookups:
+        assert (
+            artifact_repository.find_mail_message_by_source(
+                source_kind="outlook",
+                source_account_id=account_id,
+                source_folder_id=folder_id,
+                source_message_id=message_id,
+                internet_message_id=internet_id,
+                dedupe_fingerprint=fingerprint,
+                user=visible_user,
+            )
+            == expected
+        )
     assert (
         artifact_repository.find_mail_message_by_source(
-            source_kind="outlook",
+            source_kind="other-source",
             source_account_id="account-1",
             source_folder_id="Inbox",
             source_message_id="message-1",
             internet_message_id="<mail-1@example.com>",
-            dedupe_fingerprint="not-the-first-match",
+            dedupe_fingerprint="fingerprint-1",
             user=visible_user,
         )
-        == message
+        is None
     )
     assert artifact_repository.list_conversation_artifacts(conversation.id, visible_user) == (
         artifact,
@@ -498,6 +522,18 @@ def test_artifact_mail_audit_and_mailbox_repositories_round_trip(
     )
     assert artifact_repository.get_mail_conversation(conversation.id, hidden_user) is None
     assert artifact_repository.get_mail_message(artifact.id, hidden_user) is None
+    assert (
+        artifact_repository.find_mail_message_by_source(
+            source_kind="outlook",
+            source_account_id="account-1",
+            source_folder_id="Inbox",
+            source_message_id="message-1",
+            internet_message_id="<mail-1@example.com>",
+            dedupe_fingerprint="fingerprint-1",
+            user=hidden_user,
+        )
+        is None
+    )
     assert artifact_repository.list_recent_mail_conversations(hidden_user) == ()
 
     account = MailboxAccountConfig(
