@@ -135,6 +135,8 @@ class InMemoryArtifactRepository(ArtifactRepository):
         if artifact is None:
             return None
         if artifact.assigned_case_id is None:
+            if artifact.uploaded_by is not None and artifact.uploaded_by != user.id:
+                return None
             return artifact
         if self._case_repository.get_case(artifact.assigned_case_id, user) is None:
             return None
@@ -249,6 +251,34 @@ class InMemoryArtifactRepository(ArtifactRepository):
             ):
                 if self.get_artifact(message.artifact_id, user) is not None:
                     return message
+        return None
+
+    def save_mail_ingestion(
+        self,
+        *,
+        user: UserContext,
+        artifact: Artifact,
+        mail_metadata: ArtifactMailMetadata | None,
+        conversation: MailConversation,
+        message: MailMessage,
+    ) -> MailMessage | None:
+        """Finalize an ingestion in the in-memory demo store."""
+        existing = self.find_mail_message_by_source(
+            source_kind=message.source_kind,
+            source_account_id=message.source_account_id,
+            source_folder_id=message.source_folder_id,
+            source_message_id=message.source_message_id,
+            internet_message_id=message.internet_message_id,
+            dedupe_fingerprint=message.dedupe_fingerprint,
+            user=user,
+        )
+        if existing is not None:
+            return existing
+        self.save_artifact(artifact)
+        if mail_metadata is not None:
+            self.save_mail_metadata(mail_metadata)
+        self.save_mail_conversation(conversation)
+        self.save_mail_message(message)
         return None
 
     def list_conversation_artifacts(

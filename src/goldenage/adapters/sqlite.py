@@ -234,10 +234,13 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             FROM artifact a
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE a.id = ?
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND (
+                    (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = ?))
+                 OR (a.assigned_case_id IS NOT NULL AND {clause})
+              )
         """
         with self._connect() as connection:
-            row = connection.execute(sql, (str(artifact_id), *params)).fetchone()
+            row = connection.execute(sql, (str(artifact_id), str(user.id), *params)).fetchone()
         return _row_to_artifact(row) if row else None
 
     def list_case_artifacts(self, case_id: UUID, user: UserContext) -> Sequence[Artifact]:
@@ -253,6 +256,239 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         with self._connect() as connection:
             rows = connection.execute(sql, (str(case_id),)).fetchall()
         return tuple(_row_to_artifact(row) for row in rows)
+
+    def save_mail_ingestion(
+        self,
+        *,
+        user: UserContext,
+        artifact: Artifact,
+        mail_metadata: ArtifactMailMetadata | None,
+        conversation: MailConversation,
+        message: MailMessage,
+    ) -> MailMessage | None:
+        """Atomically claim a scoped message identity and persist its rows."""
+        artifact_payload = {
+            "id": str(artifact.id),
+            "file_name": artifact.file_name,
+            "media_type": artifact.media_type,
+            "size_bytes": artifact.size_bytes,
+            "content_text": artifact.content_text,
+            "storage_key": artifact.storage_key,
+            "uploaded_at": _serialize_datetime(artifact.uploaded_at),
+            "uploaded_by": str(artifact.uploaded_by) if artifact.uploaded_by else None,
+            "assigned_case_id": (
+                str(artifact.assigned_case_id) if artifact.assigned_case_id else None
+            ),
+        }
+        conversation_payload = {
+            "id": str(conversation.id),
+            "source_kind": conversation.source_kind,
+            "external_conversation_id": conversation.external_conversation_id,
+            "normalized_subject": conversation.normalized_subject,
+            "latest_subject": conversation.latest_subject,
+            "latest_message_at": _serialize_datetime(conversation.latest_message_at),
+            "participants_json": json.dumps([asdict(p) for p in conversation.participants]),
+            "latest_artifact_id": str(artifact.id),
+            "assigned_case_id": (
+                str(conversation.assigned_case_id) if conversation.assigned_case_id else None
+            ),
+            "created_at": _serialize_datetime(conversation.created_at),
+            "updated_at": _serialize_datetime(conversation.updated_at),
+            "user_id": str(user.id),
+        }
+        message_params = {
+            "artifact_id": str(message.artifact_id),
+            "conversation_id": str(message.conversation_id),
+            "source_kind": message.source_kind,
+            "source_account_id": message.source_account_id,
+            "source_folder_id": message.source_folder_id,
+            "source_message_id": message.source_message_id,
+            "source_conversation_id": message.source_conversation_id,
+            "internet_message_id": message.internet_message_id,
+            "dedupe_fingerprint": message.dedupe_fingerprint,
+            "direction": message.direction,
+            "received_at": _serialize_datetime(message.received_at),
+            "created_at": _serialize_datetime(message.created_at),
+            "user_id": str(user.id),
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO artifact (
+                        id, file_name, media_type, size_bytes, content_text, storage_key,
+                        uploaded_at, uploaded_by, assigned_case_id
+                    ) VALUES (
+                        :id, :file_name, :media_type, :size_bytes, :content_text, :storage_key,
+                        :uploaded_at, :uploaded_by, :assigned_case_id
+                    )
+                    """,
+                    artifact_payload,
+                )
+                if mail_metadata is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO artifact_mail_metadata (
+                            artifact_id, source_kind, source_system, message_format, parse_status,
+                            external_message_id, rfc_message_id, source_account, source_mailbox,
+                            subject, sender_name, sender_email, sender_domain, recipients_json,
+                            sent_at, created_at
+                        ) VALUES (
+                            :artifact_id, :source_kind, :source_system, :message_format,
+                            :parse_status, :external_message_id, :rfc_message_id, :source_account,
+                            :source_mailbox, :subject, :sender_name, :sender_email, :sender_domain,
+                            :recipients_json, :sent_at, :created_at
+                        )
+                        """,
+                        {
+                            "artifact_id": str(mail_metadata.artifact_id),
+                            "source_kind": mail_metadata.source_system,
+                            "source_system": mail_metadata.source_system,
+                            "message_format": mail_metadata.message_format,
+                            "parse_status": mail_metadata.parse_status,
+                            "external_message_id": mail_metadata.external_message_id,
+                            "rfc_message_id": mail_metadata.rfc_message_id,
+                            "source_account": mail_metadata.source_account,
+                            "source_mailbox": mail_metadata.source_mailbox,
+                            "subject": mail_metadata.subject,
+                            "sender_name": mail_metadata.sender_name,
+                            "sender_email": mail_metadata.sender_email,
+                            "sender_domain": mail_metadata.sender_domain,
+                            "recipients_json": json.dumps(
+                                [asdict(p) for p in mail_metadata.recipients]
+                            ),
+                            "sent_at": _serialize_datetime(mail_metadata.sent_at),
+                            "created_at": _serialize_datetime(mail_metadata.created_at),
+                        },
+                    )
+
+                connection.execute(
+                    """
+                    INSERT INTO mail_conversation (
+                        id, user_id, source_kind, external_conversation_id, normalized_subject,
+                        latest_subject, latest_message_at, participants_json, message_count,
+                        latest_artifact_id, assigned_case_id, created_at, updated_at
+                    ) VALUES (
+                        :id, :user_id, :source_kind, :external_conversation_id,
+                        :normalized_subject, :latest_subject, :latest_message_at,
+                        :participants_json, 0, :latest_artifact_id, :assigned_case_id,
+                        :created_at, :updated_at
+                    ) ON CONFLICT DO NOTHING
+                    """,
+                    conversation_payload,
+                )
+                if conversation.external_conversation_id is not None:
+                    conversation_row = connection.execute(
+                        """
+                        SELECT id
+                        FROM mail_conversation
+                        WHERE user_id = ? AND source_kind = ?
+                          AND external_conversation_id = ?
+                        """,
+                        (
+                            str(user.id),
+                            conversation.source_kind,
+                            conversation.external_conversation_id,
+                        ),
+                    ).fetchone()
+                else:
+                    conversation_row = connection.execute(
+                        "SELECT id FROM mail_conversation WHERE id = ?",
+                        (str(conversation.id),),
+                    ).fetchone()
+                if conversation_row is None:
+                    conversation_row = connection.execute(
+                        "SELECT id FROM mail_conversation WHERE id = ?",
+                        (str(conversation.id),),
+                    ).fetchone()
+                if conversation_row is None:
+                    raise SQLiteRepositoryError("Mail conversation could not be claimed")
+                conversation_id = conversation_row["id"]
+                message_params["conversation_id"] = conversation_id
+                cursor = connection.execute(
+                    """
+                    INSERT INTO mail_message (
+                        artifact_id, user_id, conversation_id, source_kind, source_account_id,
+                        source_folder_id, source_message_id, source_conversation_id,
+                        internet_message_id, dedupe_fingerprint, direction, received_at, created_at
+                    ) VALUES (
+                        :artifact_id, :user_id, :conversation_id, :source_kind,
+                        :source_account_id, :source_folder_id, :source_message_id,
+                        :source_conversation_id, :internet_message_id, :dedupe_fingerprint,
+                        :direction, :received_at, :created_at
+                    ) ON CONFLICT DO NOTHING
+                    """,
+                    message_params,
+                )
+                if cursor.rowcount == 0:
+                    existing_row = connection.execute(
+                        """
+                        SELECT artifact_id, conversation_id, source_kind, source_account_id,
+                               source_folder_id, source_message_id, source_conversation_id,
+                               internet_message_id, dedupe_fingerprint, direction, received_at,
+                               created_at
+                        FROM mail_message
+                        WHERE user_id = ? AND (
+                            dedupe_fingerprint = ?
+                            OR (
+                                ? IS NOT NULL AND ? IS NOT NULL AND ? IS NOT NULL
+                                AND source_account_id = ? AND source_folder_id = ?
+                                AND source_message_id = ?
+                            )
+                            OR (? IS NOT NULL AND internet_message_id = ?)
+                        )
+                        LIMIT 1
+                        """,
+                        (
+                            str(user.id),
+                            message.dedupe_fingerprint,
+                            message.source_account_id,
+                            message.source_folder_id,
+                            message.source_message_id,
+                            message.source_account_id,
+                            message.source_folder_id,
+                            message.source_message_id,
+                            message.internet_message_id,
+                            message.internet_message_id,
+                        ),
+                    ).fetchone()
+                    connection.rollback()
+                    if existing_row is None:
+                        raise SQLiteRepositoryError("Mail deduplication conflict has no winner")
+                    return _row_to_mail_message(existing_row)
+
+                connection.execute(
+                    """
+                    UPDATE mail_conversation
+                    SET latest_subject = COALESCE(?, latest_subject),
+                        latest_message_at = CASE
+                            WHEN latest_message_at >= ? THEN latest_message_at
+                            ELSE ?
+                        END,
+                        participants_json = ?,
+                        message_count = message_count + 1,
+                        latest_artifact_id = ?,
+                        assigned_case_id = COALESCE(?, assigned_case_id),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        conversation.latest_subject,
+                        _serialize_datetime(conversation.latest_message_at),
+                        _serialize_datetime(conversation.latest_message_at),
+                        conversation_payload["participants_json"],
+                        str(artifact.id),
+                        conversation_payload["assigned_case_id"],
+                        _serialize_datetime(conversation.updated_at),
+                        conversation_id,
+                    ),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return None
 
     def list_unassigned_artifacts(
         self,
@@ -437,10 +673,16 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
             WHERE mc.id = ?
-              AND (c.id IS NULL OR {clause})
+              AND (
+                    (c.id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = ?))
+                 OR (c.id IS NOT NULL AND {clause})
+              )
         """
         with self._connect() as connection:
-            row = connection.execute(sql, (str(conversation_id), *params)).fetchone()
+            row = connection.execute(
+                sql,
+                (str(conversation_id), str(user.id), *params),
+            ).fetchone()
         return _row_to_mail_conversation(row) if row else None
 
     def list_recent_mail_conversations(
@@ -455,12 +697,15 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             FROM mail_conversation mc
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
-            WHERE c.id IS NULL OR {clause}
+            WHERE (
+                    (c.id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = ?))
+                 OR (c.id IS NOT NULL AND {clause})
+            )
             ORDER BY mc.latest_message_at DESC
             LIMIT ?
         """
         with self._connect() as connection:
-            rows = connection.execute(sql, (*params, limit)).fetchall()
+            rows = connection.execute(sql, (str(user.id), *params, limit)).fetchall()
         return tuple(_row_to_mail_conversation(row) for row in rows)
 
     def save_mail_message(self, message: MailMessage) -> None:
@@ -530,8 +775,7 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
         dedupe_fingerprint: str,
         user: UserContext,
     ) -> MailMessage | None:
-        clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
-        sql = f"""
+        sql = """
             SELECT mm.artifact_id, mm.conversation_id, mm.source_kind, mm.source_account_id,
                    mm.source_folder_id, mm.source_message_id, mm.source_conversation_id,
                    mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
@@ -547,7 +791,10 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
                  OR (? IS NOT NULL AND mm.internet_message_id = ?)
                  OR mm.dedupe_fingerprint = ?
               )
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND (
+                    mm.user_id = ?
+                 OR (mm.user_id IS NULL AND a.uploaded_by = ?)
+              )
             LIMIT 1
         """
         query_params = (
@@ -561,7 +808,8 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             internet_message_id,
             internet_message_id,
             dedupe_fingerprint,
-            *params,
+            str(user.id),
+            str(user.id),
         )
         with self._connect() as connection:
             row = connection.execute(sql, query_params).fetchone()
@@ -580,11 +828,17 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             JOIN artifact a ON a.id = mm.artifact_id
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE mm.conversation_id = ?
-              AND (a.assigned_case_id IS NULL OR {clause})
+              AND (
+                    (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = ?))
+                 OR (a.assigned_case_id IS NOT NULL AND {clause})
+              )
             ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
         """
         with self._connect() as connection:
-            rows = connection.execute(sql, (str(conversation_id), *params)).fetchall()
+            rows = connection.execute(
+                sql,
+                (str(conversation_id), str(user.id), *params),
+            ).fetchall()
         return tuple(_row_to_artifact(row) for row in rows)
 
 

@@ -139,6 +139,23 @@ class ArtifactRepository(Protocol):
     ) -> Sequence[Artifact]:
         """Return artifacts belonging to a visible mail conversation."""
 
+    def save_mail_ingestion(
+        self,
+        *,
+        user: UserContext,
+        artifact: Artifact,
+        mail_metadata: ArtifactMailMetadata | None,
+        conversation: MailConversation,
+        message: MailMessage,
+    ) -> MailMessage | None:
+        """Atomically finalize one mail artifact and return a dedupe winner.
+
+        The artifact, mail metadata, conversation update, and source-message row
+        are committed together.  A non-``None`` result means another delivery
+        already owns the scoped source identity and this attempt must discard its
+        staged file.
+        """
+
 
 class AuditRepository(Protocol):
     """Persistence port for audit events."""
@@ -155,6 +172,9 @@ class ArtifactStore(Protocol):
 
         file_name is untrusted metadata and must not determine a filesystem path.
         """
+
+    def delete(self, storage_key: str) -> None:
+        """Remove a file previously created by this store."""
 
 
 class ArtifactContentExtractor(Protocol):

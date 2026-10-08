@@ -224,9 +224,13 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             FROM artifact a
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE a.id = %(artifact_id)s
+              AND (
+                    (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (a.assigned_case_id IS NOT NULL)
+              )
         """
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(sql, {"artifact_id": artifact_id})
+            cursor.execute(sql, {"artifact_id": artifact_id, "user_id": user.id})
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -390,12 +394,19 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
             WHERE mc.id = %(conversation_id)s
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR c.id IS NULL)
+              AND (
+                    (c.id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (c.id IS NOT NULL AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 sql,
-                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+                {
+                    "conversation_id": conversation_id,
+                    "group_ids": list(user.visible_group_ids),
+                    "user_id": user.id,
+                },
             )
             row = cursor.fetchone()
             return _row_to_mail_conversation(row) if row else None
@@ -411,12 +422,22 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             FROM mail_conversation mc
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
-            WHERE c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR c.id IS NULL
+            WHERE (
+                    (c.id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (c.id IS NOT NULL AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+            )
             ORDER BY mc.latest_message_at DESC
             LIMIT %(limit)s
         """
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(sql, {"group_ids": list(user.visible_group_ids), "limit": limit})
+            cursor.execute(
+                sql,
+                {
+                    "group_ids": list(user.visible_group_ids),
+                    "limit": limit,
+                    "user_id": user.id,
+                },
+            )
             return tuple(_row_to_mail_conversation(row) for row in cursor.fetchall())
 
     def save_mail_message(self, message: MailMessage) -> None:
@@ -495,7 +516,10 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
                  OR (%(internet_message_id)s IS NOT NULL AND mm.internet_message_id = %(internet_message_id)s)
                  OR mm.dedupe_fingerprint = %(dedupe_fingerprint)s
               )
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+              AND (
+                    mm.user_id = %(user_id)s
+                 OR (mm.user_id IS NULL AND a.uploaded_by = %(user_id)s)
+              )
             LIMIT 1
         """
         params = {
@@ -505,7 +529,7 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             "source_message_id": source_message_id,
             "internet_message_id": internet_message_id,
             "dedupe_fingerprint": dedupe_fingerprint,
-            "group_ids": list(user.visible_group_ids),
+            "user_id": user.id,
         }
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, params)
@@ -524,15 +548,195 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             JOIN artifact a ON a.id = mm.artifact_id
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE mm.conversation_id = %(conversation_id)s
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+              AND (
+                    (a.assigned_case_id IS NULL AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (a.assigned_case_id IS NOT NULL AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
             ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 sql,
-                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+                {
+                    "conversation_id": conversation_id,
+                    "group_ids": list(user.visible_group_ids),
+                    "user_id": user.id,
+                },
             )
             return tuple(_row_to_artifact(row) for row in cursor.fetchall())
+
+    def save_mail_ingestion(
+        self,
+        *,
+        user: UserContext,
+        artifact: Artifact,
+        mail_metadata: ArtifactMailMetadata | None,
+        conversation: MailConversation,
+        message: MailMessage,
+    ) -> MailMessage | None:
+        """Atomically claim a scoped message identity and persist its rows."""
+        artifact_payload = asdict(artifact)
+        conversation_payload = asdict(conversation)
+        conversation_payload["participants_json"] = Jsonb(
+            [asdict(participant) for participant in conversation_payload.pop("participants")]
+        )
+        conversation_payload["user_id"] = user.id
+        conversation_payload["message_count"] = 0
+        conversation_payload["latest_artifact_id"] = artifact.id
+        message_payload = asdict(message)
+        message_payload["user_id"] = user.id
+
+        with self._connect() as connection, connection.cursor() as cursor:
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO artifact (
+                        id, file_name, media_type, size_bytes, content_text, storage_key,
+                        uploaded_at, uploaded_by, assigned_case_id
+                    ) VALUES (
+                        %(id)s, %(file_name)s, %(media_type)s, %(size_bytes)s, %(content_text)s,
+                        %(storage_key)s, %(uploaded_at)s, %(uploaded_by)s, %(assigned_case_id)s
+                    )
+                    """,
+                    artifact_payload,
+                )
+                if mail_metadata is not None:
+                    metadata_payload = asdict(mail_metadata)
+                    metadata_payload["recipients_json"] = Jsonb(
+                        [asdict(recipient) for recipient in metadata_payload.pop("recipients")]
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO artifact_mail_metadata (
+                            artifact_id, source_system, message_format, parse_status,
+                            external_message_id, rfc_message_id, source_account, source_mailbox,
+                            subject, sender_name, sender_email, sender_domain, recipients_json,
+                            sent_at, created_at
+                        ) VALUES (
+                            %(artifact_id)s, %(source_system)s, %(message_format)s,
+                            %(parse_status)s, %(external_message_id)s, %(rfc_message_id)s,
+                            %(source_account)s, %(source_mailbox)s, %(subject)s, %(sender_name)s,
+                            %(sender_email)s, %(sender_domain)s, %(recipients_json)s,
+                            %(sent_at)s, %(created_at)s
+                        )
+                        """,
+                        metadata_payload,
+                    )
+                cursor.execute(
+                    """
+                    INSERT INTO mail_conversation (
+                        id, user_id, source_kind, external_conversation_id, normalized_subject,
+                        latest_subject, latest_message_at, participants_json, message_count,
+                        latest_artifact_id, assigned_case_id, created_at, updated_at
+                    ) VALUES (
+                        %(id)s, %(user_id)s, %(source_kind)s, %(external_conversation_id)s,
+                        %(normalized_subject)s, %(latest_subject)s, %(latest_message_at)s,
+                        %(participants_json)s, %(message_count)s, %(latest_artifact_id)s,
+                        %(assigned_case_id)s, %(created_at)s, %(updated_at)s
+                    ) ON CONFLICT DO NOTHING
+                    """,
+                    conversation_payload,
+                )
+                if conversation.external_conversation_id is not None:
+                    cursor.execute(
+                        """
+                        SELECT id
+                        FROM mail_conversation
+                        WHERE user_id = %(user_id)s
+                          AND source_kind = %(source_kind)s
+                          AND external_conversation_id = %(external_conversation_id)s
+                        """,
+                        {
+                            "user_id": user.id,
+                            "source_kind": conversation.source_kind,
+                            "external_conversation_id": conversation.external_conversation_id,
+                        },
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT id FROM mail_conversation WHERE id = %(id)s",
+                        {"id": conversation.id},
+                    )
+                conversation_row = cursor.fetchone()
+                if conversation_row is None:
+                    raise PostgresRepositoryError("Mail conversation could not be claimed")
+                conversation_id = conversation_row["id"]
+                message_payload["conversation_id"] = conversation_id
+                cursor.execute(
+                    """
+                    INSERT INTO mail_message (
+                        artifact_id, user_id, conversation_id, source_kind, source_account_id,
+                        source_folder_id, source_message_id, source_conversation_id,
+                        internet_message_id, dedupe_fingerprint, direction, received_at, created_at
+                    ) VALUES (
+                        %(artifact_id)s, %(user_id)s, %(conversation_id)s, %(source_kind)s,
+                        %(source_account_id)s, %(source_folder_id)s, %(source_message_id)s,
+                        %(source_conversation_id)s, %(internet_message_id)s,
+                        %(dedupe_fingerprint)s, %(direction)s, %(received_at)s, %(created_at)s
+                    ) ON CONFLICT DO NOTHING
+                    """,
+                    message_payload,
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        """
+                        SELECT artifact_id, conversation_id, source_kind, source_account_id,
+                               source_folder_id, source_message_id, source_conversation_id,
+                               internet_message_id, dedupe_fingerprint, direction, received_at,
+                               created_at
+                        FROM mail_message
+                        WHERE user_id = %(user_id)s AND (
+                            dedupe_fingerprint = %(dedupe_fingerprint)s
+                            OR (
+                                %(source_account_id)s IS NOT NULL
+                                AND %(source_folder_id)s IS NOT NULL
+                                AND %(source_message_id)s IS NOT NULL
+                                AND source_account_id = %(source_account_id)s
+                                AND source_folder_id = %(source_folder_id)s
+                                AND source_message_id = %(source_message_id)s
+                            )
+                            OR (
+                                %(internet_message_id)s IS NOT NULL
+                                AND internet_message_id = %(internet_message_id)s
+                            )
+                        )
+                        LIMIT 1
+                        """,
+                        message_payload,
+                    )
+                    existing_row = cursor.fetchone()
+                    connection.rollback()
+                    if existing_row is None:
+                        raise PostgresRepositoryError("Mail deduplication conflict has no winner")
+                    return _row_to_mail_message(existing_row)
+
+                cursor.execute(
+                    """
+                    UPDATE mail_conversation
+                    SET latest_subject = COALESCE(%(latest_subject)s, latest_subject),
+                        latest_message_at = GREATEST(latest_message_at, %(latest_message_at)s),
+                        participants_json = %(participants_json)s,
+                        message_count = message_count + 1,
+                        latest_artifact_id = %(latest_artifact_id)s,
+                        assigned_case_id = COALESCE(%(assigned_case_id)s, assigned_case_id),
+                        updated_at = %(updated_at)s
+                    WHERE id = %(conversation_id)s
+                    """,
+                    {
+                        "latest_subject": conversation.latest_subject,
+                        "latest_message_at": conversation.latest_message_at,
+                        "participants_json": conversation_payload["participants_json"],
+                        "latest_artifact_id": artifact.id,
+                        "assigned_case_id": conversation.assigned_case_id,
+                        "updated_at": conversation.updated_at,
+                        "conversation_id": conversation_id,
+                    },
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return None
 
     def save_mailbox_account_config(self, config: MailboxAccountConfig) -> None:
         sql = """

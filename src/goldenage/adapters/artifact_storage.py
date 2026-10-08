@@ -53,6 +53,19 @@ class LocalArtifactStore:
                 raise
         return str(self._root / name)
 
+    def delete(self, storage_key: str) -> None:
+        """Delete one store-owned artifact without following links."""
+        target = Path(storage_key)
+        if target.parent != self._root:
+            raise ValueError("Artifact storage key is outside the configured root")
+        with self._open_root() as root_fd:
+            if self._root_identity(root_fd) != self._identity:
+                raise OSError("Artifact storage root was replaced")
+            if root_fd is None:
+                target.unlink()
+            else:
+                os.unlink(target.name, dir_fd=root_fd)
+
     def _root_identity(self, root_fd: int | None) -> tuple[int, int]:
         info = os.stat(self._root, follow_symlinks=False) if root_fd is None else os.fstat(root_fd)
         return info.st_dev, info.st_ino
