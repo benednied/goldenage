@@ -126,6 +126,29 @@ then repeat the start and bootstrap commands:
 docker compose down --volumes
 ```
 
+### PostgreSQL integration tests
+
+The integration suite uses the same PostgreSQL 17 image but creates a random
+schema for every test and drops it during teardown. It requires an explicit,
+disposable test DSN and fails if the database cannot be reached; it never falls
+back to demo adapters:
+
+```bash
+docker compose up -d postgres
+docker compose ps                         # continue after postgres is healthy
+export GOLDENAGE_TEST_POSTGRES_DSN=postgresql://goldenage:goldenage-local-password@127.0.0.1:5432/goldenage
+./.venv/bin/python -m pytest -q --no-cov -m postgres_integration
+docker compose down
+```
+
+The CI job runs the same marker against its temporary PostgreSQL service.
+`--no-cov` disables the full-suite coverage gate for this focused database run. The
+fast default command deliberately excludes this marker:
+
+```bash
+./.venv/bin/python -m pytest -q
+```
+
 ### Local setup troubleshooting
 
 - `DATABASE_URL is not configured`: set it in `.env` or the shell before running the PostgreSQL bootstrap; run the command from the repository root so `.env` can be found.
