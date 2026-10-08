@@ -224,13 +224,30 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             FROM artifact a
             LEFT JOIN case_file c ON c.id = a.assigned_case_id
             WHERE a.id = %(artifact_id)s
+              AND (
+                    (a.assigned_case_id IS NULL
+                     AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (a.assigned_case_id IS NOT NULL
+                     AND c.id IS NOT NULL
+                     AND (c.visible_group_id IS NULL
+                          OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
         """
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(sql, {"artifact_id": artifact_id})
+            cursor.execute(
+                sql,
+                {
+                    "artifact_id": artifact_id,
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                },
+            )
             row = cursor.fetchone()
             if row is None:
                 return None
             visible_group_id = row["visible_group_id"]
+            if row["assigned_case_id"] is None and row["uploaded_by"] not in (None, user.id):
+                return None
             if visible_group_id is not None and visible_group_id not in user.visible_group_ids:
                 return None
             return _row_to_artifact(row)
@@ -296,7 +313,14 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(sql, {"artifact_id": artifact_id})
             row = cursor.fetchone()
-            return _row_to_suggestion(row) if row else None
+            if row is None:
+                return None
+            suggestion = _row_to_suggestion(row)
+            if suggestion.suggested_case_id is not None and not self._case_visible(
+                suggestion.suggested_case_id, user
+            ):
+                return None
+            return suggestion
 
     def save_mail_metadata(self, metadata: ArtifactMailMetadata) -> None:
         sql = """
@@ -390,12 +414,30 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
             WHERE mc.id = %(conversation_id)s
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR c.id IS NULL)
+              AND (
+                    (mc.assigned_case_id IS NOT NULL
+                     AND c.id IS NOT NULL
+                     AND (c.visible_group_id IS NULL
+                          OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                 OR (mc.assigned_case_id IS NULL
+                     AND (
+                            (a.assigned_case_id IS NULL
+                             AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                         OR (a.assigned_case_id IS NOT NULL
+                             AND c.id IS NOT NULL
+                             AND (c.visible_group_id IS NULL
+                                  OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                     ))
+              )
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 sql,
-                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                },
             )
             row = cursor.fetchone()
             return _row_to_mail_conversation(row) if row else None
@@ -411,12 +453,33 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             FROM mail_conversation mc
             LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
             LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
-            WHERE c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR c.id IS NULL
+            WHERE (
+                    (mc.assigned_case_id IS NOT NULL
+                     AND c.id IS NOT NULL
+                     AND (c.visible_group_id IS NULL
+                          OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                 OR (mc.assigned_case_id IS NULL
+                     AND (
+                            (a.assigned_case_id IS NULL
+                             AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                         OR (a.assigned_case_id IS NOT NULL
+                             AND c.id IS NOT NULL
+                             AND (c.visible_group_id IS NULL
+                                  OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                     ))
+              )
             ORDER BY mc.latest_message_at DESC
             LIMIT %(limit)s
         """
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(sql, {"group_ids": list(user.visible_group_ids), "limit": limit})
+            cursor.execute(
+                sql,
+                {
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                    "limit": limit,
+                },
+            )
             return tuple(_row_to_mail_conversation(row) for row in cursor.fetchall())
 
     def save_mail_message(self, message: MailMessage) -> None:
@@ -424,11 +487,13 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             INSERT INTO mail_message (
                 artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
                 source_message_id, source_conversation_id, internet_message_id,
-                dedupe_fingerprint, direction, received_at, created_at
+                dedupe_fingerprint, dedupe_scope_user_id, direction, received_at, created_at
             ) VALUES (
                 %(artifact_id)s, %(conversation_id)s, %(source_kind)s, %(source_account_id)s,
                 %(source_folder_id)s, %(source_message_id)s, %(source_conversation_id)s,
-                %(internet_message_id)s, %(dedupe_fingerprint)s, %(direction)s,
+                %(internet_message_id)s, %(dedupe_fingerprint)s,
+                (SELECT uploaded_by FROM artifact WHERE id = %(artifact_id)s),
+                %(direction)s,
                 %(received_at)s, %(created_at)s
             )
             ON CONFLICT (artifact_id) DO UPDATE SET
@@ -440,6 +505,7 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
                 source_conversation_id = EXCLUDED.source_conversation_id,
                 internet_message_id = EXCLUDED.internet_message_id,
                 dedupe_fingerprint = EXCLUDED.dedupe_fingerprint,
+                dedupe_scope_user_id = EXCLUDED.dedupe_scope_user_id,
                 direction = EXCLUDED.direction,
                 received_at = EXCLUDED.received_at,
                 created_at = EXCLUDED.created_at
@@ -452,14 +518,40 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
         if self.get_artifact(artifact_id, user) is None:
             return None
         sql = """
-            SELECT artifact_id, conversation_id, source_kind, source_account_id, source_folder_id,
-                   source_message_id, source_conversation_id, internet_message_id,
-                   dedupe_fingerprint, direction, received_at, created_at
-            FROM mail_message
-            WHERE artifact_id = %(artifact_id)s
+            SELECT mm.artifact_id, mm.conversation_id, mm.source_kind, mm.source_account_id,
+                   mm.source_folder_id, mm.source_message_id, mm.source_conversation_id,
+                   mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
+                   mm.created_at
+            FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
+            LEFT JOIN artifact a ON a.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, a.assigned_case_id)
+            WHERE mm.artifact_id = %(artifact_id)s
+              AND (
+                    (mc.assigned_case_id IS NOT NULL
+                     AND c.id IS NOT NULL
+                     AND (c.visible_group_id IS NULL
+                          OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                 OR (mc.assigned_case_id IS NULL
+                     AND (
+                            (a.assigned_case_id IS NULL
+                             AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                         OR (a.assigned_case_id IS NOT NULL
+                             AND c.id IS NOT NULL
+                             AND (c.visible_group_id IS NULL
+                                  OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                     ))
+              )
         """
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(sql, {"artifact_id": artifact_id})
+            cursor.execute(
+                sql,
+                {
+                    "artifact_id": artifact_id,
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                },
+            )
             row = cursor.fetchone()
             return _row_to_mail_message(row) if row else None
 
@@ -480,9 +572,27 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
                    mm.internet_message_id, mm.dedupe_fingerprint, mm.direction, mm.received_at,
                    mm.created_at
             FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
             JOIN artifact a ON a.id = mm.artifact_id
-            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            LEFT JOIN artifact la ON la.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, la.assigned_case_id)
+            LEFT JOIN case_file ac ON ac.id = a.assigned_case_id
             WHERE mm.source_kind = %(source_kind)s
+              AND (
+                    (mc.assigned_case_id IS NOT NULL
+                     AND c.id IS NOT NULL
+                     AND (c.visible_group_id IS NULL
+                          OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                 OR (mc.assigned_case_id IS NULL
+                     AND (
+                            (la.assigned_case_id IS NULL
+                             AND (la.uploaded_by IS NULL OR la.uploaded_by = %(user_id)s))
+                         OR (la.assigned_case_id IS NOT NULL
+                             AND c.id IS NOT NULL
+                             AND (c.visible_group_id IS NULL
+                                  OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                     ))
+              )
               AND (
                     (
                         %(source_account_id)s IS NOT NULL
@@ -492,10 +602,17 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
                     AND mm.source_folder_id = %(source_folder_id)s
                     AND mm.source_message_id = %(source_message_id)s
                     )
-                 OR (%(internet_message_id)s IS NOT NULL AND mm.internet_message_id = %(internet_message_id)s)
+              OR (%(internet_message_id)s IS NOT NULL AND mm.internet_message_id = %(internet_message_id)s)
                  OR mm.dedupe_fingerprint = %(dedupe_fingerprint)s
               )
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+              AND (
+                    (a.assigned_case_id IS NULL
+                     AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (a.assigned_case_id IS NOT NULL
+                     AND ac.id IS NOT NULL
+                     AND (ac.visible_group_id IS NULL
+                          OR ac.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
             LIMIT 1
         """
         params = {
@@ -505,6 +622,7 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             "source_message_id": source_message_id,
             "internet_message_id": internet_message_id,
             "dedupe_fingerprint": dedupe_fingerprint,
+            "user_id": user.id,
             "group_ids": list(user.visible_group_ids),
         }
         with self._connect() as connection, connection.cursor() as cursor:
@@ -521,16 +639,45 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
             SELECT a.id, a.file_name, a.media_type, a.size_bytes, a.content_text, a.storage_key,
                    a.uploaded_at, a.uploaded_by, a.assigned_case_id
             FROM mail_message mm
+            JOIN mail_conversation mc ON mc.id = mm.conversation_id
             JOIN artifact a ON a.id = mm.artifact_id
-            LEFT JOIN case_file c ON c.id = a.assigned_case_id
+            LEFT JOIN artifact la ON la.id = mc.latest_artifact_id
+            LEFT JOIN case_file c ON c.id = COALESCE(mc.assigned_case_id, la.assigned_case_id)
+            LEFT JOIN case_file ac ON ac.id = a.assigned_case_id
             WHERE mm.conversation_id = %(conversation_id)s
-              AND (c.visible_group_id IS NULL OR c.visible_group_id = ANY(%(group_ids)s::uuid[]) OR a.assigned_case_id IS NULL)
+              AND (
+                    (mc.assigned_case_id IS NOT NULL
+                     AND c.id IS NOT NULL
+                     AND (c.visible_group_id IS NULL
+                          OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                 OR (mc.assigned_case_id IS NULL
+                     AND (
+                            (la.assigned_case_id IS NULL
+                             AND (la.uploaded_by IS NULL OR la.uploaded_by = %(user_id)s))
+                         OR (la.assigned_case_id IS NOT NULL
+                             AND c.id IS NOT NULL
+                             AND (c.visible_group_id IS NULL
+                                  OR c.visible_group_id = ANY(%(group_ids)s::uuid[])))
+                     ))
+              )
+              AND (
+                    (a.assigned_case_id IS NULL
+                     AND (a.uploaded_by IS NULL OR a.uploaded_by = %(user_id)s))
+                 OR (a.assigned_case_id IS NOT NULL
+                     AND ac.id IS NOT NULL
+                     AND (ac.visible_group_id IS NULL
+                          OR ac.visible_group_id = ANY(%(group_ids)s::uuid[])))
+              )
             ORDER BY COALESCE(mm.received_at, a.uploaded_at) DESC, a.uploaded_at DESC
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 sql,
-                {"conversation_id": conversation_id, "group_ids": list(user.visible_group_ids)},
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": user.id,
+                    "group_ids": list(user.visible_group_ids),
+                },
             )
             return tuple(_row_to_artifact(row) for row in cursor.fetchall())
 

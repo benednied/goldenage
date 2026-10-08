@@ -70,6 +70,10 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
             (str(user.id), user.email, user.display_name, "hash"),
         )
         connection.execute(
+            "INSERT INTO app_user (id, email, display_name, password_hash) VALUES (?, ?, ?, ?)",
+            (str(hidden_user.id), hidden_user.email, hidden_user.display_name, "hash"),
+        )
+        connection.execute(
             "INSERT INTO app_group (id, name) VALUES (?, ?)",
             (str(group_id), "Restricted"),
         )
@@ -203,13 +207,163 @@ def test_sqlite_repositories_cover_visibility_mail_and_local_user_paths(tmp_path
     assert artifact_repo.get_artifact(hidden_artifact_id, hidden_user) is None
     assert artifact_repo.list_case_artifacts(hidden_case_id, hidden_user) == ()
     assert artifact_repo.list_unassigned_artifacts(user, limit=10) == ()
+
+    unassigned_id = uuid4()
+    shared_id = uuid4()
+    artifact_repo.save_artifact(
+        Artifact(
+            id=unassigned_id,
+            file_name="private.msg",
+            media_type="message/rfc822",
+            size_bytes=4,
+            content_text="Private",
+            storage_key="private",
+            uploaded_at=NOW,
+            uploaded_by=user.id,
+        )
+    )
+    artifact_repo.save_artifact(
+        Artifact(
+            id=shared_id,
+            file_name="shared.msg",
+            media_type="message/rfc822",
+            size_bytes=4,
+            content_text="Shared",
+            storage_key="shared",
+            uploaded_at=NOW,
+        )
+    )
+    assert artifact_repo.get_artifact(unassigned_id, user) is not None
+    assert artifact_repo.get_artifact(unassigned_id, hidden_user) is None
+    assert artifact_repo.list_unassigned_artifacts(hidden_user, limit=10) == (
+        artifact_repo.get_artifact(shared_id, hidden_user),
+    )
+    private_conversation_id = uuid4()
+    private_message = MailMessage(
+        artifact_id=unassigned_id,
+        conversation_id=private_conversation_id,
+        source_kind="desktop_mail_client",
+        source_account_id="private-account",
+        source_folder_id="Inbox",
+        source_message_id="private-message",
+        source_conversation_id="private-conversation",
+        internet_message_id="<private@example.com>",
+        dedupe_fingerprint="private-fingerprint",
+        direction="inbound",
+        received_at=NOW,
+        created_at=NOW,
+    )
+    private_conversation = MailConversation(
+        id=private_conversation_id,
+        source_kind="desktop_mail_client",
+        external_conversation_id="private-conversation",
+        normalized_subject="private",
+        latest_subject="Private",
+        latest_message_at=NOW,
+        participants=(MailParticipant(name="Private", email="private@example.com"),),
+        message_count=1,
+        latest_artifact_id=unassigned_id,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    artifact_repo.save_mail_conversation(private_conversation)
+    artifact_repo.save_mail_message(private_message)
+    assert artifact_repo.get_mail_conversation(private_conversation_id, hidden_user) is None
+    assert artifact_repo.list_conversation_artifacts(private_conversation_id, hidden_user) == ()
+    assert (
+        artifact_repo.find_mail_message_by_source(
+            source_kind="desktop_mail_client",
+            source_account_id="private-account",
+            source_folder_id="Inbox",
+            source_message_id="private-message",
+            internet_message_id=None,
+            dedupe_fingerprint="private-fingerprint",
+            user=hidden_user,
+        )
+        is None
+    )
+    assert artifact_repo.get_mail_conversation(private_conversation_id, user) is not None
+    assert artifact_repo.list_conversation_artifacts(private_conversation_id, user) == (
+        artifact_repo.get_artifact(unassigned_id, user),
+    )
     assert artifact_repo.get_suggestion(artifact_id, user) == suggestion
     missing_artifact_id = uuid4()
     assert artifact_repo.get_suggestion(missing_artifact_id, user) is None
     assert artifact_repo.get_mail_metadata(artifact_id, user) == metadata
     assert artifact_repo.get_mail_metadata(missing_artifact_id, user) is None
     assert artifact_repo.get_mail_conversation(conversation_id, user) == conversation
-    assert artifact_repo.list_recent_mail_conversations(user, limit=5) == (conversation,)
+    recent_conversations = artifact_repo.list_recent_mail_conversations(user, limit=5)
+    assert {item.id for item in recent_conversations} == {
+        private_conversation.id,
+        conversation.id,
+    }
+    other_unassigned_id = uuid4()
+    other_conversation_id = uuid4()
+    artifact_repo.save_artifact(
+        Artifact(
+            id=other_unassigned_id,
+            file_name="other-private.msg",
+            media_type="message/rfc822",
+            size_bytes=4,
+            content_text="Other private",
+            storage_key="other-private",
+            uploaded_at=NOW,
+            uploaded_by=hidden_user.id,
+        )
+    )
+    other_conversation = MailConversation(
+        id=other_conversation_id,
+        source_kind="desktop_mail_client",
+        external_conversation_id="other-private-conversation",
+        normalized_subject="other private",
+        latest_subject="Other private",
+        latest_message_at=NOW,
+        participants=(),
+        message_count=1,
+        latest_artifact_id=other_unassigned_id,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    other_message = MailMessage(
+        artifact_id=other_unassigned_id,
+        conversation_id=other_conversation_id,
+        source_kind=private_message.source_kind,
+        source_account_id=private_message.source_account_id,
+        source_folder_id=private_message.source_folder_id,
+        source_message_id=private_message.source_message_id,
+        source_conversation_id=private_message.source_conversation_id,
+        internet_message_id=private_message.internet_message_id,
+        dedupe_fingerprint=private_message.dedupe_fingerprint,
+        direction="inbound",
+        received_at=NOW,
+        created_at=NOW,
+    )
+    artifact_repo.save_mail_conversation(other_conversation)
+    artifact_repo.save_mail_message(other_message)
+    assert (
+        artifact_repo.find_mail_message_by_source(
+            source_kind=private_message.source_kind,
+            source_account_id=private_message.source_account_id,
+            source_folder_id=private_message.source_folder_id,
+            source_message_id=private_message.source_message_id,
+            internet_message_id=None,
+            dedupe_fingerprint=private_message.dedupe_fingerprint,
+            user=user,
+        )
+        == private_message
+    )
+    assert (
+        artifact_repo.find_mail_message_by_source(
+            source_kind=other_message.source_kind,
+            source_account_id=other_message.source_account_id,
+            source_folder_id=other_message.source_folder_id,
+            source_message_id=other_message.source_message_id,
+            internet_message_id=None,
+            dedupe_fingerprint=other_message.dedupe_fingerprint,
+            user=hidden_user,
+        )
+        == other_message
+    )
     assert artifact_repo.get_mail_message(artifact_id, user) == message
     assert artifact_repo.get_mail_message(missing_artifact_id, user) is None
     assert (

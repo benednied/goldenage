@@ -183,6 +183,18 @@ def test_in_memory_repositories_apply_visibility_and_mail_lookup_edges(tmp_path)
     assert artifact_repo.list_unassigned_artifacts(owner, limit=1) == (
         state.artifacts[unassigned_id],
     )
+    assert artifact_repo.get_artifact(unassigned_id, hidden_user) is None
+    ownerless_id = uuid4()
+    state.artifacts[ownerless_id] = replace(
+        state.artifacts[unassigned_id],
+        id=ownerless_id,
+        file_name="shared.msg",
+        uploaded_by=None,
+    )
+    assert artifact_repo.get_artifact(ownerless_id, hidden_user) == state.artifacts[ownerless_id]
+    assert artifact_repo.list_unassigned_artifacts(hidden_user, limit=10) == (
+        state.artifacts[ownerless_id],
+    )
 
     account_config = MailboxAccountConfig(
         id=uuid4(),

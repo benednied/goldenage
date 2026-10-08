@@ -41,6 +41,7 @@ from goldenage.domain.models import (
     SearchResult,
     UserContext,
 )
+from goldenage.domain.visibility import case_is_visible, unassigned_artifact_is_visible
 
 WORD_RE = re.compile(r"[^\W_]{3,}")
 
@@ -135,7 +136,7 @@ class InMemoryArtifactRepository(ArtifactRepository):
         if artifact is None:
             return None
         if artifact.assigned_case_id is None:
-            return artifact
+            return artifact if unassigned_artifact_is_visible(artifact, user) else None
         if self._case_repository.get_case(artifact.assigned_case_id, user) is None:
             return None
         return artifact
@@ -170,7 +171,14 @@ class InMemoryArtifactRepository(ArtifactRepository):
     def get_suggestion(self, artifact_id: UUID, user: UserContext) -> AssignmentSuggestion | None:
         if self.get_artifact(artifact_id, user) is None:
             return None
-        return self._state.suggestions.get(artifact_id)
+        suggestion = self._state.suggestions.get(artifact_id)
+        if suggestion is None or suggestion.suggested_case_id is None:
+            return suggestion
+        return (
+            suggestion
+            if self._case_repository.get_case(suggestion.suggested_case_id, user) is not None
+            else None
+        )
 
     def save_mail_metadata(self, metadata: ArtifactMailMetadata) -> None:
         self._state.artifact_mail_metadata[metadata.artifact_id] = metadata
@@ -193,6 +201,12 @@ class InMemoryArtifactRepository(ArtifactRepository):
         conversation = self._state.mail_conversations.get(conversation_id)
         if conversation is None:
             return None
+        if conversation.assigned_case_id is not None:
+            return (
+                conversation
+                if self._case_repository.get_case(conversation.assigned_case_id, user) is not None
+                else None
+            )
         return conversation if self.get_artifact(conversation.latest_artifact_id, user) else None
 
     def list_recent_mail_conversations(
@@ -204,7 +218,7 @@ class InMemoryArtifactRepository(ArtifactRepository):
         items = [
             conversation
             for conversation in self._state.mail_conversations.values()
-            if self.get_artifact(conversation.latest_artifact_id, user) is not None
+            if self.get_mail_conversation(conversation.id, user) is not None
         ]
         items.sort(key=lambda item: item.latest_message_at, reverse=True)
         return tuple(items[:limit])
@@ -215,7 +229,14 @@ class InMemoryArtifactRepository(ArtifactRepository):
     def get_mail_message(self, artifact_id: UUID, user: UserContext) -> MailMessage | None:
         if self.get_artifact(artifact_id, user) is None:
             return None
-        return self._state.mail_messages.get(artifact_id)
+        message = self._state.mail_messages.get(artifact_id)
+        if message is None:
+            return None
+        return (
+            message
+            if self.get_mail_conversation(message.conversation_id, user) is not None
+            else None
+        )
 
     def find_mail_message_by_source(
         self,
@@ -247,7 +268,10 @@ class InMemoryArtifactRepository(ArtifactRepository):
                 )
                 or message.dedupe_fingerprint == dedupe_fingerprint
             ):
-                if self.get_artifact(message.artifact_id, user) is not None:
+                if (
+                    self.get_artifact(message.artifact_id, user) is not None
+                    and self.get_mail_conversation(message.conversation_id, user) is not None
+                ):
                     return message
         return None
 
@@ -256,6 +280,8 @@ class InMemoryArtifactRepository(ArtifactRepository):
         conversation_id: UUID,
         user: UserContext,
     ) -> Sequence[Artifact]:
+        if self.get_mail_conversation(conversation_id, user) is None:
+            return ()
         artifacts = [
             artifact
             for artifact_id, artifact in self._state.artifacts.items()
@@ -591,9 +617,7 @@ def build_demo_state() -> tuple[DemoState, UserContext]:
 
 
 def _case_visible_to_user(case_file: CaseFile, user: UserContext) -> bool:
-    if case_file.visible_group_id is None:
-        return True
-    return case_file.visible_group_id in user.visible_group_ids
+    return case_is_visible(case_file, user)
 
 
 def _rank_cases(
