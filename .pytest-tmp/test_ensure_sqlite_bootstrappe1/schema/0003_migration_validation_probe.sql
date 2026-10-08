@@ -1,0 +1,1 @@
+CREATE TABLE migration_validation_probe(id INTEGER PRIMARY KEY);

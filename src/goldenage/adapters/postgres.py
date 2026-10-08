@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import asdict
 from datetime import datetime
+from typing import Any, Iterator
 from uuid import UUID
 
 from goldenage.application.ports import (
@@ -42,16 +45,72 @@ class PostgresRepositoryError(RuntimeError):
     """Raised when PostgreSQL adapters cannot be used."""
 
 
-class _PostgresRepositoryBase:
-    """Base helper for raw-SQL repositories."""
+class PostgresUnitOfWork:
+    """Share one PostgreSQL connection across all repositories in a command."""
 
     def __init__(self, dsn: str) -> None:
         if psycopg is None:
             raise PostgresRepositoryError("psycopg is not installed.")
         self._dsn = dsn
+        self._connection: ContextVar[Any | None] = ContextVar(
+            "goldenage_postgres_connection",
+            default=None,
+        )
+
+    @property
+    def current_connection(self) -> Any | None:
+        """Return the connection active in the current execution context."""
+        return self._connection.get()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Commit all work or roll it back when any command write fails."""
+        if self.current_connection is not None:
+            raise PostgresRepositoryError("Nested PostgreSQL transactions are not supported.")
+        connection = psycopg.connect(self._dsn, row_factory=dict_row)
+        token: Token[Any | None] = self._connection.set(connection)
+        try:
+            yield
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            try:
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        finally:
+            self._connection.reset(token)
+            connection.close()
+
+
+class _PostgresRepositoryBase:
+    """Base helper for raw-SQL repositories."""
+
+    def __init__(self, dsn: str, *, unit_of_work: PostgresUnitOfWork | None = None) -> None:
+        if psycopg is None:
+            raise PostgresRepositoryError("psycopg is not installed.")
+        self._dsn = dsn
+        self._unit_of_work = unit_of_work
 
     def _connect(self):
         return psycopg.connect(self._dsn, row_factory=dict_row)
+
+    @contextmanager
+    def _connection(self) -> Iterator[Any]:
+        shared_connection = (
+            self._unit_of_work.current_connection if self._unit_of_work is not None else None
+        )
+        if shared_connection is not None:
+            yield shared_connection
+            return
+        with self._connect() as connection:
+            yield connection
+
+    def _commit(self, connection: Any) -> None:
+        if self._unit_of_work is None or self._unit_of_work.current_connection is None:
+            connection.commit()
 
     def _case_visible(self, case_id: UUID, user: UserContext) -> bool:
         sql = """
@@ -113,9 +172,9 @@ class PostgresCaseRepository(_PostgresRepositoryBase, CaseRepository):
                 last_activity_at = EXCLUDED.last_activity_at,
                 visible_group_id = EXCLUDED.visible_group_id
         """
-        with self._connect() as connection, connection.cursor() as cursor:
+        with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(sql, asdict(case_file))
-            connection.commit()
+            self._commit(connection)
 
 
 class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
@@ -186,9 +245,9 @@ class PostgresActivityRepository(_PostgresRepositoryBase, ActivityRepository):
                 created_by = EXCLUDED.created_by,
                 completed_at = EXCLUDED.completed_at
         """
-        with self._connect() as connection, connection.cursor() as cursor:
+        with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(sql, asdict(activity))
-            connection.commit()
+            self._commit(connection)
 
 
 class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
@@ -213,9 +272,9 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
                 uploaded_by = EXCLUDED.uploaded_by,
                 assigned_case_id = EXCLUDED.assigned_case_id
         """
-        with self._connect() as connection, connection.cursor() as cursor:
+        with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(sql, asdict(artifact))
-            connection.commit()
+            self._commit(connection)
 
     def get_artifact(self, artifact_id: UUID, user: UserContext) -> Artifact | None:
         sql = """
@@ -375,9 +434,9 @@ class PostgresArtifactRepository(_PostgresRepositoryBase, ArtifactRepository):
         """
         payload = asdict(conversation)
         payload["participants_json"] = Jsonb(payload.pop("participants"))
-        with self._connect() as connection, connection.cursor() as cursor:
+        with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(sql, payload)
-            connection.commit()
+            self._commit(connection)
 
     def get_mail_conversation(
         self,
@@ -621,9 +680,9 @@ class PostgresAuditRepository(_PostgresRepositoryBase, AuditRepository):
         """
         payload = asdict(event)
         payload["payload_json"] = Jsonb(payload["payload_json"])
-        with self._connect() as connection, connection.cursor() as cursor:
+        with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(sql, payload)
-            connection.commit()
+            self._commit(connection)
 
 
 def _row_to_case_file(row: dict[str, object]) -> CaseFile:

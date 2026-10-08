@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 from uuid import UUID
 
 from goldenage.application.ports import (
@@ -38,18 +41,84 @@ class SQLiteRepositoryError(RuntimeError):
     """Raised when SQLite adapters cannot be used."""
 
 
-class _SQLiteRepositoryBase:
-    """Base helper for SQLite repositories."""
+class SQLiteUnitOfWork:
+    """Share one SQLite connection across all repositories in a command."""
 
     def __init__(self, database_path: Path | str) -> None:
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection: ContextVar[sqlite3.Connection | None] = ContextVar(
+            "goldenage_sqlite_connection",
+            default=None,
+        )
+
+    @property
+    def current_connection(self) -> sqlite3.Connection | None:
+        """Return the connection active in the current execution context."""
+        return self._connection.get()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Commit all work or roll it back when any command write fails."""
+        if self.current_connection is not None:
+            raise SQLiteRepositoryError("Nested SQLite transactions are not supported.")
+        connection = self._connect()
+        token: Token[sqlite3.Connection | None] = self._connection.set(connection)
+        try:
+            yield
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            try:
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        finally:
+            self._connection.reset(token)
+            connection.close()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+
+class _SQLiteRepositoryBase:
+    """Base helper for SQLite repositories."""
+
+    def __init__(
+        self,
+        database_path: Path | str,
+        *,
+        unit_of_work: SQLiteUnitOfWork | None = None,
+    ) -> None:
+        self._database_path = Path(database_path)
+        self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._unit_of_work = unit_of_work
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._database_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        shared_connection = (
+            self._unit_of_work.current_connection if self._unit_of_work is not None else None
+        )
+        if shared_connection is not None:
+            yield shared_connection
+            return
+        with self._connect() as connection:
+            yield connection
+
+    def _commit(self, connection: sqlite3.Connection) -> None:
+        if self._unit_of_work is None or self._unit_of_work.current_connection is None:
+            connection.commit()
 
     def _case_visible(self, case_id: UUID, user: UserContext) -> bool:
         clause, params = _group_visibility_clause(user.visible_group_ids, "visible_group_id")
@@ -106,9 +175,9 @@ class SQLiteCaseRepository(_SQLiteRepositoryBase, CaseRepository):
         payload["visible_group_id"] = (
             str(case_file.visible_group_id) if case_file.visible_group_id is not None else None
         )
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(sql, payload)
-            connection.commit()
+            self._commit(connection)
 
 
 class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
@@ -182,9 +251,9 @@ class SQLiteActivityRepository(_SQLiteRepositoryBase, ActivityRepository):
             "created_at": _serialize_datetime(activity.created_at),
             "created_by": str(activity.created_by) if activity.created_by is not None else None,
         }
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(sql, payload)
-            connection.commit()
+            self._commit(connection)
 
 
 class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
@@ -222,9 +291,9 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
                 str(artifact.assigned_case_id) if artifact.assigned_case_id is not None else None
             ),
         }
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(sql, payload)
-            connection.commit()
+            self._commit(connection)
 
     def get_artifact(self, artifact_id: UUID, user: UserContext) -> Artifact | None:
         clause, params = _group_visibility_clause(user.visible_group_ids, "c.visible_group_id")
@@ -421,9 +490,9 @@ class SQLiteArtifactRepository(_SQLiteRepositoryBase, ArtifactRepository):
             "created_at": _serialize_datetime(conversation.created_at),
             "updated_at": _serialize_datetime(conversation.updated_at),
         }
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(sql, payload)
-            connection.commit()
+            self._commit(connection)
 
     def get_mail_conversation(
         self,
@@ -597,7 +666,7 @@ class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
                 id, actor_user_id, event_type, subject_id, payload_json, created_at
             ) VALUES (?, ?, ?, ?, ?, ?)
         """
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 sql,
                 (
@@ -609,7 +678,7 @@ class SQLiteAuditRepository(_SQLiteRepositoryBase, AuditRepository):
                     _serialize_datetime(event.created_at),
                 ),
             )
-            connection.commit()
+            self._commit(connection)
 
 
 class SQLiteLocalUserRepository(_SQLiteRepositoryBase):

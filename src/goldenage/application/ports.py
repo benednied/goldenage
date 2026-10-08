@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -145,6 +146,13 @@ class AuditRepository(Protocol):
 
     def save_event(self, event: AuditEvent) -> None:
         """Persist an audit event."""
+
+
+class UnitOfWork(Protocol):
+    """Transaction boundary for one application command."""
+
+    def transaction(self) -> AbstractContextManager[None]:
+        """Open a transaction shared by all repositories in the command."""
 
 
 class ArtifactStore(Protocol):

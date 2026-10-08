@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Literal
@@ -20,6 +21,7 @@ from goldenage.application.ports import (
     GiselaClient,
     MailImportClient,
     MailImportRepository,
+    UnitOfWork,
 )
 from goldenage.domain.models import (
     Activity,
@@ -118,6 +120,7 @@ class GoldenAgeService:
         elizabethan_client: ElizabethanSearchClient,
         mail_import_client: MailImportClient | None = None,
         mail_import_repository: MailImportRepository | None = None,
+        unit_of_work: UnitOfWork | None = None,
     ) -> None:
         self._case_repository = case_repository
         self._activity_repository = activity_repository
@@ -129,6 +132,7 @@ class GoldenAgeService:
         self._elizabethan_client = elizabethan_client
         self._mail_import_client = mail_import_client
         self._mail_import_repository = mail_import_repository
+        self._unit_of_work = unit_of_work
 
     def get_today_worklist(self, *, user: UserContext, now: datetime) -> tuple[WorklistItem, ...]:
         """Return due activities sorted by urgency and timestamp."""
@@ -275,31 +279,34 @@ class GoldenAgeService:
             skip_follow_up=skip_follow_up,
         )
 
-        self._activity_repository.save_activity(replace(activity, completed_at=plan.completed_at))
-        if plan.follow_up_activity is not None:
-            self._activity_repository.save_activity(plan.follow_up_activity)
-
         case_file = self._case_repository.get_case(activity.case_id, user)
         if case_file is None:
             raise NotFoundError("Case not found.")
 
         new_status = "closed" if plan.close_case else "open"
-        self._case_repository.save_case(replace(case_file, status=new_status, last_activity_at=now))
-
-        self._record_audit(
-            actor_user_id=user.id,
-            event_type="activity_resolved",
-            subject_id=activity.id,
-            payload={
-                "case_id": str(activity.case_id),
-                "close_case": plan.close_case,
-                "skip_follow_up": plan.skip_follow_up,
-                "follow_up_activity_id": (
-                    str(plan.follow_up_activity.id) if plan.follow_up_activity else None
-                ),
-            },
-            now=now,
-        )
+        with self._command_transaction():
+            self._activity_repository.save_activity(
+                replace(activity, completed_at=plan.completed_at)
+            )
+            if plan.follow_up_activity is not None:
+                self._activity_repository.save_activity(plan.follow_up_activity)
+            self._case_repository.save_case(
+                replace(case_file, status=new_status, last_activity_at=now)
+            )
+            self._record_audit(
+                actor_user_id=user.id,
+                event_type="activity_resolved",
+                subject_id=activity.id,
+                payload={
+                    "case_id": str(activity.case_id),
+                    "close_case": plan.close_case,
+                    "skip_follow_up": plan.skip_follow_up,
+                    "follow_up_activity_id": (
+                        str(plan.follow_up_activity.id) if plan.follow_up_activity else None
+                    ),
+                },
+                now=now,
+            )
 
         return self.get_case_detail(case_id=activity.case_id, user=user, now=now)
 
@@ -774,37 +781,18 @@ class GoldenAgeService:
         if not normalized_step:
             raise ResolutionError("A next step description is required.")
 
-        updated_artifact = replace(artifact, assigned_case_id=case_id)
-        self._artifact_repository.save_artifact(updated_artifact)
-        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
-        if mail_message is not None:
-            conversation = self._artifact_repository.get_mail_conversation(
-                mail_message.conversation_id,
-                user,
-            )
-            if conversation is not None:
-                self._artifact_repository.save_mail_conversation(
-                    replace(conversation, assigned_case_id=case_id, updated_at=now)
-                )
-        self._activity_repository.save_activity(
-            Activity(
-                id=uuid4(),
+        conversation = self._conversation_for_artifact(artifact_id=artifact_id, user=user)
+        with self._command_transaction():
+            self._save_artifact_assignment(
+                artifact=artifact,
+                case_file=case_file,
+                conversation=conversation,
                 case_id=case_id,
-                description=normalized_step,
-                kind="intake",
-                due_at=next_due_at,
-                created_at=now,
-                created_by=user.id,
+                next_step=normalized_step,
+                next_due_at=next_due_at,
+                user=user,
+                now=now,
             )
-        )
-        self._case_repository.save_case(replace(case_file, status="open", last_activity_at=now))
-        self._record_audit(
-            actor_user_id=user.id,
-            event_type="artifact_assigned",
-            subject_id=artifact_id,
-            payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
-            now=now,
-        )
         return self.get_case_detail(case_id=case_id, user=user, now=now)
 
     def create_case_for_artifact(
@@ -830,22 +818,79 @@ class GoldenAgeService:
         if not normalized_step:
             raise ResolutionError("A next step description is required.")
         case_id = uuid4()
-        self._case_repository.save_case(
-            CaseFile(
-                id=case_id,
-                title=normalized_title,
-                company=company.strip() or None,
-                primary_contact=primary_contact.strip() or None,
-                status="open",
-                last_activity_at=now,
+        case_file = CaseFile(
+            id=case_id,
+            title=normalized_title,
+            company=company.strip() or None,
+            primary_contact=primary_contact.strip() or None,
+            status="open",
+            last_activity_at=now,
+        )
+        conversation = self._conversation_for_artifact(artifact_id=artifact_id, user=user)
+        with self._command_transaction():
+            self._case_repository.save_case(case_file)
+            self._save_artifact_assignment(
+                artifact=artifact,
+                case_file=case_file,
+                conversation=conversation,
+                case_id=case_id,
+                next_step=normalized_step,
+                next_due_at=next_due_at,
+                user=user,
+                now=now,
+            )
+        return self.get_case_detail(case_id=case_id, user=user, now=now)
+
+    def _command_transaction(self) -> AbstractContextManager[None]:
+        if self._unit_of_work is None:
+            return nullcontext()
+        return self._unit_of_work.transaction()
+
+    def _conversation_for_artifact(
+        self,
+        *,
+        artifact_id: UUID,
+        user: UserContext,
+    ) -> MailConversation | None:
+        mail_message = self._artifact_repository.get_mail_message(artifact_id, user)
+        if mail_message is None:
+            return None
+        return self._artifact_repository.get_mail_conversation(mail_message.conversation_id, user)
+
+    def _save_artifact_assignment(
+        self,
+        *,
+        artifact: Artifact,
+        case_file: CaseFile,
+        conversation: MailConversation | None,
+        case_id: UUID,
+        next_step: str,
+        next_due_at: datetime,
+        user: UserContext,
+        now: datetime,
+    ) -> None:
+        self._artifact_repository.save_artifact(replace(artifact, assigned_case_id=case_id))
+        if conversation is not None:
+            self._artifact_repository.save_mail_conversation(
+                replace(conversation, assigned_case_id=case_id, updated_at=now)
+            )
+        self._activity_repository.save_activity(
+            Activity(
+                id=uuid4(),
+                case_id=case_id,
+                description=next_step,
+                kind="intake",
+                due_at=next_due_at,
+                created_at=now,
+                created_by=user.id,
             )
         )
-        return self.assign_artifact_to_case(
-            artifact_id=artifact_id,
-            case_id=case_id,
-            next_step=normalized_step,
-            next_due_at=next_due_at,
-            user=user,
+        self._case_repository.save_case(replace(case_file, status="open", last_activity_at=now))
+        self._record_audit(
+            actor_user_id=user.id,
+            event_type="artifact_assigned",
+            subject_id=artifact.id,
+            payload={"case_id": str(case_id), "next_due_at": next_due_at.isoformat()},
             now=now,
         )
 
